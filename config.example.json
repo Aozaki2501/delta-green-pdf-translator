@@ -1,0 +1,10 @@
+{
+    "pdf": "THE MILLENNIUM.pdf",
+    "api_key": "sk-在这里填入你的DeepSeek API Key",
+    "glossary": "glossary.tsv",
+    "model": "deepseek-v4-pro",
+    "format": "all",
+    "workers": 4,
+    "start": 0,
+    "end": null
+}

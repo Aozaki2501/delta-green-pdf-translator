@@ -46,6 +46,14 @@ except ImportError:
     print("Error: openai package not installed. Run: pip install openai")
     sys.exit(1)
 
+try:
+    from docx import Document as DocxDocument
+    from docx.shared import Pt, Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
 
 # ============================================================
 # TOKEN COST TRACKER
@@ -682,26 +690,33 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
 
     translated_pages_sorted = sorted(translated_pages, key=lambda x: x[0])
 
-    if output_format in ("pdf", "both"):
-        pdf_output = output_path if output_path.endswith(".pdf") else output_path.replace(".md", ".pdf")
-        print(f"Generating overlay PDF: {pdf_output}")
+    # Determine output base name (without extension)
+    output_base = output_path
+    for ext in (".md", ".pdf", ".docx"):
+        if output_base.endswith(ext):
+            output_base = output_base[:-len(ext)]
+            break
+
+    # PDF output
+    if output_format in ("pdf", "both", "all"):
+        pdf_output = output_base + ".pdf"
+        print(f"  生成保留排版 PDF: {pdf_output}")
         try:
             writer = PDFOverlayWriter(pdf_path, pdf_output)
             for page_num, translation in translated_pages_sorted:
                 writer.overlay_page(page_num, translation)
             writer.save()
-            print("   PDF output done")
+            print("   ✅ PDF 输出完成")
         except Exception as e:
-            print(f"   PDF output failed: {e}")
-            print("   Falling back to markdown")
-            output_format = "markdown"
+            print(f"   ❌ PDF 输出失败: {e}")
 
-    if output_format in ("markdown", "both"):
-        md_output = output_path if output_path.endswith(".md") else output_path
-        print(f"Generating Markdown: {md_output}")
+    # Markdown output
+    if output_format in ("markdown", "both", "all"):
+        md_output = output_base + ".md"
+        print(f"  生成 Markdown: {md_output}")
         with open(md_output, "w", encoding="utf-8") as f:
-            f.write("# THE MILLENNIUM - Chinese Translation\n\n")
-            f.write("> Translated by DeepSeek V4 AI with Delta Green glossary\n\n")
+            f.write("# THE MILLENNIUM — 中文翻译\n\n")
+            f.write("> 由 DeepSeek V4 AI 翻译，术语参照绿色三角洲官方译名表\n\n")
             f.write("---\n\n")
             if toc:
                 f.write(toc)
@@ -712,8 +727,56 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     f.write(f"<!-- Page {page_num + 1} -->\n\n")
                     f.write(translation)
                     f.write("\n\n---\n\n")
-        page_count = len([t for _, t in translated_pages_sorted if t.strip()])
-        print(f"   Done! {page_count} pages translated")
+        print("   ✅ Markdown 输出完成")
+
+    # Word output
+    if output_format in ("word", "all"):
+        if not HAS_DOCX:
+            print("  ⚠️  Word 输出需要 python-docx，请运行: pip install python-docx")
+        else:
+            docx_output = output_base + ".docx"
+            print(f"  生成 Word 文档: {docx_output}")
+            try:
+                doc = DocxDocument()
+                # Title
+                title_para = doc.add_heading("THE MILLENNIUM — 中文翻译", level=0)
+                doc.add_paragraph("由 DeepSeek V4 AI 翻译，术语参照绿色三角洲官方译名表", style="Subtitle")
+                doc.add_page_break()
+
+                for page_num, translation in translated_pages_sorted:
+                    if not translation.strip():
+                        continue
+                    # Parse markdown-ish translation into Word paragraphs
+                    for line in translation.split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Headings
+                        if line.startswith("### "):
+                            doc.add_heading(line[4:], level=3)
+                        elif line.startswith("## "):
+                            doc.add_heading(line[3:], level=2)
+                        elif line.startswith("# "):
+                            doc.add_heading(line[2:], level=1)
+                        elif line.startswith("- ") or line.startswith("• "):
+                            doc.add_paragraph(line[2:], style="List Bullet")
+                        elif line == "---":
+                            continue
+                        elif line.startswith("<!--"):
+                            continue
+                        else:
+                            # Strip bold markers for Word
+                            clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+                            clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
+                            doc.add_paragraph(clean_line)
+
+                doc.save(docx_output)
+                print("   ✅ Word 输出完成")
+            except Exception as e:
+                print(f"   ❌ Word 输出失败: {e}")
+
+    page_count = len([t for _, t in translated_pages_sorted if t.strip()])
+    print(f"\n  共翻译 {page_count} 页")
 
     print()
     print(f"Time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
@@ -727,64 +790,108 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
 
 
 # ============================================================
-# CLI
+# CLI with Config File Support
 # ============================================================
+
+def load_config(config_path: str) -> dict:
+    """Load configuration from a JSON file."""
+    if not os.path.exists(config_path):
+        print(f"❌ 配置文件不存在: {config_path}")
+        sys.exit(1)
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    return config
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="DG TRPG PDF Translator v2.0",
+        description="绿色三角洲 PDF 翻译工具 v2.0",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --workers 4 --glossary glossary.tsv
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format pdf
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format both --workers 4
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --start 10 --end 50
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --model deepseek-v4-flash --workers 8
+使用示例:
+  # 使用配置文件（推荐，最简单）
+  python translate_pdf.py --config config.json
+
+  # 命令行参数
+  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format all --workers 4
+
+  # 指定术语表和范围
+  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx \
+      --glossary glossary.tsv --start 0 --end 5
+
+  # 使用更便宜的模型
+  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx \
+      --model deepseek-v4-flash --workers 8
         """
     )
 
-    parser.add_argument("pdf", help="Input PDF file path")
-    parser.add_argument("--api-key", required=True, help="DeepSeek API Key")
-    parser.add_argument("--output", "-o", default=None, help="Output file path")
-    parser.add_argument("--glossary", "-g", default=None, help="Glossary TSV file path")
-    parser.add_argument("--model", default="deepseek-v4-pro", help="Model name (default: deepseek-v4-pro)")
-    parser.add_argument("--format", "-f", choices=["markdown", "pdf", "both"], default="markdown",
-                        help="Output format (default: markdown)")
-    parser.add_argument("--workers", "-w", type=int, default=1, help="Concurrent workers (default: 1, recommended: 4)")
-    parser.add_argument("--start", type=int, default=0, help="Start page (0-indexed)")
-    parser.add_argument("--end", type=int, default=None, help="End page (exclusive)")
+    parser.add_argument("pdf", nargs="?", default=None, help="输入 PDF 文件路径")
+    parser.add_argument("--config", "-c", default=None, help="配置文件路径（JSON）")
+    parser.add_argument("--api-key", default=None, help="DeepSeek API Key")
+    parser.add_argument("--output", "-o", default=None, help="输出文件路径（不含扩展名）")
+    parser.add_argument("--glossary", "-g", default=None, help="术语表文件路径（TSV 格式）")
+    parser.add_argument("--model", default=None, help="模型名称（默认: deepseek-v4-pro）")
+    parser.add_argument("--format", "-f", choices=["markdown", "pdf", "word", "both", "all"],
+                        default=None, help="输出格式: markdown/pdf/word/both/all（默认: markdown）")
+    parser.add_argument("--workers", "-w", type=int, default=None,
+                        help="并发线程数（默认: 1，推荐: 4）")
+    parser.add_argument("--start", type=int, default=None, help="起始页码（从0开始）")
+    parser.add_argument("--end", type=int, default=None, help="结束页码（不含）")
 
     args = parser.parse_args()
 
-    if args.output is None:
-        pdf_stem = Path(args.pdf).stem
-        if args.format == "pdf":
-            args.output = f"{pdf_stem}_cn.pdf"
-        else:
-            args.output = f"{pdf_stem}_cn.md"
+    # Load config file if specified
+    config = {}
+    if args.config:
+        config = load_config(args.config)
 
-    if not os.path.exists(args.pdf):
-        print(f"PDF not found: {args.pdf}")
+    # Merge: command line args override config file
+    pdf_path = args.pdf or config.get("pdf")
+    api_key = args.api_key or config.get("api_key")
+    output_path = args.output or config.get("output")
+    glossary_path = args.glossary or config.get("glossary")
+    model = args.model or config.get("model", "deepseek-v4-pro")
+    output_format = args.format or config.get("format", "markdown")
+    workers = args.workers if args.workers is not None else config.get("workers", 1)
+    start_page = args.start if args.start is not None else config.get("start", 0)
+    end_page = args.end if args.end is not None else config.get("end")
+
+    # Validate required params
+    if not pdf_path:
+        print("❌ 缺少 PDF 文件路径。请通过参数或配置文件指定。")
+        parser.print_help()
+        sys.exit(1)
+    if not api_key:
+        print("❌ 缺少 API Key。请通过 --api-key 或配置文件指定。")
         sys.exit(1)
 
-    if args.workers < 1:
-        args.workers = 1
-    elif args.workers > 16:
-        print("Max workers is 16")
-        args.workers = 16
+    # Default output path
+    if output_path is None:
+        pdf_stem = Path(pdf_path).stem
+        output_path = f"{pdf_stem}_cn.md"
 
+    # Validate
+    if not os.path.exists(pdf_path):
+        print(f"❌ PDF 文件不存在: {pdf_path}")
+        sys.exit(1)
+
+    if workers < 1:
+        workers = 1
+    elif workers > 16:
+        print("⚠️  并发数上限为 16，已自动调整")
+        workers = 16
+
+    # Run
     translate_pdf(
-        pdf_path=args.pdf,
-        output_path=args.output,
-        api_key=args.api_key,
-        glossary_path=args.glossary,
-        model=args.model,
-        start_page=args.start,
-        end_page=args.end,
-        output_format=args.format,
-        max_workers=args.workers,
+        pdf_path=pdf_path,
+        output_path=output_path,
+        api_key=api_key,
+        glossary_path=glossary_path,
+        model=model,
+        start_page=start_page,
+        end_page=end_page,
+        output_format=output_format,
+        max_workers=workers,
     )
 
 
