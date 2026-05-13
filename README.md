@@ -1,35 +1,60 @@
-# 绿色三角洲 PDF 翻译工具 v2.0
+# Delta Green PDF Translator
 
-专为《绿色三角洲（Delta Green）》TRPG 扩展资料设计的 AI 翻译工具。  
-使用 DeepSeek V4 API，支持双栏排版识别、术语表、并发翻译、多格式输出。
+<p align="center">
+  <strong>专为《绿色三角洲》TRPG 扩展资料设计的 AI 翻译工具</strong><br>
+  DeepSeek V4 驱动 · 双栏智能提取 · 术语表对照 · 并发翻译 · 多格式输出
+</p>
 
-## ✨ 功能特点
+---
+
+## 概述
+
+本工具用于将 Delta Green TRPG 英文 PDF 规则书翻译为中文。针对 TRPG 书籍的双栏排版做了专门优化，支持术语表强制对照、跨页上下文连贯、断点续翻等特性。
+
+提供命令行和 Web 两种使用方式，适合不同习惯的用户。
+
+## 核心功能
 
 | 功能 | 说明 |
 |------|------|
-| 智能双栏提取 | 自动检测 TRPG 书籍的双栏排版，按正确阅读顺序提取 |
-| 上下文窗口 | 翻译每页时携带前页译文末尾，保证跨页内容连贯 |
-| 章节目录检测 | 通过字号/加粗自动识别章节标题，生成目录 |
-| 多格式输出 | 支持 Markdown / Word (.docx) / 保留排版 PDF |
-| 批量并发 | 多线程同时翻译多页，大幅提升速度 |
-| 术语表 | TSV 格式术语表，只传入当前页相关术语，节省 token |
+| 双栏智能提取 | 自动检测双栏排版，按正确阅读顺序合并文本 |
+| 上下文窗口 | 翻译时携带前一页译文尾部，保证跨页语义连贯 |
+| 章节目录生成 | 通过字号/加粗自动识别标题层级，生成可跳转目录 |
+| TRPG 术语表 | TSV 格式，仅传入当前页匹配的术语，节省 token |
+| 并发翻译 | 多线程同时处理多页，4 线程约 12 分钟完成 320 页 |
 | 断点续翻 | 中断后重新运行自动跳过已完成页面 |
-| 费用统计 | 实时显示 token 用量和预估费用（¥） |
-| 配置文件 | 所有参数写入 `config.json`，一条命令即可运行 |
+| 多格式输出 | Markdown / Word (.docx) / 保留排版 PDF |
+| 实时费用统计 | 显示 token 用量与预估花费（¥） |
+| 配置文件 | 所有参数写入 `config.json`，一条命令运行 |
+| Web 界面 | Streamlit 驱动的终端风格浏览器界面 |
 
-## 📦 安装
+## 环境要求
+
+- Python 3.9+
+- [DeepSeek API Key](https://platform.deepseek.com/)
+
+## 安装
 
 ```bash
-pip install pymupdf openai python-docx
+# 克隆项目
+git clone https://github.com/Aozaki2501/delta-green-pdf-translator.git
+cd delta-green-pdf-translator
+
+# 安装依赖
+pip install pymupdf openai python-docx streamlit
 ```
 
-> `python-docx` 用于 Word 输出，如果你只需要 Markdown 或 PDF 可以不装。
+> `python-docx` 用于 Word 输出，`streamlit` 用于 Web 界面。如果只需命令行 + Markdown，可仅安装 `pymupdf openai`。
 
-## 🚀 快速开始
+## 快速开始
 
-### 方式一：使用配置文件（推荐）
+### 1. 创建配置文件
 
-首次运行时，创建一个 `config.json`：
+```bash
+cp config.example.json config.json
+```
+
+编辑 `config.json`：
 
 ```json
 {
@@ -44,55 +69,80 @@ pip install pymupdf openai python-docx
 }
 ```
 
-然后只需一条命令：
+### 2. 运行翻译
 
 ```bash
 python translate_pdf.py --config config.json
 ```
 
-搞定！所有参数从配置文件读取，不用每次敲一长串。
+翻译完成后将在同目录生成 `_cn.md`、`_cn.pdf`、`_cn.docx` 三种格式的译文。
 
-### 方式二：命令行参数
+### 3. 测试少量页面（推荐先试 5 页）
+
+将 `config.json` 中 `"end"` 改为 `5`，确认效果后再翻译全书。
+
+## 命令行用法
 
 ```bash
+# 使用配置文件（推荐）
+python translate_pdf.py --config config.json
+
+# 纯命令行参数
 python translate_pdf.py "THE MILLENNIUM.pdf" \
-    --api-key sk-你的密钥 \
+    --api-key sk-xxx \
     --glossary glossary.tsv \
     --format all \
     --workers 4
+
+# 翻译指定范围
+python translate_pdf.py "THE MILLENNIUM.pdf" \
+    --api-key sk-xxx \
+    --start 10 --end 20
 ```
 
-## 📋 完整参数说明
+### 参数一览
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `pdf` | 输入 PDF 文件路径 | 必填 |
-| `--config`, `-c` | 配置文件路径（有此参数时其他参数均可省略） | 无 |
+| `pdf` | PDF 文件路径 | 必填 |
+| `--config`, `-c` | 配置文件路径 | — |
 | `--api-key` | DeepSeek API Key | 必填 |
-| `--output`, `-o` | 输出文件路径（不含扩展名） | `{文件名}_cn` |
-| `--glossary`, `-g` | 术语表路径（TSV） | 无 |
-| `--model` | 模型名 | `deepseek-v4-pro` |
-| `--format`, `-f` | 输出格式（见下表） | `markdown` |
-| `--workers`, `-w` | 并发线程数（1-16） | `1` |
-| `--start` | 起始页码（从0开始） | `0` |
+| `--output`, `-o` | 输出路径（不含扩展名） | `{文件名}_cn` |
+| `--glossary`, `-g` | 术语表 TSV 路径 | — |
+| `--model` | 模型名称 | `deepseek-v4-pro` |
+| `--format`, `-f` | 输出格式 | `markdown` |
+| `--workers`, `-w` | 并发线程数 (1–16) | `1` |
+| `--start` | 起始页码 (0-indexed) | `0` |
 | `--end` | 结束页码（不含） | 全部 |
 
-### 输出格式选项
+### 输出格式
 
-| 值 | 输出文件 |
-|----|----------|
-| `markdown` | `.md` 文件 |
+| 值 | 输出 |
+|----|------|
+| `markdown` | `.md` |
 | `pdf` | 保留原排版的中文 PDF |
-| `word` | Word `.docx` 文件 |
+| `word` | `.docx` |
 | `both` | Markdown + PDF |
-| `all` | Markdown + PDF + Word（推荐） |
+| `all` | Markdown + PDF + Word |
 
-## 📚 术语表格式
+## Web 界面
 
-TSV 文件，每行一条，Tab 分隔：
+```bash
+streamlit run app.py
+```
+
+浏览器打开后上传 PDF、填入 API Key，即可在网页上完成翻译并下载结果。界面采用复古终端视觉风格。
+
+## 术语表
+
+项目附带 `glossary.tsv`，已收录 Delta Green: THE MILLENNIUM 的核心术语（组织、人物、神话存在、地点、法术、游戏术语等）。
+
+### 格式规范
+
+每行一条，Tab 分隔，`#` 开头为注释：
 
 ```
-中文译名	英文原名
+中文译名\t英文原名
 ```
 
 示例：
@@ -100,47 +150,63 @@ TSV 文件，每行一条，Tab 分隔：
 绿色三角洲	Delta Green
 旧日支配者	Great Old One
 阿撒托斯	Azathoth
-火灵	ifrit
+星之彩	Colour Out of Space
 ```
 
-- 以 `#` 开头的行为注释
-- 脚本自动匹配当前页出现的术语，只将相关条目传入 prompt
+### 生成术语表
 
-### 术语表生成
-
-如果你的术语表也是 PDF 格式：
-1. **推荐**：截图发给多模态 AI（GPT-4o、Claude），让它直接输出 TSV 格式
-2. **备选**：手动复制后使用 `convert_glossary.py` 辅助转换：
+如果你的术语来源是 PDF：
+1. **推荐**：截图发给多模态 AI（GPT-4o / Claude），让它直接输出 TSV
+2. **备选**：手动复制后用 `convert_glossary.py` 转换：
    ```bash
    python convert_glossary.py raw_glossary.txt -o glossary.tsv
    ```
 
-## 💰 费用参考
+## 费用参考
 
-以 320 页 PDF 为例（DeepSeek V4 Pro，75% 折扣期至 2026/05/31）：
+以 320 页 PDF、DeepSeek V4 Pro 为例：
 
-| 模式 | 预估费用 | 耗时 |
+| 配置 | 预估费用 | 耗时 |
 |------|----------|------|
-| 单线程 Pro | ¥5-15 | ~40 分钟 |
-| 4线程 Pro | ¥5-15 | ~12 分钟 |
-| 4线程 Flash | ¥1-3 | ~8 分钟 |
+| 单线程 Pro | ¥5–15 | ~40 min |
+| 4 线程 Pro | ¥5–15 | ~12 min |
+| 4 线程 Flash | ¥1–3 | ~8 min |
 
-翻译完成后会显示精确的 token 统计和费用。
+## 断点续翻
 
-## 🔄 断点续翻
-
-- 进度自动保存到 `{输出文件}.progress.json`
+- 进度自动保存至 `{输出文件}.progress.json`
 - 中断后重新运行相同命令即可继续
-- 已完成的页面自动跳过
-- 如需重翻：删除进度文件或指定新输出文件名
+- 如需重翻某些页，删除进度文件或指定新输出名
 
-## ⚠️ 已知限制
+## 环境检测
 
-1. **PDF 排版输出**：效果取决于原 PDF 文本层质量，复杂背景/图片上的文字可能显示不佳
-2. **双栏检测**：对绝大多数 TRPG 书籍有效，但极端排版（多层嵌套方框）可能需调整
-3. **并发与上下文**：高并发时上下文连贯性略有降低（每组内共享上下文）
-4. **Word 输出**：需安装 `python-docx`，排版为简洁的标题+正文样式
+```bash
+python test_setup.py
+python test_setup.py --api-key sk-xxx        # 可选：测试 API 连通
+python test_setup.py --pdf your_file.pdf      # 可选：测试 PDF 提取
+```
 
-## 📄 许可
+## 项目结构
 
-本工具仅供个人学习使用。请尊重原作版权。
+```
+delta-green-pdf-translator/
+├── translate_pdf.py       # 核心翻译引擎
+├── app.py                 # Streamlit Web 界面
+├── convert_glossary.py    # 术语表格式转换工具
+├── glossary.tsv           # 预置 TRPG 术语表
+├── test_setup.py          # 环境检测脚本
+├── config.example.json    # 配置文件模板
+├── GUIDE.md              # 详细使用教程（面向新手）
+└── README.md             # 本文件
+```
+
+## 已知限制
+
+- **PDF 排版输出**：实验性功能，复杂背景/图片上文字效果有限，建议以 Markdown 或 Word 为主
+- **双栏检测**：对常规 TRPG 书籍有效，极端嵌套排版可能需手动调整
+- **高并发与连贯性**：线程数越高，跨页语义连贯性略有下降（组内共享上下文）
+- **扫描版 PDF**：仅支持含文本层的 PDF，纯图片扫描件需先 OCR
+
+## 许可
+
+本工具仅供个人学习与研究使用。请尊重原作版权，勿用于商业用途或公开分发译文。
