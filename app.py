@@ -205,20 +205,25 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
     elif not api_key:
         st.error("✗ 请输入 API Key")
     else:
-        # Save uploaded files
-        pdf_path = f"_upload_{pdf_file.name}"
+        # Create organized directories
+        upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(upload_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save uploaded files to uploads/
+        pdf_path = os.path.join(upload_dir, pdf_file.name)
         with open(pdf_path, "wb") as f:
             f.write(pdf_file.read())
 
         glossary_path = None
         if glossary_file:
-            glossary_path = f"_upload_{glossary_file.name}"
+            glossary_path = os.path.join(upload_dir, glossary_file.name)
             with open(glossary_path, "wb") as f:
                 f.write(glossary_file.read())
 
-
         end_page = int(end_page_str) if end_page_str.strip() else None
-        output_base = f"{Path(pdf_file.name).stem}_cn"
+        output_base = os.path.join(output_dir, f"{Path(pdf_file.name).stem}_cn")
 
         # Init
         stats = TokenStats()
