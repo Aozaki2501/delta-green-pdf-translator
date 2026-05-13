@@ -595,48 +595,43 @@ def set_section_columns(section, num=2, space_twips=720):
 def set_document_base_layout(doc):
     section = doc.sections[0]
 
-    # A4 页面
-    section.page_width = Mm(210)
-    section.page_height = Mm(297)
+    section.page_width = Inches(8.5)
+    section.page_height = Inches(11)
 
-    # 模组书常见窄边距
-    section.top_margin = Mm(18)
-    section.bottom_margin = Mm(16)
-    section.left_margin = Mm(17)
-    section.right_margin = Mm(17)
+    section.top_margin = Inches(0.55)
+    section.bottom_margin = Inches(0.55)
+    section.left_margin = Inches(0.45)
+    section.right_margin = Inches(0.45)
 
-    # 双栏
-    set_section_columns(section, num=2, space_twips=560)
+    set_section_columns(section, num=2, space_twips=620)
 
     styles = doc.styles
 
     # 正文
     normal = styles["Normal"]
     normal.font.name = "宋体"
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
     normal.font.size = Pt(9.5)
     normal.paragraph_format.first_line_indent = Pt(18)
     normal.paragraph_format.line_spacing = 1.0
-    normal.paragraph_format.space_after = Pt(4)
-
+    normal.paragraph_format.space_after = Pt(3)
     # 一级标题
     h1 = styles["Heading 1"]
-    h1.font.name = "Arial"
+    h1.font.name = "黑体"
     h1._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h1.font.size = Pt(20)
+    h1.font.size = Pt(18)
     h1.font.bold = False
-    h1.font.color.rgb = RGBColor(0x0B, 0x3A, 0x75)
+    h1.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
     h1.paragraph_format.space_before = Pt(10)
     h1.paragraph_format.space_after = Pt(8)
     h1.paragraph_format.keep_with_next = True
 
     # 二级标题
     h2 = styles["Heading 2"]
-    h2.font.name = "Arial"
+    h2.font.name = "黑体"
     h2._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
     h2.font.size = Pt(12)
     h2.font.bold = True
-    h2.font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
+    h2.font.color.rgb = RGBColor(0xD8, 0x00, 0x00)
     h2.paragraph_format.space_before = Pt(8)
     h2.paragraph_format.space_after = Pt(4)
     h2.paragraph_format.keep_with_next = True
