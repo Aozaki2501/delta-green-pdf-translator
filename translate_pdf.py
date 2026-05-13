@@ -334,7 +334,7 @@ def load_glossary(glossary_path: str) -> dict:
 class Translator:
     """Translates text using DeepSeek V4 API with context window and cost tracking."""
 
-    SYSTEM_PROMPT = """You are a professional TRPG translator working on Delta Green: THE MILLENNIUM.
+    SYSTEM_PROMPT = """You are a professional TRPG translator working on Delta Green sourcebooks.
 
 Translation rules:
 1. Follow the glossary strictly for proper nouns.
@@ -582,7 +582,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                   model="deepseek-v4-pro", start_page=0, end_page=None,
                   output_format="markdown", max_workers=1):
     print("=" * 60)
-    print("  DG TRPG PDF Translator v2.0 - THE MILLENNIUM")
+    print("  DG TRPG PDF Translator v2.0")
     print("=" * 60)
     print()
 
@@ -714,8 +714,9 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
     if output_format in ("markdown", "both", "all"):
         md_output = output_base + ".md"
         print(f"  生成 Markdown: {md_output}")
+        pdf_title = Path(pdf_path).stem
         with open(md_output, "w", encoding="utf-8") as f:
-            f.write("# THE MILLENNIUM — 中文翻译\n\n")
+            f.write(f"# {pdf_title} — 中文翻译\n\n")
             f.write("> 由 DeepSeek V4 AI 翻译，术语参照绿色三角洲官方译名表\n\n")
             f.write("---\n\n")
             if toc:
@@ -739,7 +740,8 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             try:
                 doc = DocxDocument()
                 # Title
-                title_para = doc.add_heading("THE MILLENNIUM — 中文翻译", level=0)
+                pdf_title = Path(pdf_path).stem
+                title_para = doc.add_heading(f"{pdf_title} — 中文翻译", level=0)
                 doc.add_paragraph("由 DeepSeek V4 AI 翻译，术语参照绿色三角洲官方译名表", style="Subtitle")
                 doc.add_page_break()
 

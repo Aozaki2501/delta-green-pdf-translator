@@ -287,8 +287,9 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                 # Output & Download
         if "Markdown" in formats:
             md_path = output_base + ".md"
+            pdf_title = Path(pdf_file.name).stem
             with open(md_path, "w", encoding="utf-8") as f:
-                f.write("# THE MILLENNIUM — 中文翻译\n\n---\n\n")
+                f.write(f"# {pdf_title} — 中文翻译\n\n---\n\n")
 
                 if toc:
                     f.write(toc)
@@ -333,7 +334,8 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             else:
                 docx_path = output_base + ".docx"
                 doc = DocxDocument()
-                doc.add_heading("THE MILLENNIUM — 中文翻译", level=0)
+                pdf_title = Path(pdf_file.name).stem
+                doc.add_heading(f"{pdf_title} — 中文翻译", level=0)
 
                 for pn, t in translated_pages_sorted:
                     if not t.strip():
