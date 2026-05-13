@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
-    PDFOverlayWriter, load_glossary, translate_batch_concurrent
+    PDFOverlayWriter, load_glossary, translate_batch_concurrent,
+    set_document_base_layout
 )
-
 try:
     from docx import Document as DocxDocument
     HAS_DOCX = True
@@ -334,8 +334,11 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             else:
                 docx_path = output_base + ".docx"
                 doc = DocxDocument()
+                set_document_base_layout(doc)
+
                 pdf_title = Path(pdf_file.name).stem
-                doc.add_heading(f"{pdf_title} — 中文翻译", level=0)
+                title_para = doc.add_heading(pdf_title.upper(), level=1)
+                title_para.alignment = 0
 
                 for pn, t in translated_pages_sorted:
                     if not t.strip():

@@ -48,8 +48,11 @@ except ImportError:
 
 try:
     from docx import Document as DocxDocument
-    from docx.shared import Pt, Inches
+    from docx.shared import Pt, Inches, Mm, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.section import WD_SECTION
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
@@ -572,8 +575,92 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4):
         print()
 
     return results
+def set_section_columns(section, num=2, space_twips=720):
+    """
+    设置 Word 分栏。
+    space_twips=720 约等于 0.5 英寸，可按需要调小到 360。
+    """
+    sectPr = section._sectPr
+    cols = sectPr.xpath("./w:cols")
+    if cols:
+        cols = cols[0]
+    else:
+        cols = OxmlElement("w:cols")
+        sectPr.append(cols)
+
+    cols.set(qn("w:num"), str(num))
+    cols.set(qn("w:space"), str(space_twips))
 
 
+def set_document_base_layout(doc):
+    section = doc.sections[0]
+
+    # A4 页面
+    section.page_width = Mm(210)
+    section.page_height = Mm(297)
+
+    # 模组书常见窄边距
+    section.top_margin = Mm(18)
+    section.bottom_margin = Mm(16)
+    section.left_margin = Mm(17)
+    section.right_margin = Mm(17)
+
+    # 双栏
+    set_section_columns(section, num=2, space_twips=560)
+
+    styles = doc.styles
+
+    # 正文
+    normal = styles["Normal"]
+    normal.font.name = "宋体"
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    normal.font.size = Pt(9.5)
+    normal.paragraph_format.first_line_indent = Pt(18)
+    normal.paragraph_format.line_spacing = 1.0
+    normal.paragraph_format.space_after = Pt(4)
+
+    # 一级标题
+    h1 = styles["Heading 1"]
+    h1.font.name = "Arial"
+    h1._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    h1.font.size = Pt(20)
+    h1.font.bold = False
+    h1.font.color.rgb = RGBColor(0x0B, 0x3A, 0x75)
+    h1.paragraph_format.space_before = Pt(10)
+    h1.paragraph_format.space_after = Pt(8)
+    h1.paragraph_format.keep_with_next = True
+
+    # 二级标题
+    h2 = styles["Heading 2"]
+    h2.font.name = "Arial"
+    h2._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    h2.font.size = Pt(12)
+    h2.font.bold = True
+    h2.font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
+    h2.paragraph_format.space_before = Pt(8)
+    h2.paragraph_format.space_after = Pt(4)
+    h2.paragraph_format.keep_with_next = True
+
+    # 三级标题
+    h3 = styles["Heading 3"]
+    h3.font.name = "Arial"
+    h3._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    h3.font.size = Pt(10.5)
+    h3.font.bold = True
+    h3.font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
+    h3.paragraph_format.space_before = Pt(6)
+    h3.paragraph_format.space_after = Pt(3)
+    h3.paragraph_format.keep_with_next = True
+
+    # 项目符号
+    if "List Bullet" in styles:
+        bullet = styles["List Bullet"]
+        bullet.font.name = "宋体"
+        bullet._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        bullet.font.size = Pt(9.2)
+        bullet.paragraph_format.left_indent = Pt(14)
+        bullet.paragraph_format.first_line_indent = Pt(-8)
+        bullet.paragraph_format.space_after = Pt(2)
 # ============================================================
 # MAIN ORCHESTRATOR
 # ============================================================
@@ -739,41 +826,59 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             print(f"  生成 Word 文档: {docx_output}")
             try:
                 doc = DocxDocument()
-                # Title
+                set_document_base_layout(doc)
+
                 pdf_title = Path(pdf_path).stem
-                title_para = doc.add_heading(f"{pdf_title} — 中文翻译", level=0)
-                doc.add_paragraph("由 DeepSeek V4 AI 翻译，术语参照绿色三角洲官方译名表", style="Subtitle")
-                doc.add_page_break()
+
+                title_para = doc.add_heading(pdf_title.upper(), level=1)
+                title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+                subtitle = doc.add_paragraph("中文翻译")
+                subtitle.style = doc.styles["Normal"]
+                subtitle.paragraph_format.first_line_indent = Pt(0)
+                subtitle.runs[0].font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
+                subtitle.runs[0].font.bold = True
+
+                doc.add_paragraph()
 
                 for page_num, translation in translated_pages_sorted:
                     if not translation.strip():
                         continue
-                    # Parse markdown-ish translation into Word paragraphs
+
                     for line in translation.split("\n"):
                         line = line.strip()
                         if not line:
                             continue
-                        # Headings
-                        if line.startswith("### "):
-                            doc.add_heading(line[4:], level=3)
-                        elif line.startswith("## "):
-                            doc.add_heading(line[3:], level=2)
-                        elif line.startswith("# "):
-                            doc.add_heading(line[2:], level=1)
-                        elif line.startswith("- ") or line.startswith("• "):
-                            doc.add_paragraph(line[2:], style="List Bullet")
-                        elif line == "---":
+
+                        if line == "---" or line.startswith("<!--"):
                             continue
-                        elif line.startswith("<!--"):
-                            continue
+
+                        # 清理 Markdown 粗斜体
+                        clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+                        clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
+
+                        if clean_line.startswith("### "):
+                            p = doc.add_heading(clean_line[4:], level=3)
+                            p.paragraph_format.first_line_indent = Pt(0)
+
+                        elif clean_line.startswith("## "):
+                            p = doc.add_heading(clean_line[3:], level=2)
+                            p.paragraph_format.first_line_indent = Pt(0)
+
+                        elif clean_line.startswith("# "):
+                            p = doc.add_heading(clean_line[2:], level=1)
+                            p.paragraph_format.first_line_indent = Pt(0)
+
+                        elif clean_line.startswith("- ") or clean_line.startswith("• "):
+                            p = doc.add_paragraph(clean_line[2:], style="List Bullet")
+                            p.paragraph_format.first_line_indent = Pt(-8)
+
                         else:
-                            # Strip bold markers for Word
-                            clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-                            clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
-                            doc.add_paragraph(clean_line)
+                            p = doc.add_paragraph(clean_line)
 
                 doc.save(docx_output)
                 print("   ✅ Word 输出完成")
+
             except Exception as e:
                 print(f"   ❌ Word 输出失败: {e}")
 
