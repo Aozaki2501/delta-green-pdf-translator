@@ -4,19 +4,12 @@ Delta Green PDF Translator — Web UI (Streamlit)
 """
 import streamlit as st
 import os
-import re
-import time
 from pathlib import Path
 from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
     PDFOverlayWriter, load_glossary, translate_batch_concurrent,
-    set_document_base_layout
+    write_word_output, HAS_DOCX
 )
-try:
-    from docx import Document as DocxDocument
-    HAS_DOCX = True
-except ImportError:
-    HAS_DOCX = False
 
 # === UI THEME ===
 st.set_page_config(
@@ -250,38 +243,42 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         # Translate
         progress_bar = st.progress(0)
         status_text = st.empty()
-        translated_pages = []
-        prev_tail = ""
         pages_list = list(range(start_page, end_page))
         total_to_do = len(pages_list)
-
-        for idx, pn in enumerate(pages_list):
-            pct = (idx + 1) / total_to_do
-            progress_bar.progress(pct)
-            status_text.text(f"翻译中: 第 {pn+1} 页 [{pct*100:.0f}%] | ¥{stats.cost_yuan:.3f}")
-
-            if tracker.is_completed(pn):
-                t = tracker.get_translation(pn)
-                if t:
-                    translated_pages.append((pn, t))
-                    prev_tail = t[-300:]
-                continue
-
+        pages_data = []
+        prev_text = ""
+        for pn in pages_list:
             text = pages_text.get(pn, "")
-            if not text.strip():
-                tracker.mark_completed(pn, "")
-                continue
+            pages_data.append((pn, text, prev_text[-300:] if prev_text else ""))
+            if text.strip():
+                prev_text = text
 
-            translation = translator.translate_chunk(text, pn, prev_context=prev_tail)
-            if translation:
-                translated_pages.append((pn, translation))
-                tracker.mark_completed(pn, translation)
-                prev_tail = translation[-300:]
-            time.sleep(0.2)
+        def update_translation_progress(page_num, translation, completed_count, total_count):
+            pct = completed_count / total_count if total_count else 1.0
+            progress_bar.progress(min(pct, 1.0))
+            status_text.text(
+                f"翻译中: 已完成 {completed_count}/{total_count} 页 | "
+                f"最新第 {page_num + 1} 页 | ¥{stats.cost_yuan:.3f}"
+            )
+
+        if total_to_do:
+            status_text.text(f"翻译中: 已完成 0/{total_to_do} 页 | ¥{stats.cost_yuan:.3f}")
+            results = translate_batch_concurrent(
+                pages_data,
+                translator,
+                tracker,
+                max_workers=max(1, int(workers)),
+                progress_callback=update_translation_progress,
+            )
+        else:
+            results = {}
 
         progress_bar.progress(1.0)
         status_text.text("✓ 翻译完成!")
-        translated_pages_sorted = sorted(translated_pages, key=lambda x: x[0])
+        translated_pages_sorted = sorted(
+            [(pn, t) for pn, t in results.items() if t.strip()],
+            key=lambda x: x[0],
+        )
 
         # Stats
         col_a, col_b, col_c = st.columns(3)
@@ -338,37 +335,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                 st.warning("Word 输出需要 python-docx，请运行：pip install python-docx")
             else:
                 docx_path = output_base + ".docx"
-                doc = DocxDocument()
-                set_document_base_layout(doc)
-
-                pdf_title = Path(pdf_file.name).stem
-                title_para = doc.add_heading(pdf_title.upper(), level=1)
-                title_para.alignment = 0
-
-                for pn, t in translated_pages_sorted:
-                    if not t.strip():
-                        continue
-
-                    for line in t.split("\n"):
-                        line = line.strip()
-
-                        if not line or line == "---" or line.startswith("<!--"):
-                            continue
-
-                        if line.startswith("### "):
-                            doc.add_heading(line[4:], level=3)
-                        elif line.startswith("## "):
-                            doc.add_heading(line[3:], level=2)
-                        elif line.startswith("# "):
-                            doc.add_heading(line[2:], level=1)
-                        elif line.startswith("- ") or line.startswith("• "):
-                            doc.add_paragraph(line[2:], style="List Bullet")
-                        else:
-                            clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-                            clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
-                            doc.add_paragraph(clean_line)
-
-                doc.save(docx_path)
+                write_word_output(translated_pages_sorted, docx_path, Path(pdf_file.name).stem)
 
                 with open(docx_path, "rb") as f:
                     st.download_button(

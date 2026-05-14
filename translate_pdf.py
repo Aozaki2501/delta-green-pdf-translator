@@ -535,8 +535,16 @@ class PDFOverlayWriter:
 # BATCH CONCURRENT TRANSLATOR
 # ============================================================
 
-def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4):
+def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, progress_callback=None):
     results = {}
+    completed_count = 0
+    total_count = len(pages_data)
+
+    def report(page_num, translation):
+        nonlocal completed_count
+        completed_count += 1
+        if progress_callback:
+            progress_callback(page_num, translation or "", completed_count, total_count)
 
     def translate_one(page_num, text, prev_ctx):
         translation = translator.translate_chunk(text, page_num, prev_ctx)
@@ -551,20 +559,24 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4):
         group = pages_data[group_start:group_start + group_size]
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for page_num, text, _ in group:
+            for page_num, text, page_context in group:
                 if tracker.is_completed(page_num):
-                    results[page_num] = tracker.get_translation(page_num)
+                    translation = tracker.get_translation(page_num)
+                    results[page_num] = translation
+                    report(page_num, translation)
                     continue
                 if not text.strip():
                     tracker.mark_completed(page_num, "")
                     results[page_num] = ""
+                    report(page_num, "")
                     continue
-                future = executor.submit(translate_one, page_num, text, prev_context)
+                future = executor.submit(translate_one, page_num, text, prev_context or page_context)
                 futures[future] = page_num
 
             for future in as_completed(futures):
                 page_num, translation = future.result()
                 results[page_num] = translation or ""
+                report(page_num, translation)
                 print(f" p{page_num + 1} done", end="", flush=True)
 
         if group:
@@ -656,6 +668,56 @@ def set_document_base_layout(doc):
         bullet.paragraph_format.left_indent = Pt(14)
         bullet.paragraph_format.first_line_indent = Pt(-8)
         bullet.paragraph_format.space_after = Pt(2)
+
+
+def write_word_output(translated_pages, docx_output: str, title: str, subtitle: str = "\u4e2d\u6587\u7ffb\u8bd1"):
+    """Write translated Markdown-like page content to a Word document."""
+    if not HAS_DOCX:
+        raise RuntimeError("Word output requires python-docx")
+
+    doc = DocxDocument()
+    set_document_base_layout(doc)
+
+    title_para = doc.add_heading(title.upper(), level=1)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    if subtitle:
+        subtitle_para = doc.add_paragraph(subtitle)
+        subtitle_para.style = doc.styles["Normal"]
+        subtitle_para.paragraph_format.first_line_indent = Pt(0)
+        if subtitle_para.runs:
+            subtitle_para.runs[0].font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
+            subtitle_para.runs[0].font.bold = True
+        doc.add_paragraph()
+
+    for _, translation in translated_pages:
+        if not translation.strip():
+            continue
+
+        for line in translation.split("\n"):
+            line = line.strip()
+            if not line or line == "---" or line.startswith("<!--"):
+                continue
+
+            clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+            clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
+
+            if clean_line.startswith("### "):
+                p = doc.add_heading(clean_line[4:], level=3)
+                p.paragraph_format.first_line_indent = Pt(0)
+            elif clean_line.startswith("## "):
+                p = doc.add_heading(clean_line[3:], level=2)
+                p.paragraph_format.first_line_indent = Pt(0)
+            elif clean_line.startswith("# "):
+                p = doc.add_heading(clean_line[2:], level=1)
+                p.paragraph_format.first_line_indent = Pt(0)
+            elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
+                p = doc.add_paragraph(clean_line[2:], style="List Bullet")
+                p.paragraph_format.first_line_indent = Pt(-8)
+            else:
+                doc.add_paragraph(clean_line)
+
+    doc.save(docx_output)
 # ============================================================
 # MAIN ORCHESTRATOR
 # ============================================================
@@ -820,59 +882,8 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             docx_output = output_base + ".docx"
             print(f"  生成 Word 文档: {docx_output}")
             try:
-                doc = DocxDocument()
-                set_document_base_layout(doc)
-
-                pdf_title = Path(pdf_path).stem
-
-                title_para = doc.add_heading(pdf_title.upper(), level=1)
-                title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-                subtitle = doc.add_paragraph("中文翻译")
-                subtitle.style = doc.styles["Normal"]
-                subtitle.paragraph_format.first_line_indent = Pt(0)
-                subtitle.runs[0].font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
-                subtitle.runs[0].font.bold = True
-
-                doc.add_paragraph()
-
-                for page_num, translation in translated_pages_sorted:
-                    if not translation.strip():
-                        continue
-
-                    for line in translation.split("\n"):
-                        line = line.strip()
-                        if not line:
-                            continue
-
-                        if line == "---" or line.startswith("<!--"):
-                            continue
-
-                        # 清理 Markdown 粗斜体
-                        clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-                        clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
-
-                        if clean_line.startswith("### "):
-                            p = doc.add_heading(clean_line[4:], level=3)
-                            p.paragraph_format.first_line_indent = Pt(0)
-
-                        elif clean_line.startswith("## "):
-                            p = doc.add_heading(clean_line[3:], level=2)
-                            p.paragraph_format.first_line_indent = Pt(0)
-
-                        elif clean_line.startswith("# "):
-                            p = doc.add_heading(clean_line[2:], level=1)
-                            p.paragraph_format.first_line_indent = Pt(0)
-
-                        elif clean_line.startswith("- ") or clean_line.startswith("• "):
-                            p = doc.add_paragraph(clean_line[2:], style="List Bullet")
-                            p.paragraph_format.first_line_indent = Pt(-8)
-
-                        else:
-                            p = doc.add_paragraph(clean_line)
-
-                doc.save(docx_output)
-                print("   ✅ Word 输出完成")
+                write_word_output(translated_pages_sorted, docx_output, Path(pdf_path).stem)
+                print("   ✓ Word 输出完成")
 
             except Exception as e:
                 print(f"   ❌ Word 输出失败: {e}")
