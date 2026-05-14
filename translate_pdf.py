@@ -527,6 +527,121 @@ def parse_page_selection(selection: str, total_pages: int) -> set[int]:
     return pages
 
 
+def find_relevant_glossary_terms(text: str, glossary: dict) -> dict:
+    matches = []
+    for eng, chn in sorted(glossary.items(), key=lambda item: len(item[0]), reverse=True):
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9])" + re.escape(eng) + r"(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        for match in pattern.finditer(text):
+            matches.append((match.start(), match.end(), eng, chn))
+
+    selected = []
+    occupied_spans = []
+    for start, end, eng, chn in matches:
+        if any(start < occupied_end and end > occupied_start for occupied_start, occupied_end in occupied_spans):
+            continue
+        selected.append((eng, chn))
+        occupied_spans.append((start, end))
+
+    relevant = {}
+    for eng, chn in selected:
+        relevant[eng] = chn
+    return relevant
+
+
+def _find_unlisted_proper_nouns(text: str, glossary_hits: dict) -> list[str]:
+    known = {term.lower() for term in glossary_hits}
+    stopwords = {
+        "A", "An", "And", "Are", "As", "At", "Be", "But", "By", "For", "From", "He",
+        "Her", "His", "If", "In", "Into", "Is", "It", "Its", "Of", "On", "Or", "She",
+        "The", "Their", "They", "This", "To", "Was", "Were", "When", "With", "You",
+        "Chapter", "Page", "Table", "Figure",
+    }
+    candidates = {}
+    pattern = re.compile(r"\b(?:[A-Z][A-Za-z'’.-]+)(?:\s+(?:of|the|and|&|[A-Z][A-Za-z'’.-]+))*\b")
+    for match in pattern.finditer(text):
+        candidate = match.group(0).strip(" -.,:;!?()[]{}\"“”")
+        if len(candidate) < 3 or candidate in stopwords:
+            continue
+        if candidate.isupper() and len(candidate) <= 6:
+            continue
+        if candidate.lower() in known:
+            continue
+        candidates[candidate] = candidates.get(candidate, 0) + 1
+    return [
+        term for term, _ in sorted(candidates.items(), key=lambda item: (-item[1], item[0].lower()))[:20]
+    ]
+
+
+def build_glossary_report(pages_text: dict, glossary: dict, title: str = "") -> str:
+    lines = [
+        f"# {title} — 术语命中报告" if title else "# 术语命中报告",
+        "",
+        "本报告基于提取后的英文原文生成，用于检查每页实际命中的术语。",
+        "",
+    ]
+    if not glossary:
+        lines.append("未使用术语表。")
+        return "\n".join(lines)
+
+    summary = {}
+    page_reports = []
+    missing_candidates = {}
+
+    for page_num in sorted(pages_text):
+        text = pages_text.get(page_num, "")
+        hits = find_relevant_glossary_terms(text, glossary)
+        for eng, chn in hits.items():
+            summary.setdefault(eng, {"chinese": chn, "pages": set()})
+            summary[eng]["pages"].add(page_num + 1)
+        missing = _find_unlisted_proper_nouns(text, hits)
+        for term in missing:
+            missing_candidates.setdefault(term, set()).add(page_num + 1)
+        page_reports.append((page_num + 1, hits, missing))
+
+    lines.append("## 汇总")
+    lines.append("")
+    if summary:
+        for eng, info in sorted(summary.items(), key=lambda item: item[0].lower()):
+            pages = _format_page_ranges([p - 1 for p in info["pages"]])
+            lines.append(f"- `{eng}` -> `{info['chinese']}`；页：{pages}")
+    else:
+        lines.append("- 未命中任何术语。")
+
+    lines.append("")
+    lines.append("## 逐页命中")
+    lines.append("")
+    for page_num, hits, missing in page_reports:
+        lines.append(f"### 第 {page_num} 页")
+        if hits:
+            for eng, chn in sorted(hits.items(), key=lambda item: item[0].lower()):
+                lines.append(f"- `{eng}` -> `{chn}`")
+        else:
+            lines.append("- 无术语命中")
+        if missing:
+            lines.append(f"- 疑似未收录专名：{', '.join(missing[:10])}")
+        lines.append("")
+
+    lines.append("## 疑似未收录专名")
+    lines.append("")
+    if missing_candidates:
+        for term, pages in sorted(missing_candidates.items(), key=lambda item: item[0].lower())[:100]:
+            page_text = _format_page_ranges([p - 1 for p in pages])
+            lines.append(f"- `{term}`；页：{page_text}")
+    else:
+        lines.append("- 暂无。")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_glossary_report(pages_text: dict, glossary: dict, report_output: str, title: str = ""):
+    report = build_glossary_report(pages_text, glossary, title)
+    with open(report_output, "w", encoding="utf-8") as f:
+        f.write(report)
+
+
 # ============================================================
 # TRANSLATOR — DeepSeek V4 API with Context Window
 # ============================================================
@@ -572,27 +687,7 @@ Translation rules:
         return "\nGlossary (this section):\n" + "\n".join(glossary_lines)
 
     def _find_relevant_glossary_terms(self, text: str) -> dict:
-        matches = []
-        for eng, chn in sorted(self.glossary.items(), key=lambda item: len(item[0]), reverse=True):
-            pattern = re.compile(
-                r"(?<![A-Za-z0-9])" + re.escape(eng) + r"(?![A-Za-z0-9])",
-                re.IGNORECASE,
-            )
-            for match in pattern.finditer(text):
-                matches.append((match.start(), match.end(), eng, chn))
-
-        selected = []
-        occupied_spans = []
-        for start, end, eng, chn in matches:
-            if any(start < occupied_end and end > occupied_start for occupied_start, occupied_end in occupied_spans):
-                continue
-            selected.append((eng, chn))
-            occupied_spans.append((start, end))
-
-        relevant = {}
-        for eng, chn in selected:
-            relevant[eng] = chn
-        return relevant
+        return find_relevant_glossary_terms(text, self.glossary)
 
     def translate_chunk(self, text: str, page_num: int = None, prev_context: str = "") -> str:
         if not text.strip():
@@ -903,15 +998,17 @@ def _header_title(title: str) -> str:
     return clean[:32]
 
 
-def set_running_header_footer(doc, title: str):
-    right_title = _header_title(title)
+def set_running_header_footer(doc, title: str, header_left: str = "绿色三角洲",
+                              header_right: Optional[str] = None):
+    right_title = header_right.strip() if header_right else _header_title(title)
+    left_title = header_left.strip() if header_left else "绿色三角洲"
     for section in doc.sections:
         header_para = section.header.paragraphs[0]
         header_para.text = ""
         header_para.paragraph_format.tab_stops.add_tab_stop(Inches(7.1), WD_TAB_ALIGNMENT.RIGHT)
         header_para.paragraph_format.space_after = Pt(0)
         header_para.paragraph_format.line_spacing = 1.0
-        header_run = header_para.add_run(f"// 绿色三角洲 //\t// {right_title} //")
+        header_run = header_para.add_run(f"// {left_title} //\t// {right_title} //")
         header_run.font.name = "宋体"
         header_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
         header_run.font.size = Pt(10)
@@ -924,8 +1021,13 @@ def set_running_header_footer(doc, title: str):
         _add_page_number(footer_para)
 
 
-def set_document_base_layout(doc, columns=1):
+def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1.5,
+                             h1_size=None, h2_size=None, h3_size=None):
     set_section_page_layout(doc.sections[0], columns=columns)
+    body_font_size = float(body_font_size)
+    h1_size = float(h1_size) if h1_size else body_font_size + 16
+    h2_size = float(h2_size) if h2_size else body_font_size + 8
+    h3_size = float(h3_size) if h3_size else body_font_size + 4
 
     styles = doc.styles
 
@@ -933,15 +1035,15 @@ def set_document_base_layout(doc, columns=1):
     normal = styles["Normal"]
     normal.font.name = "宋体"
     normal._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-    normal.font.size = Pt(12)
-    normal.paragraph_format.first_line_indent = Pt(24)
-    normal.paragraph_format.line_spacing = 1.5
-    normal.paragraph_format.space_after = Pt(6)
+    normal.font.size = Pt(body_font_size)
+    normal.paragraph_format.first_line_indent = Pt(body_font_size * 2)
+    normal.paragraph_format.line_spacing = line_spacing
+    normal.paragraph_format.space_after = Pt(max(3, body_font_size / 2))
     # 一级标题
     h1 = styles["Heading 1"]
     h1.font.name = "黑体"
     h1._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h1.font.size = Pt(28)
+    h1.font.size = Pt(h1_size)
     h1.font.bold = False
     h1.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
     h1.paragraph_format.space_before = Pt(14)
@@ -952,7 +1054,7 @@ def set_document_base_layout(doc, columns=1):
     h2 = styles["Heading 2"]
     h2.font.name = "黑体"
     h2._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h2.font.size = Pt(20)
+    h2.font.size = Pt(h2_size)
     h2.font.bold = True
     h2.font.color.rgb = RGBColor(0xD8, 0x00, 0x00)
     h2.paragraph_format.space_before = Pt(12)
@@ -963,7 +1065,7 @@ def set_document_base_layout(doc, columns=1):
     h3 = styles["Heading 3"]
     h3.font.name = "黑体"
     h3._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h3.font.size = Pt(16)
+    h3.font.size = Pt(h3_size)
     h3.font.bold = True
     h3.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
     h3.paragraph_format.space_before = Pt(10)
@@ -975,10 +1077,10 @@ def set_document_base_layout(doc, columns=1):
         bullet = styles["List Bullet"]
         bullet.font.name = "宋体"
         bullet._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-        bullet.font.size = Pt(12)
+        bullet.font.size = Pt(body_font_size)
         bullet.paragraph_format.left_indent = Pt(22)
         bullet.paragraph_format.first_line_indent = Pt(-12)
-        bullet.paragraph_format.line_spacing = 1.5
+        bullet.paragraph_format.line_spacing = line_spacing
         bullet.paragraph_format.space_after = Pt(4)
 
 
@@ -1177,13 +1279,15 @@ def _write_word_block(doc, text: str):
 
 
 def write_word_output(translated_pages, docx_output: str, title: str, subtitle: str = "\u4e2d\u6587\u7ffb\u8bd1",
-                      min_chars=1000, max_chars=1500):
+                      min_chars=1000, max_chars=1500, body_font_size=12.0,
+                      line_spacing=1.5, columns=2, header_left="绿色三角洲",
+                      header_right=None):
     """Write translated Markdown-like page content to a Word document."""
     if not HAS_DOCX:
         raise RuntimeError("Word output requires python-docx")
 
     doc = DocxDocument()
-    set_document_base_layout(doc)
+    set_document_base_layout(doc, columns=1, body_font_size=body_font_size, line_spacing=line_spacing)
 
     title_para = doc.add_heading(title.upper(), level=1)
     title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -1198,8 +1302,8 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
         doc.add_paragraph()
 
     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-    set_section_page_layout(body_section, columns=2)
-    set_running_header_footer(doc, title)
+    set_section_page_layout(body_section, columns=columns)
+    set_running_header_footer(doc, title, header_left=header_left, header_right=header_right)
 
     reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
     for page_idx, blocks in enumerate(reading_pages):
@@ -1344,6 +1448,12 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         if output_base.endswith(ext):
             output_base = output_base[:-len(ext)]
             break
+
+    if glossary:
+        report_output = output_base + "_glossary_report.md"
+        print(f"  生成术语命中报告: {report_output}")
+        write_glossary_report(pages_text, glossary, report_output, Path(pdf_path).stem)
+        print("   ✓ 术语报告输出完成")
 
     # PDF output
     if output_format in ("pdf", "both", "all"):

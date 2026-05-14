@@ -12,7 +12,7 @@ from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
     PDFOverlayWriter, load_glossary, translate_batch_concurrent,
     write_markdown_output, write_word_output, HAS_DOCX,
-    build_progress_metadata, parse_page_selection
+    build_progress_metadata, parse_page_selection, write_glossary_report
 )
 
 
@@ -234,6 +234,16 @@ with st.sidebar:
     )
     show_extraction_preview = st.checkbox("显示提取预览", value=False)
     preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
+    open_output_when_done = st.checkbox("完成后打开 output 文件夹", value=False)
+
+    with st.expander("Word 版式", expanded=False):
+        word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
+        word_line_spacing = st.slider("正文行距", 1.0, 2.0, 1.5, 0.05)
+        word_columns = st.selectbox("正文分栏", [1, 2], index=1, format_func=lambda n: f"{n} 栏")
+        word_min_chars = st.number_input("阅读页最少字数", value=1000, min_value=300, max_value=3000, step=100)
+        word_max_chars = st.number_input("阅读页最多字数", value=1500, min_value=500, max_value=5000, step=100)
+        word_header_left = st.text_input("页眉左侧", value="绿色三角洲")
+        word_header_right = st.text_input("页眉右侧", value="", placeholder="留空则使用文件名")
 
 # === MAIN ===
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -323,6 +333,10 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             st.stop()
         if end_page <= start_page:
             st.error("结束页必须大于或等于起始页。")
+            extractor.close()
+            st.stop()
+        if "Word" in formats and word_max_chars < word_min_chars:
+            st.error("Word 阅读页最多字数必须大于或等于最少字数。")
             extractor.close()
             st.stop()
 
@@ -458,7 +472,17 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         col_b.metric("💰 费用", f"¥{stats.cost_yuan:.3f}")
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
-                # Output & Download
+        # Output & Download
+        if glossary:
+            report_path = make_output_path(output_base, "_glossary_report.md")
+            write_glossary_report(pages_text, glossary, report_path, Path(pdf_file.name).stem)
+            with open(report_path, "rb") as f:
+                st.download_button(
+                    "📥 下载术语命中报告",
+                    f,
+                    file_name=Path(report_path).name,
+                )
+
         if "Markdown" in formats:
             md_path = make_output_path(output_base, ".md")
             write_markdown_output(translated_pages_sorted, md_path, Path(pdf_file.name).stem, toc)
@@ -495,7 +519,18 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                 st.warning("Word 输出需要 python-docx，请运行：pip install python-docx")
             else:
                 docx_path = make_output_path(output_base, ".docx")
-                write_word_output(translated_pages_sorted, docx_path, Path(pdf_file.name).stem)
+                write_word_output(
+                    translated_pages_sorted,
+                    docx_path,
+                    Path(pdf_file.name).stem,
+                    min_chars=int(word_min_chars),
+                    max_chars=int(word_max_chars),
+                    body_font_size=float(word_body_font_size),
+                    line_spacing=float(word_line_spacing),
+                    columns=int(word_columns),
+                    header_left=word_header_left,
+                    header_right=word_header_right or None,
+                )
 
                 with open(docx_path, "rb") as f:
                     st.download_button(
@@ -503,5 +538,12 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                         f,
                         file_name=Path(docx_path).name,
                     )
+
+        if open_output_when_done:
+            try:
+                os.startfile(str(output_dir))
+                st.info(f"已打开输出文件夹：{output_dir}")
+            except Exception as e:
+                st.warning(f"无法自动打开输出文件夹：{e}")
 
         extractor.close()

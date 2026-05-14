@@ -55,7 +55,7 @@ Planned behavior:
 
 ### 4. Glossary Hit Report
 
-Status: `[ ]`
+Status: `[x]`
 
 Goal:
 - Explain which glossary terms were actually sent to the model for each page.
@@ -65,9 +65,13 @@ Ideas:
 - Show missing capitalized terms that may need glossary entries.
 - Detect possible conflicts or overlapping terms.
 
+Implemented:
+- Web and CLI generate `_glossary_report.md` when a glossary is active.
+- Report includes glossary hits by page, summary by term, and suspected unlisted proper nouns.
+
 ### 5. Word Export Controls
 
-Status: `[ ]`
+Status: `[x]`
 
 Goal:
 - Make Word layout adjustable without editing code.
@@ -78,6 +82,10 @@ Ideas:
 - Single/double column.
 - Reading page character range.
 - Running header text.
+
+Implemented:
+- Web controls body font size, line spacing, one/two columns, reading page character range, and running header text.
+- Defaults preserve the current proofreading-friendly layout.
 
 ### 6. Failed Page Management
 
