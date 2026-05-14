@@ -248,19 +248,30 @@ class PDFExtractor:
             lines.append(line_text.strip())
         return " ".join(lines)
 
-    def _is_header_footer(self, block, page_height, margin_ratio=0.06):
+    def _is_header_footer(self, block, page_height, margin_ratio=0.08):
         top_margin = page_height * margin_ratio
         bottom_margin = page_height * (1 - margin_ratio)
         block_y = block["bbox"][1]
         block_y_bottom = block["bbox"][3]
-        if block_y > bottom_margin:
-            text = self._extract_block_text(block)
-            if len(text.strip()) < 60:
-                return True
-        if block_y_bottom < top_margin:
-            text = self._extract_block_text(block)
-            if len(text.strip()) < 80:
-                return True
+        text = self._extract_block_text(block).strip()
+        if not text:
+            return True
+
+        compact = re.sub(r"\s+", " ", text)
+        normalized = re.sub(r"[^A-Z0-9 ]+", "", compact.upper()).strip()
+        in_top = block_y_bottom < top_margin
+        in_bottom = block_y > bottom_margin
+        in_margin = in_top or in_bottom
+
+        if re.fullmatch(r"\d{1,4}", compact):
+            return True
+
+        running_titles = ("DELTA GREEN", "PISCES", "THE MILLENNIUM")
+        if in_margin and any(title in normalized for title in running_titles):
+            return True
+
+        if in_margin and len(compact) <= 80:
+            return True
         return False
 
     def _clean_text(self, text):
@@ -344,8 +355,10 @@ Translation rules:
 2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
 3. Output in Markdown format with ## headings, - bullet lists, paragraph spacing.
 4. Professional, fluent Chinese. Maintain horror atmosphere. Precise rule descriptions.
-5. If OCR errors/garbled text exists, infer meaning from context. Mark unreadable as [damaged].
-6. If previous context is provided, ensure continuity. Do not re-translate previous content.
+5. Keep the Chinese translation concise. Do not expand, explain, embellish, or add information not present in the source.
+6. Do not translate page headers, footers, page numbers, or running titles such as DELTA GREEN, PISCES, and THE MILLENNIUM when they appear as standalone navigation text.
+7. If OCR errors/garbled text exists, infer meaning from context. Mark unreadable as [damaged].
+8. If previous context is provided, ensure continuity. Do not re-translate previous content.
 
 {glossary_section}"""
 
@@ -622,9 +635,9 @@ def set_document_base_layout(doc):
     # 正文
     normal = styles["Normal"]
     normal.font.name = "宋体"
-    normal.font.size = Pt(9.5)
-    normal.paragraph_format.first_line_indent = Pt(18)
-    normal.paragraph_format.line_spacing = 1.0
+    normal.font.size = Pt(9)
+    normal.paragraph_format.first_line_indent = Pt(12)
+    normal.paragraph_format.line_spacing = 1.02
     normal.paragraph_format.space_after = Pt(3)
     # 一级标题
     h1 = styles["Heading 1"]
@@ -641,7 +654,7 @@ def set_document_base_layout(doc):
     h2 = styles["Heading 2"]
     h2.font.name = "黑体"
     h2._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h2.font.size = Pt(12)
+    h2.font.size = Pt(14)
     h2.font.bold = True
     h2.font.color.rgb = RGBColor(0xD8, 0x00, 0x00)
     h2.paragraph_format.space_before = Pt(8)
@@ -650,11 +663,11 @@ def set_document_base_layout(doc):
 
     # 三级标题
     h3 = styles["Heading 3"]
-    h3.font.name = "Arial"
+    h3.font.name = "黑体"
     h3._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h3.font.size = Pt(10.5)
+    h3.font.size = Pt(11)
     h3.font.bold = True
-    h3.font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
+    h3.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
     h3.paragraph_format.space_before = Pt(6)
     h3.paragraph_format.space_after = Pt(3)
     h3.paragraph_format.keep_with_next = True
