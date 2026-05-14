@@ -2,13 +2,13 @@
 """
 DG TRPG PDF Translator — THE MILLENNIUM (v2.0)
 ===============================================
-Translates English PDF (dual-column TRPG layout) to Chinese Markdown/PDF
+Translates English PDF (dual-column TRPG layout) to Chinese Markdown/HTML/Word
 using DeepSeek V4 API with TRPG-specific terminology.
 
 v2.0 Features:
     - Context window: carries previous page context for cross-page coherence
     - Chapter detection: auto-detects headings by font size/bold for TOC generation
-    - Layout-preserving PDF output: overlays Chinese text on original PDF
+    - HTML output: browser-readable dual-column layout for review and print
     - Batch concurrency: translates multiple pages in parallel
     - Token cost tracking: real-time usage and cost display
     - Breakpoint resume
@@ -16,11 +16,12 @@ v2.0 Features:
 
 Usage:
     python translate_pdf.py input.pdf --api-key YOUR_KEY
-    python translate_pdf.py input.pdf --api-key YOUR_KEY --format pdf --workers 4
+    python translate_pdf.py input.pdf --api-key YOUR_KEY --format html --workers 4
 """
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -61,8 +62,8 @@ except ImportError:
 
 try:
     from docx import Document as DocxDocument
-    from docx.shared import Pt, Inches, Mm, RGBColor
-    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.enum.section import WD_SECTION
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
@@ -73,7 +74,7 @@ except ImportError:
 
 PROMPT_VERSION = "2026-05-14-concise-headings-v1"
 EXTRACTOR_VERSION = "2026-05-14-layout-aware-v4"
-SUPPORTED_OUTPUT_FORMATS = {"markdown", "pdf", "word", "both", "all"}
+SUPPORTED_OUTPUT_FORMATS = {"markdown", "html", "word", "both", "all"}
 TRANSLATION_FAILURE_PREFIX = "[Translation failed:"
 
 
@@ -266,11 +267,15 @@ class PDFExtractor:
         self.close()
         return False
 
-    def _sort_blocks_layout_aware(self, blocks, page_width):
+    def _sort_blocks_layout_aware(self, blocks, page_width, page_height=None):
         sorted_input = sorted(blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
         non_full_blocks = [
             b for b in sorted_input
-            if b.get("type") == 0 and (b["bbox"][2] - b["bbox"][0]) <= page_width * 0.6
+            if (
+                b.get("type") == 0
+                and (b["bbox"][2] - b["bbox"][0]) <= page_width * 0.6
+                and not self._is_title_card_block(b, page_width, page_height)
+            )
         ]
         left_count = sum(
             1 for b in non_full_blocks
@@ -298,9 +303,13 @@ class PDFExtractor:
             x0, _, x1, _ = block["bbox"]
             block_width = x1 - x0
             is_full_width = block_width > page_width * 0.6
+            is_title_card = self._is_title_card_block(block, page_width, page_height, median_size)
 
-            if is_full_width:
+            if is_full_width or is_title_card:
                 flush_columns()
+                if is_title_card:
+                    block = dict(block)
+                    block["_dg_title_card"] = True
                 output_blocks.append(block)
                 continue
 
@@ -371,6 +380,111 @@ class PDFExtractor:
             return 0
         return sum(sizes) / len(sizes)
 
+    def _block_fonts(self, block):
+        return {
+            span.get("font", "")
+            for line in block.get("lines", [])
+            for span in line.get("spans", [])
+            if span.get("font")
+        }
+
+    def _is_monospace_block(self, block):
+        fonts = self._block_fonts(block)
+        return any("VT323" in font or "Mono" in font or "Courier" in font for font in fonts)
+
+    def _line_words(self, line):
+        words = []
+        for span in line.get("spans", []):
+            text = span.get("text", "").strip()
+            if not text:
+                continue
+            x0, y0, x1, y1 = span.get("bbox", line.get("bbox", (0, 0, 0, 0)))
+            words.append({"text": text, "x": x0, "y": y0, "bbox": (x0, y0, x1, y1)})
+        return words
+
+    def _extract_monospace_lines(self, block):
+        lines = []
+        for line in block.get("lines", []):
+            words = self._line_words(line)
+            if not words:
+                continue
+            words.sort(key=lambda word: word["x"])
+            lines.append(words)
+        return lines
+
+    def _block_to_markdown_table(self, block):
+        return self._blocks_to_markdown_table([block])
+
+    def _blocks_to_markdown_table(self, blocks):
+        row_candidates = []
+        for block in blocks:
+            block_words = []
+            for words in self._extract_monospace_lines(block):
+                row_text = " ".join(word["text"] for word in words)
+                if re.fullmatch(r"[_+\-\s|]+", row_text):
+                    continue
+                block_words.extend(words)
+            if block_words:
+                row_candidates.append(sorted(block_words, key=lambda word: (word["y"], word["x"])))
+
+        if len(row_candidates) < 2:
+            return None
+
+        header_words = row_candidates[0]
+        header = [re.sub(r"^[| ]+|[| ]+$", "", word["text"]).strip() for word in header_words]
+        header = [cell for cell in header if cell]
+        if len(header) < 2:
+            return None
+
+        col_count = len(header)
+        col_positions = sorted(word["x"] for word in header_words[:col_count])
+        table_rows = []
+        for words in row_candidates[1:]:
+            cells = ["" for _ in range(col_count)]
+            for word in words:
+                idx = min(range(col_count), key=lambda i: abs(word["x"] - col_positions[i]))
+                clean_word = re.sub(r"^[| ]+|[| ]+$", "", word["text"]).strip()
+                if clean_word:
+                    cells[idx] = (cells[idx] + " " + clean_word).strip()
+            if any(cells):
+                table_rows.append(cells)
+
+        if not table_rows:
+            return None
+
+        markdown = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join("---" for _ in header) + " |",
+        ]
+        for cells in table_rows:
+            markdown.append("| " + " | ".join(cells) + " |")
+        return "\n".join(markdown)
+
+    def _is_table_block(self, block, page_width):
+        if not self._is_monospace_block(block):
+            return False
+        x0, _, x1, _ = block["bbox"]
+        if x1 - x0 < page_width * 0.55:
+            return False
+        text = self._extract_block_text(block)
+        return "|" in text or "CLUE" in text.upper() or re.search(r"_{8,}|\+[-_ ]+", text)
+
+    def _is_contents_block(self, block):
+        if not self._is_monospace_block(block):
+            return False
+        text = self._extract_block_text(block)
+        return bool(re.search(r"\bContents\b", text, re.IGNORECASE)) or (
+            text.count(".") >= 20 and bool(re.search(r"\.{4,}\s*\d{1,3}", text))
+        )
+
+    def _is_handout_block(self, block):
+        if not self._is_monospace_block(block):
+            return False
+        text = self._extract_block_text(block)
+        if not text:
+            return False
+        return bool(re.search(r"\b(SUBJECT|Records?|Stories?|Profile)\b", text, re.IGNORECASE))
+
     def _is_heading_block(self, block, median_size):
         text = self._extract_block_text(block).strip()
         if not text or len(text) > 90:
@@ -378,6 +492,23 @@ class PDFExtractor:
         if re.search(r"[.!?。！？]$", text):
             return False
         return self._block_avg_font_size(block) >= median_size * 1.25
+
+    def _is_title_card_block(self, block, page_width, page_height=None, median_size=None):
+        text = self._extract_block_text(block).strip()
+        text = re.sub(r"^#\s*", "", text).strip()
+        if not text or len(text) > 120:
+            return False
+        if re.search(r"[.!?。！？]$", text):
+            return False
+
+        x0, y0, x1, _ = block["bbox"]
+        center_x = (x0 + x1) / 2
+        page_center = page_width / 2
+        avg_size = self._block_avg_font_size(block)
+        size_floor = (median_size * 2.0) if median_size else 22
+        near_top = True if page_height is None else y0 < page_height * 0.22
+        centered = abs(center_x - page_center) <= page_width * 0.22
+        return near_top and centered and avg_size >= size_floor
 
     def _ends_like_complete_sentence(self, text):
         return bool(re.search(r"[.!?。！？”\"’')\]]\s*$", text.strip()))
@@ -466,7 +597,11 @@ class PDFExtractor:
             current = self._join_line_into_paragraph(current, text)
 
         flush()
-        return "\n\n".join(paragraphs)
+        text = "\n\n".join(paragraphs)
+        if block.get("_dg_title_card"):
+            title = re.sub(r"\s+", " ", text).strip()
+            return f"# {title}" if title else ""
+        return text
 
     def _is_header_footer(self, block, page_height, margin_ratio=0.08):
         top_margin = page_height * margin_ratio
@@ -494,6 +629,68 @@ class PDFExtractor:
             return True
         return False
 
+    def detect_page_layout(self, page_num: int) -> str:
+        """Return 'handout', 'single', or 'columns' for source page layout."""
+        page = self.doc[page_num]
+        page_width = page.rect.width
+        page_height = page.rect.height
+        page_dict = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
+        content_blocks = [
+            b for b in page_dict.get("blocks", [])
+            if b.get("type") == 0 and not self._is_header_footer(b, page_height)
+        ]
+        if not content_blocks:
+            return "columns"
+
+        if any(self._is_contents_block(block) for block in content_blocks):
+            return "toc"
+
+        handout_blocks = [
+            block for block in content_blocks
+            if self._is_handout_block(block)
+        ]
+        top_blocks = sorted(content_blocks, key=lambda block: (block["bbox"][1], block["bbox"][0]))
+        top_text = self._extract_block_text(top_blocks[0]) if top_blocks else ""
+        if len(handout_blocks) >= 3 or re.match(r"\s*Player Aid\b", top_text, re.IGNORECASE):
+            return "handout"
+
+        left_count = 0
+        right_count = 0
+        full_width_height = 0
+        total_height = 0
+
+        for block in content_blocks:
+            x0, y0, x1, y1 = block["bbox"]
+            width = x1 - x0
+            height = max(0, y1 - y0)
+            center = (x0 + x1) / 2
+            total_height += height
+
+            spans_most_page = (
+                width >= page_width * 0.72
+                and x0 <= page_width * 0.20
+                and x1 >= page_width * 0.80
+            )
+            if spans_most_page:
+                full_width_height += height
+                continue
+
+            if width <= page_width * 0.62:
+                if center < page_width / 2:
+                    left_count += 1
+                else:
+                    right_count += 1
+
+        has_two_column_signal = left_count >= 1 and right_count >= 1
+        full_width_ratio = full_width_height / max(total_height, 1)
+        if full_width_ratio >= 0.45:
+            return "single"
+        if has_two_column_signal:
+            return "columns"
+        if len(content_blocks) <= 3 and full_width_height > page_height * 0.18:
+            return "single"
+        return "columns"
+
     def _clean_text(self, text):
         text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)
         text = re.sub(r"  +", " ", text)
@@ -516,17 +713,58 @@ class PDFExtractor:
         ]
         if not content_blocks:
             return ""
-        sorted_blocks = self._sort_blocks_layout_aware(content_blocks, page_width)
+        if self.detect_page_layout(page_num) == "toc":
+            toc_text = self._extract_contents_page(content_blocks)
+            return self._clean_text(toc_text)
+        sorted_blocks = self._sort_blocks_layout_aware(content_blocks, page_width, page_height)
         paragraphs = []
         current_para = ""
+        current_is_title_card = False
 
-        for block in sorted_blocks:
-            text = self._extract_block_text(block).strip()
+        processed_blocks = []
+        idx = 0
+        while idx < len(sorted_blocks):
+            block = sorted_blocks[idx]
+            if self._is_table_block(block, page_width):
+                table_blocks = []
+                while idx < len(sorted_blocks) and self._is_monospace_block(sorted_blocks[idx]):
+                    table_blocks.append(sorted_blocks[idx])
+                    idx += 1
+                table_text = self._blocks_to_markdown_table(table_blocks)
+                if not table_text:
+                    table_text = "\n".join(self._extract_block_text(b).strip() for b in table_blocks if self._extract_block_text(b).strip())
+                processed_blocks.append({"text": table_text, "title_card": False})
+                continue
+
+            if self._is_handout_block(block):
+                text = self._extract_block_text(block).strip()
+                if text:
+                    text = "> " + text.replace("\n\n", "\n> ")
+                processed_blocks.append({"text": text, "title_card": False})
+                idx += 1
+                continue
+
+            processed_blocks.append({
+                "text": self._extract_block_text(block).strip(),
+                "title_card": bool(block.get("_dg_title_card")),
+            })
+            idx += 1
+
+        for item in processed_blocks:
+            text = item["text"].strip()
             if not text:
                 continue
+            is_title_card = item["title_card"]
 
             if not current_para:
                 current_para = text
+                current_is_title_card = is_title_card
+                continue
+
+            if current_is_title_card and is_title_card:
+                left = re.sub(r"^#\s*", "", current_para).strip()
+                right = re.sub(r"^#\s*", "", text).strip()
+                current_para = "# " + " ".join(part for part in (left, right) if part)
                 continue
 
             current_tail = current_para.rstrip()
@@ -539,15 +777,50 @@ class PDFExtractor:
                     current_para = current_tail[:-1].rstrip() + text
                 else:
                     current_para = current_tail + " " + text
+                current_is_title_card = current_is_title_card and is_title_card
             else:
                 paragraphs.append(current_para)
                 current_para = text
+                current_is_title_card = is_title_card
 
         if current_para:
             paragraphs.append(current_para)
 
         full_text = "\n\n".join(paragraphs)
         return self._clean_text(full_text)
+
+    def _extract_contents_page(self, content_blocks):
+        toc_blocks = [
+            block for block in content_blocks
+            if self._is_monospace_block(block)
+        ]
+        title_blocks = [block for block in toc_blocks if self._is_contents_block(block) and "Contents" in self._extract_block_text(block)]
+        body_blocks = [block for block in toc_blocks if block not in title_blocks]
+        body_blocks = sorted(body_blocks, key=lambda b: (b["bbox"][0], b["bbox"][1]))
+
+        parts = []
+        if title_blocks:
+            title = self._extract_block_text(sorted(title_blocks, key=lambda b: b["bbox"][1])[0])
+            title = re.sub(r"_+", "", title).strip()
+            if title:
+                parts.append(f"[[TOC]]\n# {title}")
+        else:
+            parts.append("[[TOC]]")
+
+        for block in body_blocks:
+            text = self._extract_contents_block_lines(block).strip()
+            if text:
+                parts.append("```toc\n" + text + "\n```")
+        return "\n\n".join(parts)
+
+    def _extract_contents_block_lines(self, block):
+        lines = []
+        for line in block.get("lines", []):
+            text = self._extract_line_text(line)
+            text = re.sub(r"\s+", " ", text).rstrip()
+            if text:
+                lines.append(text)
+        return "\n".join(lines)
 
     def finalize_chapters(self):
         self.chapter_detector.finalize()
@@ -779,6 +1052,7 @@ class Translator:
     SYSTEM_PROMPT = """You are a professional TRPG translator working on Delta Green sourcebooks.
 
 Translation rules:
+0. If the source starts with [[TOC]], preserve the table of contents structure. Do not translate entries; keep dotted leaders and page numbers.
 1. Follow the glossary strictly for proper nouns. If glossary entries overlap, the longest matching phrase wins.
 2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
 3. Output in Markdown format with ## headings, - bullet lists, paragraph spacing.
@@ -789,6 +1063,8 @@ Translation rules:
 8. If decorative title-card text, drop shadows, or stylized text is extracted twice, translate it only once.
 9. If OCR errors/garbled text exists, infer meaning from context. Mark unreadable as [damaged].
 10. If previous context is provided, ensure continuity. Do not re-translate previous content.
+11. Preserve Markdown tables as Markdown tables. Translate cell text but keep the same columns.
+12. Preserve blockquotes starting with > for handouts/player aids.
 
 {glossary_section}"""
 
@@ -1143,15 +1419,40 @@ def set_section_columns(section, num=2, space_twips=720):
     cols.set(qn("w:space"), str(space_twips))
 
 
+def set_cell_width(cell, width):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_w = tc_pr.first_child_found_in("w:tcW")
+    if tc_w is None:
+        tc_w = OxmlElement("w:tcW")
+        tc_pr.append(tc_w)
+    tc_w.set(qn("w:w"), str(int(width.inches * 1440)))
+    tc_w.set(qn("w:type"), "dxa")
+
+
+def remove_table_borders(table):
+    tbl_pr = table._tbl.tblPr
+    borders = tbl_pr.first_child_found_in("w:tblBorders")
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        tag = "w:" + edge
+        element = borders.find(qn(tag))
+        if element is None:
+            element = OxmlElement(tag)
+            borders.append(element)
+        element.set(qn("w:val"), "nil")
+
+
 def set_section_page_layout(section, columns=1):
     section.page_width = Inches(8.5)
     section.page_height = Inches(11)
 
-    section.top_margin = Inches(0.6)
+    section.top_margin = Inches(0.82)
     section.bottom_margin = Inches(0.6)
     section.left_margin = Inches(0.55)
     section.right_margin = Inches(0.55)
-    section.header_distance = Inches(0.3)
+    section.header_distance = Inches(0.22)
     section.footer_distance = Inches(0.25)
 
     set_section_columns(section, num=columns, space_twips=520)
@@ -1181,23 +1482,42 @@ def _header_title(title: str) -> str:
     return clean[:32]
 
 
+def clear_header_footer_part(part):
+    element = part._element
+    for child in list(element):
+        element.remove(child)
+
+
 def set_running_header_footer(doc, title: str, header_left: str = "绿色三角洲",
                               header_right: Optional[str] = None):
     right_title = header_right.strip() if header_right else _header_title(title)
     left_title = header_left.strip() if header_left else "绿色三角洲"
     for section in doc.sections:
-        header_para = section.header.paragraphs[0]
-        header_para.text = ""
-        header_para.paragraph_format.tab_stops.add_tab_stop(Inches(7.1), WD_TAB_ALIGNMENT.RIGHT)
-        header_para.paragraph_format.space_after = Pt(0)
-        header_para.paragraph_format.line_spacing = 1.0
-        header_run = header_para.add_run(f"// {left_title} //\t// {right_title} //")
-        header_run.font.name = "宋体"
-        header_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-        header_run.font.size = Pt(10)
+        section.header.is_linked_to_previous = False
+        section.footer.is_linked_to_previous = False
 
-        footer_para = section.footer.paragraphs[0]
-        footer_para.text = ""
+        clear_header_footer_part(section.header)
+
+        table = section.header.add_table(rows=1, cols=2, width=Inches(7.4))
+        table.autofit = False
+        remove_table_borders(table)
+        set_cell_width(table.cell(0, 0), Inches(3.2))
+        set_cell_width(table.cell(0, 1), Inches(4.2))
+
+        left_para = table.cell(0, 0).paragraphs[0]
+        right_para = table.cell(0, 1).paragraphs[0]
+        right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        for para, text in ((left_para, f"// {left_title} //"), (right_para, f"// {right_title} //")):
+            para.paragraph_format.space_before = Pt(0)
+            para.paragraph_format.space_after = Pt(0)
+            para.paragraph_format.line_spacing = 1.0
+            run = para.add_run(text)
+            run.font.name = "宋体"
+            run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+            run.font.size = Pt(9)
+
+        clear_header_footer_part(section.footer)
+        footer_para = section.footer.add_paragraph()
         footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         footer_para.paragraph_format.space_before = Pt(0)
         footer_para.paragraph_format.space_after = Pt(0)
@@ -1374,28 +1694,43 @@ def _format_page_ranges(page_nums):
     return ", ".join(ranges)
 
 
-def paginate_translated_blocks(translated_pages, min_chars=1000, max_chars=1500):
+def paginate_translated_blocks(translated_pages, min_chars=1000, max_chars=1500,
+                               page_layouts: Optional[dict] = None,
+                               split_on_layout=False):
     """Group translated Markdown blocks into reading pages without splitting blocks."""
     pages = []
     current = []
     current_len = 0
+    current_layout = None
 
     def flush():
-        nonlocal current, current_len
+        nonlocal current, current_len, current_layout
         if current:
-            pages.append(current)
+            pages.append({
+                "layout": current_layout or "columns",
+                "blocks": current,
+            })
             current = []
             current_len = 0
+            current_layout = None
 
     for block in _translation_blocks(translated_pages):
         block_len = _visible_text_length(block["text"])
         starts_heading = _is_markdown_heading(block["text"])
+        block_layout = "columns"
+        if page_layouts:
+            block_layout = page_layouts.get(block["source_page"], "columns")
+
+        if split_on_layout and current and block_layout != current_layout:
+            flush()
 
         if starts_heading and current and current_len >= min_chars:
             flush()
         elif current and current_len + block_len > max_chars and current_len >= min_chars:
             flush()
 
+        if current_layout is None:
+            current_layout = block_layout
         current.append(block)
         current_len += block_len
 
@@ -1414,13 +1749,393 @@ def write_markdown_output(translated_pages, md_output: str, title: str, toc: str
             f.write(toc)
             f.write("\n---\n\n")
 
-        for page_idx, blocks in enumerate(reading_pages, 1):
+        for page_idx, page in enumerate(reading_pages, 1):
+            blocks = page["blocks"]
             source_pages = _format_page_ranges([b["source_page"] for b in blocks])
             f.write(f"<!-- Reading Page {page_idx}; Source PDF Pages: {source_pages} -->\n\n")
             for block in blocks:
                 f.write(_format_markdown_block(block["text"]))
                 f.write("\n\n")
             f.write("---\n\n")
+
+
+def _html_inline(text: str) -> str:
+    text = html.escape(text.strip())
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
+    return text
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+
+def _html_table(lines: list[str]) -> str:
+    rows = []
+    for raw_line in lines:
+        cells = [cell.strip() for cell in raw_line.strip().strip("|").split("|")]
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return ""
+
+    header = rows[0]
+    body = rows[2:] if len(rows) > 1 and _is_markdown_table_separator(lines[1]) else rows[1:]
+    parts = ['<table class="aid-table">', "<thead><tr>"]
+    for cell in header:
+        parts.append(f"<th>{_html_inline(cell)}</th>")
+    parts.append("</tr></thead><tbody>")
+    for row in body:
+        parts.append("<tr>")
+        for idx in range(len(header)):
+            cell = row[idx] if idx < len(row) else ""
+            parts.append(f"<td>{_html_inline(cell)}</td>")
+        parts.append("</tr>")
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def _html_handout_card(lines: list[str]) -> str:
+    parts = ['<div class="handout-card">']
+    for idx, line in enumerate(lines):
+        clean = line.strip()
+        if not clean:
+            continue
+        if idx == 0 and len(re.sub(r"\s+", "", clean)) <= 80:
+            parts.append(f"<h3>{_html_inline(clean)}</h3>")
+        else:
+            parts.append(f"<p>{_html_inline(clean)}</p>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _html_block(text: str) -> str:
+    parts = []
+    lines = text.split("\n")
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        clean_line = line.strip()
+        idx += 1
+        if not clean_line or clean_line == "---" or clean_line.startswith("<!--"):
+            continue
+
+        if clean_line == "[[TOC]]":
+            continue
+
+        if clean_line.startswith("```toc"):
+            toc_lines = []
+            while idx < len(lines) and not lines[idx].strip().startswith("```"):
+                toc_lines.append(lines[idx].rstrip())
+                idx += 1
+            if idx < len(lines) and lines[idx].strip().startswith("```"):
+                idx += 1
+            parts.append('<pre class="toc-card">' + html.escape("\n".join(toc_lines)) + "</pre>")
+            continue
+
+        if clean_line.startswith("|"):
+            table_lines = [clean_line]
+            while idx < len(lines) and lines[idx].strip().startswith("|"):
+                table_lines.append(lines[idx].strip())
+                idx += 1
+            parts.append(_html_table(table_lines))
+            continue
+
+        if clean_line.startswith(">"):
+            quote_lines = [clean_line.lstrip(">").strip()]
+            while idx < len(lines) and lines[idx].strip().startswith(">"):
+                quote_lines.append(lines[idx].strip().lstrip(">").strip())
+                idx += 1
+            parts.append(_html_handout_card(quote_lines))
+            continue
+
+        if clean_line.startswith("### "):
+            parts.append(f"<h3>{_html_inline(clean_line[4:])}</h3>")
+        elif clean_line.startswith("## "):
+            parts.append(f"<h2>{_html_inline(clean_line[3:])}</h2>")
+        elif clean_line.startswith("# "):
+            parts.append(f"<h1>{_html_inline(clean_line[2:])}</h1>")
+        elif _is_plain_heading_line(clean_line):
+            parts.append(f"<h2>{_html_inline(clean_line)}</h2>")
+        elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
+            parts.append(f"<ul><li>{_html_inline(clean_line[2:])}</li></ul>")
+        else:
+            parts.append(f"<p>{_html_inline(clean_line)}</p>")
+    return "\n".join(parts)
+
+
+def write_html_output(translated_pages, html_output: str, title: str, subtitle: str = "中文翻译",
+                      min_chars=1200, max_chars=1800, columns=2,
+                      header_left="绿色三角洲", header_right=None,
+                      page_layouts: Optional[dict] = None):
+    """Write translated content as a printable dual-column HTML document."""
+    min_chars = int(min_chars)
+    max_chars = int(max_chars)
+    columns = int(columns)
+    if min_chars < 1 or max_chars < min_chars:
+        raise ValueError("HTML 阅读页字数范围无效")
+    if columns not in (1, 2):
+        raise ValueError("HTML 正文分栏只支持 1 或 2 栏")
+
+    ensure_output_parent(html_output)
+    right_title = html.escape((header_right or _header_title(title)).strip())
+    left_title = html.escape((header_left or "绿色三角洲").strip())
+    safe_title = html.escape(title)
+    safe_subtitle = html.escape(subtitle or "")
+    reading_pages = paginate_translated_blocks(
+        translated_pages,
+        min_chars,
+        max_chars,
+        page_layouts=page_layouts,
+        split_on_layout=True,
+    )
+
+    css = f"""
+    :root {{
+        color-scheme: light;
+        --paper: #f7f2e8;
+        --ink: #111111;
+        --red: #d80000;
+        --muted: #77716a;
+        --rule: #b9b0a5;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+        margin: 0;
+        background: #d8d2cc;
+        color: var(--ink);
+        font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
+        line-height: 1.72;
+    }}
+    .sheet {{
+        width: 8.5in;
+        min-height: 11in;
+        margin: 18px auto;
+        padding: 0.34in 0.48in 0.52in;
+        background:
+            radial-gradient(circle at 12% 18%, rgba(160, 132, 93, 0.11), transparent 22%),
+            radial-gradient(circle at 85% 70%, rgba(126, 96, 62, 0.08), transparent 24%),
+            var(--paper);
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+        break-after: page;
+        page-break-after: always;
+    }}
+    .running-head {{
+        display: flex;
+        justify-content: space-between;
+        gap: 2rem;
+        align-items: baseline;
+        margin-bottom: 0.28in;
+        padding-bottom: 0.08in;
+        border-bottom: 1px solid var(--rule);
+        color: var(--muted);
+        font: 10pt "Courier New", monospace;
+        letter-spacing: 0;
+    }}
+    .running-head span:last-child {{
+        text-align: right;
+    }}
+    .content {{
+        column-count: {columns};
+        column-gap: 0.52in;
+        font-size: 12pt;
+    }}
+    h1, h2, h3 {{
+        break-after: avoid;
+        page-break-after: avoid;
+        font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        line-height: 1.12;
+        letter-spacing: 0;
+    }}
+    h1 {{
+        column-span: all;
+        margin: 0 0 0.28in;
+        font-size: 26pt;
+        font-weight: 500;
+    }}
+    h2 {{
+        margin: 0.06in 0 0.18in;
+        color: var(--red);
+        font-size: 20pt;
+        font-weight: 700;
+    }}
+    h3 {{
+        margin: 0.16in 0 0.08in;
+        font-size: 14pt;
+        font-weight: 700;
+    }}
+    p {{
+        margin: 0 0 0.11in;
+        text-indent: 2em;
+    }}
+    h1 + p, h2 + p, h3 + p {{
+        text-indent: 0;
+    }}
+    ul {{
+        margin: 0 0 0.12in 1.2em;
+        padding: 0;
+    }}
+    li {{
+        margin-bottom: 0.04in;
+    }}
+    .aid-table {{
+        column-span: all;
+        width: 100%;
+        margin: 0.18in 0 0.24in;
+        border-collapse: collapse;
+        font-family: "Courier New", "VT323", monospace;
+        font-size: 9pt;
+        line-height: 1.35;
+        background: rgba(232, 226, 204, 0.58);
+    }}
+    .aid-table th,
+    .aid-table td {{
+        padding: 0.06in 0.08in;
+        border-top: 1px dashed #5f574f;
+        border-bottom: 1px dashed #5f574f;
+        vertical-align: top;
+    }}
+    .aid-table th {{
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-weight: 700;
+    }}
+    .handout .content {{
+        column-count: 1;
+        max-width: 7.25in;
+        margin: 0 auto;
+    }}
+    .handout-card {{
+        margin: 0.16in 0 0.26in;
+        padding: 0.16in 0.22in;
+        background: rgba(220, 236, 232, 0.76);
+        border: 1px solid rgba(130, 150, 144, 0.38);
+        box-shadow: 0 0.06in 0.12in rgba(0, 0, 0, 0.14);
+        font-family: "Courier New", "VT323", monospace;
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }}
+    .handout-card h3 {{
+        margin: 0 0 0.08in;
+        color: var(--ink);
+        font-family: "Courier New", "VT323", monospace;
+        font-size: 13pt;
+        text-transform: uppercase;
+    }}
+    .handout-card p {{
+        margin: 0 0 0.06in;
+        text-indent: 0;
+        font-size: 10.5pt;
+        line-height: 1.5;
+    }}
+    .toc .content {{
+        column-count: 2;
+        column-gap: 0.38in;
+        font-size: 10pt;
+    }}
+    .toc h1 {{
+        column-span: all;
+        margin-bottom: 0.18in;
+        color: var(--ink);
+        font-family: "Courier New", "VT323", monospace;
+        font-size: 24pt;
+    }}
+    .toc-card {{
+        margin: 0;
+        white-space: pre-wrap;
+        font-family: "Courier New", "VT323", monospace;
+        font-size: 8.7pt;
+        line-height: 1.22;
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }}
+    .source-pages {{
+        column-span: all;
+        margin-top: 0.24in;
+        color: var(--muted);
+        font: 8.5pt "Courier New", monospace;
+        text-align: right;
+    }}
+    .cover .content {{
+        column-count: 1;
+    }}
+    .sheet.single .content {{
+        column-count: 1;
+        max-width: 7.25in;
+        margin: 0 auto;
+        font-size: 12pt;
+        line-height: 1.74;
+    }}
+    .sheet.single h2 {{
+        margin-top: 0.08in;
+        padding-bottom: 0.05in;
+        border-bottom: 1px solid var(--rule);
+    }}
+    .sheet.single .source-pages {{
+        column-span: none;
+    }}
+    .cover-title {{
+        margin-top: 1.15in;
+        font: 32pt "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        letter-spacing: 0;
+    }}
+    .cover-subtitle {{
+        color: #2d73b9;
+        font: 14pt "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        text-indent: 0;
+    }}
+    @page {{
+        size: Letter;
+        margin: 0;
+    }}
+    @media print {{
+        body {{ background: white; }}
+        .sheet {{
+            margin: 0;
+            box-shadow: none;
+            width: 8.5in;
+            min-height: 11in;
+        }}
+    }}
+    """
+
+    chunks = [
+        "<!doctype html>",
+        '<html lang="zh-CN">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{safe_title} - 中文翻译</title>",
+        f"<style>{css}</style>",
+        "</head>",
+        "<body>",
+        '<section class="sheet cover">',
+        f'<header class="running-head"><span>// {left_title} //</span><span>// {right_title} //</span></header>',
+        '<main class="content">',
+        f'<h1 class="cover-title">{safe_title}</h1>',
+        f'<p class="cover-subtitle">{safe_subtitle}</p>' if safe_subtitle else "",
+        "</main>",
+        "</section>",
+    ]
+
+    for page_idx, page in enumerate(reading_pages, 1):
+        blocks = page["blocks"]
+        layout = page.get("layout", "columns")
+        source_pages = _format_page_ranges([b["source_page"] for b in blocks])
+        chunks.extend([
+            f'<section class="sheet {html.escape(layout)}">',
+            f'<header class="running-head"><span>// {left_title} //</span><span>// {right_title} //</span></header>',
+            '<main class="content">',
+        ])
+        for block in blocks:
+            chunks.append(_html_block(block["text"]))
+        chunks.append(f'<div class="source-pages">Reading Page {page_idx}; Source PDF Pages: {html.escape(source_pages)}</div>')
+        chunks.extend(["</main>", "</section>"])
+
+    chunks.extend(["</body>", "</html>", ""])
+    with open(html_output, "w", encoding="utf-8") as f:
+        f.write("\n".join(chunk for chunk in chunks if chunk != ""))
 
 
 def _format_markdown_block(text: str) -> str:
@@ -1504,7 +2219,8 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
     set_running_header_footer(doc, title, header_left=header_left, header_right=header_right)
 
     reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
-    for page_idx, blocks in enumerate(reading_pages):
+    for page_idx, page in enumerate(reading_pages):
+        blocks = page["blocks"]
         if hard_page_breaks and page_idx > 0:
             doc.add_page_break()
         for block in blocks:
@@ -1577,7 +2293,9 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
 
         print("Extracting text and analyzing chapters...")
         pages_text = {}
+        page_layouts = {}
         for page_num in range(start_page, end_page):
+            page_layouts[page_num] = extractor.detect_page_layout(page_num)
             text = extractor.extract_page(page_num)
             pages_text[page_num] = text
 
@@ -1672,19 +2390,20 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             write_glossary_report(pages_text, glossary, report_output, Path(pdf_path).stem)
             print("   ✓ 术语报告输出完成")
 
-        # PDF output
-        if output_format in ("pdf", "both", "all"):
-            pdf_output = output_base + ".pdf"
-            print(f"  生成保留排版 PDF: {pdf_output}")
+        # HTML output
+        if output_format in ("html", "both", "all"):
+            html_output = output_base + ".html"
+            print(f"  生成 HTML: {html_output}")
             try:
-                with PDFOverlayWriter(pdf_path, pdf_output) as writer:
-                    for page_num, translation in translated_pages_sorted:
-                        if not is_failed_translation(translation):
-                            writer.overlay_page(page_num, translation)
-                    writer.save()
-                print("   ✅ PDF 输出完成")
+                write_html_output(
+                    translated_pages_sorted,
+                    html_output,
+                    Path(pdf_path).stem,
+                    page_layouts=page_layouts,
+                )
+                print("   ✅ HTML 输出完成")
             except Exception as e:
-                print(f"   ❌ PDF 输出失败: {e}")
+                print(f"   ❌ HTML 输出失败: {e}")
 
         # Markdown output
         if output_format in ("markdown", "both", "all"):
@@ -1753,7 +2472,7 @@ def main():
   python translate_pdf.py --config config.json
 
   # 命令行参数
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format all --workers 4
+  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format html --workers 4
 
   # 指定术语表和范围
   python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx \
@@ -1771,8 +2490,8 @@ def main():
     parser.add_argument("--output", "-o", default=None, help="输出文件路径（不含扩展名）")
     parser.add_argument("--glossary", "-g", default=None, help="术语表文件路径（TSV 格式）")
     parser.add_argument("--model", default=None, help="模型名称（默认: deepseek-v4-pro）")
-    parser.add_argument("--format", "-f", choices=["markdown", "pdf", "word", "both", "all"],
-                        default=None, help="输出格式: markdown/pdf/word/both/all（默认: markdown）")
+    parser.add_argument("--format", "-f", choices=["markdown", "html", "word", "both", "all"],
+                        default=None, help="输出格式: markdown/html/word/both/all（默认: markdown）")
     parser.add_argument("--workers", "-w", type=int, default=None,
                         help="并发线程数（默认: 1，推荐: 4）")
     parser.add_argument("--start", type=int, default=None, help="起始页码（从0开始）")

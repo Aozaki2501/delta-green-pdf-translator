@@ -1,6 +1,6 @@
 # Delta Green PDF Translator
 
-一个面向 Delta Green / TRPG 英文 PDF 的中文翻译工具。它会从 PDF 中提取文本，结合术语表调用 DeepSeek API 翻译，并输出 Markdown、Word 或实验性的排版保留 PDF。
+一个面向 Delta Green / TRPG 英文 PDF 的中文翻译工具。它会从 PDF 中提取文本，结合术语表调用 DeepSeek API 翻译，并输出 Markdown、HTML 或 Word。
 
 项目提供两个入口：
 
@@ -18,8 +18,10 @@
 | 术语表 | 使用 `glossary.tsv` 强制统一专名翻译 |
 | 并发翻译 | Web 和 CLI 都支持多线程翻译 |
 | 断点续跑 | 自动保存 `{输出名}.progress.json`，中断后可继续 |
-| 多格式输出 | 支持 Markdown、Word `.docx`、实验性 PDF 覆写输出 |
+| 多格式输出 | 支持 Markdown、HTML 阅读版、Word `.docx` |
 | Token 统计 | 显示 API 调用、token 用量和预估费用 |
+
+HTML 输出会根据源 PDF 页面自动区分双栏页和横跨整页的单栏资料页；例如神祇资料卡、整页条目会独立用单栏排版。
 
 ## 环境要求
 
@@ -140,12 +142,12 @@ python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --start 0 --end 5
 | 参数 | 输出 |
 | --- | --- |
 | `markdown` | `.md` |
+| `html` | `.html`，双栏阅读版，可用浏览器预览或打印 |
 | `word` | `.docx` |
-| `pdf` | 在原 PDF 上覆盖写入中文，实验性功能 |
-| `both` | Markdown + PDF |
-| `all` | Markdown + PDF + Word |
+| `both` | Markdown + HTML |
+| `all` | Markdown + HTML + Word |
 
-建议校对和继续排版时优先使用 Word 或 Markdown。PDF 覆写适合快速预览，但复杂背景、图文混排和文字框空间不足时效果可能不稳定。
+建议校对和继续排版时优先使用 HTML、Word 或 Markdown。HTML 适合浏览器预览、打印和后续做版式还原。
 
 ## 术语表
 

@@ -11,8 +11,8 @@ import uuid
 from pathlib import Path
 from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
-    PDFOverlayWriter, load_glossary, translate_batch_concurrent,
-    write_markdown_output, write_word_output, HAS_DOCX,
+    load_glossary, translate_batch_concurrent,
+    write_markdown_output, write_html_output, write_word_output, HAS_DOCX,
     build_progress_metadata, parse_page_selection, write_glossary_report,
     normalize_page_range, is_failed_translation
 )
@@ -214,7 +214,7 @@ st.markdown("""
 <div class="hero">
     <div class="hero-title">Delta Green PDF Translator</div>
     <div class="hero-subtitle">
-        将英文 TRPG PDF 提取、翻译并输出为 Markdown、Word 或实验性排版 PDF。
+        将英文 TRPG PDF 提取、翻译并输出为 Markdown、HTML 或 Word。
         更适合先产出可校对译稿，再做人工排版。
     </div>
 </div>
@@ -228,8 +228,8 @@ with st.sidebar:
 
     formats = st.multiselect(
         "输出格式",
-        ["Markdown", "PDF", "Word"],
-        default=["Word"],
+        ["Markdown", "HTML", "Word"],
+        default=["HTML", "Word"],
     )
 
     display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
@@ -401,7 +401,9 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         # Extract
         st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
+        page_layouts = {}
         for pn in range(start_page, end_page):
+            page_layouts[pn] = extractor.detect_page_layout(pn)
             pages_text[pn] = extractor.extract_page(pn)
         extractor.finalize_chapters()
         toc = extractor.chapter_detector.get_toc_markdown()
@@ -518,23 +520,24 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     file_name=Path(md_path).name,
                 )
 
-        if "PDF" in formats:
-            pdf_out_path = make_output_path(output_base, ".pdf")
+        if "HTML" in formats:
+            html_path = make_output_path(output_base, ".html")
             try:
-                with PDFOverlayWriter(pdf_path, pdf_out_path) as writer:
-                    for pn, t in translated_pages_sorted:
-                        if t.strip() and not is_failed_translation(t):
-                            writer.overlay_page(pn, t)
-                    writer.save()
-
-                with open(pdf_out_path, "rb") as f:
+                write_html_output(
+                    translated_pages_sorted,
+                    html_path,
+                    pdf_stem,
+                    page_layouts=page_layouts,
+                )
+                with open(html_path, "rb") as f:
                     st.download_button(
-                        "📥 下载 PDF",
+                        "📥 下载 HTML",
                         f,
-                        file_name=Path(pdf_out_path).name,
+                        file_name=Path(html_path).name,
+                        mime="text/html",
                     )
             except Exception as e:
-                st.error(f"PDF 输出失败：{e}")
+                st.error(f"HTML 输出失败：{e}")
 
         if "Word" in formats:
             if not HAS_DOCX:
