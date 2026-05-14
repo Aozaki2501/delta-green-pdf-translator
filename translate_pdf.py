@@ -257,10 +257,18 @@ class PDFExtractor:
     def _extract_block_text(self, block):
         lines = []
         for line in block.get("lines", []):
-            line_text = ""
+            spans_text = []
+            last_span_norm = ""
             for span in line.get("spans", []):
-                line_text += span["text"]
-            lines.append(line_text.strip())
+                span_text = span["text"]
+                span_norm = re.sub(r"\s+", " ", span_text).strip().lower()
+                if span_norm and span_norm == last_span_norm:
+                    continue
+                spans_text.append(span_text)
+                last_span_norm = span_norm
+            line_text = "".join(spans_text).strip()
+            if line_text and (not lines or line_text != lines[-1]):
+                lines.append(line_text)
         return " ".join(lines)
 
     def _is_header_footer(self, block, page_height, margin_ratio=0.08):
@@ -367,7 +375,7 @@ def load_glossary(glossary_path: str) -> dict:
             if "\t" in line:
                 parts = line.split("\t", 1)
             else:
-                continue
+                parts = re.split(r"\s{2,}", line, maxsplit=1)
             if len(parts) == 2:
                 chinese = parts[0].strip()
                 english = parts[1].strip()
@@ -386,14 +394,16 @@ class Translator:
     SYSTEM_PROMPT = """You are a professional TRPG translator working on Delta Green sourcebooks.
 
 Translation rules:
-1. Follow the glossary strictly for proper nouns.
+1. Follow the glossary strictly for proper nouns. If glossary entries overlap, the longest matching phrase wins.
 2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
 3. Output in Markdown format with ## headings, - bullet lists, paragraph spacing.
 4. Professional, fluent Chinese. Maintain horror atmosphere. Precise rule descriptions.
 5. Keep the Chinese translation concise. Do not expand, explain, embellish, or add information not present in the source.
 6. Do not translate page headers, footers, page numbers, or running titles such as DELTA GREEN, PISCES, and THE MILLENNIUM when they appear as standalone navigation text.
-7. If OCR errors/garbled text exists, infer meaning from context. Mark unreadable as [damaged].
-8. If previous context is provided, ensure continuity. Do not re-translate previous content.
+7. Preserve section and subsection headings. Output article titles as ## headings and smaller section headings as ### headings.
+8. If decorative title-card text, drop shadows, or stylized text is extracted twice, translate it only once.
+9. If OCR errors/garbled text exists, infer meaning from context. Mark unreadable as [damaged].
+10. If previous context is provided, ensure continuity. Do not re-translate previous content.
 
 {glossary_section}"""
 
@@ -412,15 +422,34 @@ Translation rules:
     def _build_glossary_for_chunk(self, text: str) -> str:
         if not self.glossary:
             return ""
-        relevant = {}
-        text_lower = text.lower()
-        for eng, chn in self.glossary.items():
-            if eng.lower() in text_lower:
-                relevant[eng] = chn
+        relevant = self._find_relevant_glossary_terms(text)
         if not relevant:
             return ""
         glossary_lines = [f"   - {eng} -> {chn}" for eng, chn in relevant.items()]
         return "\nGlossary (this section):\n" + "\n".join(glossary_lines)
+
+    def _find_relevant_glossary_terms(self, text: str) -> dict:
+        matches = []
+        for eng, chn in sorted(self.glossary.items(), key=lambda item: len(item[0]), reverse=True):
+            pattern = re.compile(
+                r"(?<![A-Za-z0-9])" + re.escape(eng) + r"(?![A-Za-z0-9])",
+                re.IGNORECASE,
+            )
+            for match in pattern.finditer(text):
+                matches.append((match.start(), match.end(), eng, chn))
+
+        selected = []
+        occupied_spans = []
+        for start, end, eng, chn in matches:
+            if any(start < occupied_end and end > occupied_start for occupied_start, occupied_end in occupied_spans):
+                continue
+            selected.append((eng, chn))
+            occupied_spans.append((start, end))
+
+        relevant = {}
+        for eng, chn in selected:
+            relevant[eng] = chn
+        return relevant
 
     def translate_chunk(self, text: str, page_num: int = None, prev_context: str = "") -> str:
         if not text.strip():
@@ -652,9 +681,7 @@ def set_section_columns(section, num=2, space_twips=720):
     cols.set(qn("w:space"), str(space_twips))
 
 
-def set_document_base_layout(doc, columns=1):
-    section = doc.sections[0]
-
+def set_section_page_layout(section, columns=1):
     section.page_width = Inches(8.5)
     section.page_height = Inches(11)
 
@@ -664,6 +691,10 @@ def set_document_base_layout(doc, columns=1):
     section.right_margin = Inches(0.45)
 
     set_section_columns(section, num=columns, space_twips=620)
+
+
+def set_document_base_layout(doc, columns=1):
+    set_section_page_layout(doc.sections[0], columns=columns)
 
     styles = doc.styles
 
@@ -725,11 +756,59 @@ def _translation_blocks(translated_pages):
             continue
         chunks = re.split(r"\n\s*\n", translation)
         for chunk in chunks:
-            text = chunk.strip()
+            text = _clean_translated_block(chunk.strip())
             if not text or text == "---" or text.startswith("<!--"):
                 continue
             blocks.append({"source_page": page_num, "text": text})
     return blocks
+
+
+def _clean_translated_block(text: str) -> str:
+    lines = []
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = _clean_decorative_slash_line(line)
+        lines.append(line)
+
+    text = "\n".join(lines)
+    text = _dedupe_adjacent_repeated_units(text)
+    return text.strip()
+
+
+def _clean_decorative_slash_line(line: str) -> str:
+    if line.count("//") < 2:
+        return line
+
+    parts = [p.strip(" /") for p in line.split("//") if p.strip(" /")]
+    if not parts:
+        return line
+
+    unique_parts = []
+    for part in parts:
+        normalized = re.sub(r"\s+", "", part).lower()
+        if unique_parts and normalized == re.sub(r"\s+", "", unique_parts[-1]).lower():
+            continue
+        unique_parts.append(part)
+
+    if len(unique_parts) == len(parts):
+        return line
+    return "// " + " / ".join(unique_parts) + " //"
+
+
+def _dedupe_adjacent_repeated_units(text: str) -> str:
+    patterns = [
+        r"([“\"][^”\"\n]{2,120}[”\"])(?:\s*[，,、]?\s*\1)+",
+        r"(——[^—\n]{2,60})(?:\s+\1)+",
+        r"([^。！？!?\n]{2,120}[。！？!?])(?:\s*\1)+",
+    ]
+    previous = None
+    while previous != text:
+        previous = text
+        for pattern in patterns:
+            text = re.sub(pattern, r"\1", text)
+    return text
 
 
 def _visible_text_length(text: str) -> int:
@@ -744,6 +823,21 @@ def _visible_text_length(text: str) -> int:
 
 def _is_markdown_heading(text: str) -> bool:
     return bool(re.match(r"^#{1,6}\s+", text.strip()))
+
+
+def _is_plain_heading_line(text: str) -> bool:
+    clean = re.sub(r"\*\*(.+?)\*\*", r"\1", text.strip())
+    clean = re.sub(r"\*(.+?)\*", r"\1", clean)
+    if clean.startswith(("#", "-", "\u2022", "//", "——", "“", "\"")):
+        return False
+    visible = re.sub(r"\s+", "", clean)
+    if not (2 <= len(visible) <= 18):
+        return False
+    if re.search(r"[。！？!?；;：:，,、（）()《》\"“”]", clean):
+        return False
+    if re.search(r"\d", clean):
+        return False
+    return True
 
 
 def _format_page_ranges(page_nums):
@@ -805,9 +899,20 @@ def write_markdown_output(translated_pages, md_output: str, title: str, toc: str
             source_pages = _format_page_ranges([b["source_page"] for b in blocks])
             f.write(f"<!-- Reading Page {page_idx}; Source PDF Pages: {source_pages} -->\n\n")
             for block in blocks:
-                f.write(block["text"])
+                f.write(_format_markdown_block(block["text"]))
                 f.write("\n\n")
             f.write("---\n\n")
+
+
+def _format_markdown_block(text: str) -> str:
+    lines = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if _is_plain_heading_line(stripped):
+            lines.append(f"### {stripped}")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _write_word_block(doc, text: str):
@@ -827,6 +932,9 @@ def _write_word_block(doc, text: str):
             p.paragraph_format.first_line_indent = Pt(0)
         elif clean_line.startswith("# "):
             p = doc.add_heading(clean_line[2:], level=1)
+            p.paragraph_format.first_line_indent = Pt(0)
+        elif _is_plain_heading_line(clean_line):
+            p = doc.add_heading(clean_line, level=2)
             p.paragraph_format.first_line_indent = Pt(0)
         elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
             p = doc.add_paragraph(clean_line[2:], style="List Bullet")
@@ -855,6 +963,9 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
             subtitle_para.runs[0].font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
             subtitle_para.runs[0].font.bold = True
         doc.add_paragraph()
+
+    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+    set_section_page_layout(body_section, columns=2)
 
     reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
     for page_idx, blocks in enumerate(reading_pages):
