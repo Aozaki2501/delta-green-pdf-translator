@@ -207,37 +207,52 @@ class PDFExtractor:
         self.total_pages = len(self.doc)
         self.chapter_detector = ChapterDetector()
 
-    def _detect_columns(self, blocks, page_width):
-        if not blocks:
-            return None
-        x_midpoints = []
-        for b in blocks:
-            if b.get("type") == 0:
-                x_mid = (b["bbox"][0] + b["bbox"][2]) / 2
-                x_midpoints.append(x_mid)
-        if not x_midpoints:
-            return None
-        page_center = page_width / 2
-        left_count = sum(1 for x in x_midpoints if x < page_center * 0.85)
-        right_count = sum(1 for x in x_midpoints if x > page_center * 1.15)
-        if left_count >= 2 and right_count >= 2:
-            return page_center
-        return None
+    def _sort_blocks_layout_aware(self, blocks, page_width):
+        sorted_input = sorted(blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        non_full_blocks = [
+            b for b in sorted_input
+            if b.get("type") == 0 and (b["bbox"][2] - b["bbox"][0]) <= page_width * 0.6
+        ]
+        left_count = sum(
+            1 for b in non_full_blocks
+            if ((b["bbox"][0] + b["bbox"][2]) / 2) < page_width / 2
+        )
+        right_count = len(non_full_blocks) - left_count
+        if left_count < 2 or right_count < 2:
+            return sorted_input
 
-    def _sort_blocks_by_column(self, blocks, split_x):
+        output_blocks = []
         left_blocks = []
         right_blocks = []
-        for b in blocks:
-            if b.get("type") != 0:
+
+        def flush_columns():
+            nonlocal left_blocks, right_blocks
+            output_blocks.extend(sorted(left_blocks, key=lambda b: b["bbox"][1]))
+            output_blocks.extend(sorted(right_blocks, key=lambda b: b["bbox"][1]))
+            left_blocks = []
+            right_blocks = []
+
+        for block in sorted_input:
+            if block.get("type") != 0:
                 continue
-            block_center_x = (b["bbox"][0] + b["bbox"][2]) / 2
-            if block_center_x < split_x:
-                left_blocks.append(b)
+
+            x0, _, x1, _ = block["bbox"]
+            block_width = x1 - x0
+            is_full_width = block_width > page_width * 0.6
+
+            if is_full_width:
+                flush_columns()
+                output_blocks.append(block)
+                continue
+
+            block_center_x = (x0 + x1) / 2
+            if block_center_x < page_width / 2:
+                left_blocks.append(block)
             else:
-                right_blocks.append(b)
-        left_blocks.sort(key=lambda b: b["bbox"][1])
-        right_blocks.sort(key=lambda b: b["bbox"][1])
-        return left_blocks + right_blocks
+                right_blocks.append(block)
+
+        flush_columns()
+        return output_blocks
 
     def _extract_block_text(self, block):
         lines = []
@@ -296,16 +311,36 @@ class PDFExtractor:
         ]
         if not content_blocks:
             return ""
-        split_x = self._detect_columns(content_blocks, page_width)
-        if split_x:
-            sorted_blocks = self._sort_blocks_by_column(content_blocks, split_x)
-        else:
-            sorted_blocks = sorted(content_blocks, key=lambda b: b["bbox"][1])
+        sorted_blocks = self._sort_blocks_layout_aware(content_blocks, page_width)
         paragraphs = []
+        current_para = ""
+
         for block in sorted_blocks:
-            text = self._extract_block_text(block)
-            if text.strip():
-                paragraphs.append(text)
+            text = self._extract_block_text(block).strip()
+            if not text:
+                continue
+
+            if not current_para:
+                current_para = text
+                continue
+
+            current_tail = current_para.rstrip()
+            first_alpha = re.search(r"[A-Za-z]", text)
+            starts_lower = bool(first_alpha and first_alpha.group(0).islower())
+            joins_from_punctuation = current_tail.endswith((",", ":", ";", "—", "-"))
+
+            if joins_from_punctuation or starts_lower:
+                if current_tail.endswith("-"):
+                    current_para = current_tail[:-1].rstrip() + text
+                else:
+                    current_para = current_tail + " " + text
+            else:
+                paragraphs.append(current_para)
+                current_para = text
+
+        if current_para:
+            paragraphs.append(current_para)
+
         full_text = "\n\n".join(paragraphs)
         return self._clean_text(full_text)
 
@@ -617,7 +652,7 @@ def set_section_columns(section, num=2, space_twips=720):
     cols.set(qn("w:space"), str(space_twips))
 
 
-def set_document_base_layout(doc):
+def set_document_base_layout(doc, columns=1):
     section = doc.sections[0]
 
     section.page_width = Inches(8.5)
@@ -628,7 +663,7 @@ def set_document_base_layout(doc):
     section.left_margin = Inches(0.45)
     section.right_margin = Inches(0.45)
 
-    set_section_columns(section, num=2, space_twips=620)
+    set_section_columns(section, num=columns, space_twips=620)
 
     styles = doc.styles
 
@@ -683,7 +718,125 @@ def set_document_base_layout(doc):
         bullet.paragraph_format.space_after = Pt(2)
 
 
-def write_word_output(translated_pages, docx_output: str, title: str, subtitle: str = "\u4e2d\u6587\u7ffb\u8bd1"):
+def _translation_blocks(translated_pages):
+    blocks = []
+    for page_num, translation in translated_pages:
+        if not translation.strip():
+            continue
+        chunks = re.split(r"\n\s*\n", translation)
+        for chunk in chunks:
+            text = chunk.strip()
+            if not text or text == "---" or text.startswith("<!--"):
+                continue
+            blocks.append({"source_page": page_num, "text": text})
+    return blocks
+
+
+def _visible_text_length(text: str) -> int:
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"\s+", "", text)
+    return len(text)
+
+
+def _is_markdown_heading(text: str) -> bool:
+    return bool(re.match(r"^#{1,6}\s+", text.strip()))
+
+
+def _format_page_ranges(page_nums):
+    nums = sorted({p + 1 for p in page_nums})
+    if not nums:
+        return ""
+    ranges = []
+    start = prev = nums[0]
+    for num in nums[1:]:
+        if num == prev + 1:
+            prev = num
+            continue
+        ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+        start = prev = num
+    ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+    return ", ".join(ranges)
+
+
+def paginate_translated_blocks(translated_pages, min_chars=1000, max_chars=1500):
+    """Group translated Markdown blocks into reading pages without splitting blocks."""
+    pages = []
+    current = []
+    current_len = 0
+
+    def flush():
+        nonlocal current, current_len
+        if current:
+            pages.append(current)
+            current = []
+            current_len = 0
+
+    for block in _translation_blocks(translated_pages):
+        block_len = _visible_text_length(block["text"])
+        starts_heading = _is_markdown_heading(block["text"])
+
+        if starts_heading and current and current_len >= min_chars:
+            flush()
+        elif current and current_len + block_len > max_chars and current_len >= min_chars:
+            flush()
+
+        current.append(block)
+        current_len += block_len
+
+    flush()
+    return pages
+
+
+def write_markdown_output(translated_pages, md_output: str, title: str, toc: str = "",
+                          min_chars=1000, max_chars=1500):
+    reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
+    with open(md_output, "w", encoding="utf-8") as f:
+        f.write(f"# {title} — 中文翻译\n\n---\n\n")
+
+        if toc:
+            f.write(toc)
+            f.write("\n---\n\n")
+
+        for page_idx, blocks in enumerate(reading_pages, 1):
+            source_pages = _format_page_ranges([b["source_page"] for b in blocks])
+            f.write(f"<!-- Reading Page {page_idx}; Source PDF Pages: {source_pages} -->\n\n")
+            for block in blocks:
+                f.write(block["text"])
+                f.write("\n\n")
+            f.write("---\n\n")
+
+
+def _write_word_block(doc, text: str):
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or line == "---" or line.startswith("<!--"):
+            continue
+
+        clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
+
+        if clean_line.startswith("### "):
+            p = doc.add_heading(clean_line[4:], level=3)
+            p.paragraph_format.first_line_indent = Pt(0)
+        elif clean_line.startswith("## "):
+            p = doc.add_heading(clean_line[3:], level=2)
+            p.paragraph_format.first_line_indent = Pt(0)
+        elif clean_line.startswith("# "):
+            p = doc.add_heading(clean_line[2:], level=1)
+            p.paragraph_format.first_line_indent = Pt(0)
+        elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
+            p = doc.add_paragraph(clean_line[2:], style="List Bullet")
+            p.paragraph_format.first_line_indent = Pt(-8)
+        else:
+            doc.add_paragraph(clean_line)
+
+
+def write_word_output(translated_pages, docx_output: str, title: str, subtitle: str = "\u4e2d\u6587\u7ffb\u8bd1",
+                      min_chars=1000, max_chars=1500):
     """Write translated Markdown-like page content to a Word document."""
     if not HAS_DOCX:
         raise RuntimeError("Word output requires python-docx")
@@ -703,32 +856,12 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
             subtitle_para.runs[0].font.bold = True
         doc.add_paragraph()
 
-    for _, translation in translated_pages:
-        if not translation.strip():
-            continue
-
-        for line in translation.split("\n"):
-            line = line.strip()
-            if not line or line == "---" or line.startswith("<!--"):
-                continue
-
-            clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-            clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
-
-            if clean_line.startswith("### "):
-                p = doc.add_heading(clean_line[4:], level=3)
-                p.paragraph_format.first_line_indent = Pt(0)
-            elif clean_line.startswith("## "):
-                p = doc.add_heading(clean_line[3:], level=2)
-                p.paragraph_format.first_line_indent = Pt(0)
-            elif clean_line.startswith("# "):
-                p = doc.add_heading(clean_line[2:], level=1)
-                p.paragraph_format.first_line_indent = Pt(0)
-            elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
-                p = doc.add_paragraph(clean_line[2:], style="List Bullet")
-                p.paragraph_format.first_line_indent = Pt(-8)
-            else:
-                doc.add_paragraph(clean_line)
+    reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
+    for page_idx, blocks in enumerate(reading_pages):
+        if page_idx > 0:
+            doc.add_page_break()
+        for block in blocks:
+            _write_word_block(doc, block["text"])
 
     doc.save(docx_output)
 # ============================================================
@@ -871,20 +1004,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
     if output_format in ("markdown", "both", "all"):
         md_output = output_base + ".md"
         print(f"  生成 Markdown: {md_output}")
-        pdf_title = Path(pdf_path).stem
-        with open(md_output, "w", encoding="utf-8") as f:
-            f.write(f"# {pdf_title} — 中文翻译\n\n")
-            f.write("> 由 DeepSeek V4 AI 翻译，术语参照绿色三角洲官方译名表\n\n")
-            f.write("---\n\n")
-            if toc:
-                f.write(toc)
-                f.write("\n---\n\n")
-            for page_num, translation in translated_pages_sorted:
-                if translation.strip():
-                    f.write(f'<a id="page-{page_num + 1}"></a>\n\n')
-                    f.write(f"<!-- Page {page_num + 1} -->\n\n")
-                    f.write(translation)
-                    f.write("\n\n---\n\n")
+        write_markdown_output(translated_pages_sorted, md_output, Path(pdf_path).stem, toc)
         print("   ✅ Markdown 输出完成")
 
     # Word output

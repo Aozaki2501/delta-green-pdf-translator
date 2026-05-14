@@ -4,12 +4,40 @@ Delta Green PDF Translator — Web UI (Streamlit)
 """
 import streamlit as st
 import os
+import time
+import uuid
 from pathlib import Path
 from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
     PDFOverlayWriter, load_glossary, translate_batch_concurrent,
-    write_word_output, HAS_DOCX
+    write_markdown_output, write_word_output, HAS_DOCX
 )
+
+
+APP_DIR = Path(__file__).resolve().parent
+DEFAULT_GLOSSARY_PATH = APP_DIR / "glossary.tsv"
+
+
+def make_output_path(output_base, extension):
+    """Return a non-overwriting output path for Web downloads."""
+    path = output_base + extension
+    if not os.path.exists(path):
+        return path
+    return f"{output_base}_{uuid.uuid4().hex[:8]}{extension}"
+
+
+def format_duration(seconds):
+    if seconds is None:
+        return "估算中"
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
 
 # === UI THEME ===
 st.set_page_config(
@@ -182,13 +210,19 @@ with st.sidebar:
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
 st.subheader("输入文件")
-st.caption("上传原始 PDF。术语表为可选 TSV / TXT / CSV 文件。")
+st.caption("上传原始 PDF。默认使用项目内 glossary.tsv；如需替换，可上传自定义 TSV / TXT / CSV。")
 
 col1, col2 = st.columns([1.2, 1])
 with col1:
     pdf_file = st.file_uploader("PDF 文件", type=["pdf"], label_visibility="collapsed")
 with col2:
-    glossary_file = st.file_uploader("术语表，可选", type=["tsv", "txt", "csv"], label_visibility="collapsed")
+    glossary_file = st.file_uploader("自定义术语表，可选", type=["tsv", "txt", "csv"], label_visibility="collapsed")
+    if glossary_file:
+        st.caption(f"将使用上传术语表：{glossary_file.name}")
+    elif DEFAULT_GLOSSARY_PATH.exists():
+        st.caption("将使用默认术语表：glossary.tsv")
+    else:
+        st.caption("未找到默认术语表；可上传自定义术语表。")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -205,13 +239,15 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         os.makedirs(output_dir, exist_ok=True)
 
         # Save uploaded files to uploads/
-        pdf_path = os.path.join(upload_dir, pdf_file.name)
+        pdf_upload_name = f"_upload_{Path(pdf_file.name).stem}_{uuid.uuid4().hex[:8]}{Path(pdf_file.name).suffix}"
+        pdf_path = os.path.join(upload_dir, pdf_upload_name)
         with open(pdf_path, "wb") as f:
             f.write(pdf_file.read())
 
-        glossary_path = None
+        glossary_path = str(DEFAULT_GLOSSARY_PATH) if DEFAULT_GLOSSARY_PATH.exists() else None
         if glossary_file:
-            glossary_path = os.path.join(upload_dir, glossary_file.name)
+            glossary_upload_name = f"_upload_{Path(glossary_file.name).stem}_{uuid.uuid4().hex[:8]}{Path(glossary_file.name).suffix}"
+            glossary_path = os.path.join(upload_dir, glossary_upload_name)
             with open(glossary_path, "wb") as f:
                 f.write(glossary_file.read())
 
@@ -226,6 +262,11 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             end_page = total
 
         glossary = load_glossary(glossary_path) if glossary_path else {}
+        if glossary_path:
+            glossary_source = Path(glossary_path).name
+            st.info(f"📚 术语表: {glossary_source} ({len(glossary)} 条)")
+        else:
+            st.warning("未使用术语表。")
         translator = Translator(api_key=api_key, model=model, stats=stats)
         translator.set_glossary(glossary)
 
@@ -241,8 +282,15 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         toc = extractor.chapter_detector.get_toc_markdown()
 
         # Translate
+        st.subheader("翻译进度")
         progress_bar = st.progress(0)
         status_text = st.empty()
+        metric_cols = st.columns(5)
+        progress_metric = metric_cols[0].empty()
+        elapsed_metric = metric_cols[1].empty()
+        eta_metric = metric_cols[2].empty()
+        speed_metric = metric_cols[3].empty()
+        cost_metric = metric_cols[4].empty()
         pages_list = list(range(start_page, end_page))
         total_to_do = len(pages_list)
         pages_data = []
@@ -253,16 +301,45 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             if text.strip():
                 prev_text = text
 
-        def update_translation_progress(page_num, translation, completed_count, total_count):
+        translation_started_at = time.time()
+
+        def set_progress(value, text):
+            try:
+                progress_bar.progress(value, text=text)
+            except TypeError:
+                progress_bar.progress(value)
+
+        def render_progress(completed_count, total_count, latest_page=None):
             pct = completed_count / total_count if total_count else 1.0
-            progress_bar.progress(min(pct, 1.0))
-            status_text.text(
-                f"翻译中: 已完成 {completed_count}/{total_count} 页 | "
-                f"最新第 {page_num + 1} 页 | ¥{stats.cost_yuan:.3f}"
+            elapsed = time.time() - translation_started_at
+            avg_seconds = elapsed / completed_count if completed_count else None
+            remaining_seconds = (
+                avg_seconds * (total_count - completed_count)
+                if avg_seconds is not None else None
             )
+            speed = 60 / avg_seconds if avg_seconds else None
+            latest_text = f" | 最新第 {latest_page + 1} 页" if latest_page is not None else ""
+            progress_text = (
+                f"{completed_count}/{total_count} 页 ({pct * 100:.0f}%)"
+                f" | 已用 {format_duration(elapsed)}"
+                f" | 剩余 {format_duration(remaining_seconds)}"
+            )
+            set_progress(min(pct, 1.0), progress_text)
+            status_text.text(
+                f"翻译中: 已完成 {completed_count}/{total_count} 页{latest_text} | "
+                f"费用 ¥{stats.cost_yuan:.3f}"
+            )
+            progress_metric.metric("进度", f"{completed_count}/{total_count}")
+            elapsed_metric.metric("已用时", format_duration(elapsed))
+            eta_metric.metric("预计剩余", format_duration(remaining_seconds))
+            speed_metric.metric("速度", f"{speed:.1f} 页/分钟" if speed else "估算中")
+            cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}")
+
+        def update_translation_progress(page_num, translation, completed_count, total_count):
+            render_progress(completed_count, total_count, page_num)
 
         if total_to_do:
-            status_text.text(f"翻译中: 已完成 0/{total_to_do} 页 | ¥{stats.cost_yuan:.3f}")
+            render_progress(0, total_to_do)
             results = translate_batch_concurrent(
                 pages_data,
                 translator,
@@ -273,8 +350,8 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         else:
             results = {}
 
-        progress_bar.progress(1.0)
-        status_text.text("✓ 翻译完成!")
+        render_progress(total_to_do, total_to_do)
+        status_text.text(f"✓ 翻译完成! 总用时 {format_duration(time.time() - translation_started_at)}")
         translated_pages_sorted = sorted(
             [(pn, t) for pn, t in results.items() if t.strip()],
             key=lambda x: x[0],
@@ -288,30 +365,18 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
 
                 # Output & Download
         if "Markdown" in formats:
-            md_path = output_base + ".md"
-            pdf_title = Path(pdf_file.name).stem
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(f"# {pdf_title} — 中文翻译\n\n---\n\n")
-
-                if toc:
-                    f.write(toc)
-                    f.write("\n---\n\n")
-
-                for pn, t in translated_pages_sorted:
-                    if t.strip():
-                        f.write(f"<!-- Page {pn + 1} -->\n\n")
-                        f.write(t)
-                        f.write("\n\n---\n\n")
+            md_path = make_output_path(output_base, ".md")
+            write_markdown_output(translated_pages_sorted, md_path, Path(pdf_file.name).stem, toc)
 
             with open(md_path, "rb") as f:
                 st.download_button(
                     "📥 下载 Markdown",
                     f,
-                    file_name=f"{Path(pdf_file.name).stem}_cn.md",
+                    file_name=Path(md_path).name,
                 )
 
         if "PDF" in formats:
-            pdf_out_path = output_base + ".pdf"
+            pdf_out_path = make_output_path(output_base, ".pdf")
             try:
                 writer = PDFOverlayWriter(pdf_path, pdf_out_path)
 
@@ -325,7 +390,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     st.download_button(
                         "📥 下载 PDF",
                         f,
-                        file_name=f"{Path(pdf_file.name).stem}_cn.pdf",
+                        file_name=Path(pdf_out_path).name,
                     )
             except Exception as e:
                 st.error(f"PDF 输出失败：{e}")
@@ -334,14 +399,14 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             if not HAS_DOCX:
                 st.warning("Word 输出需要 python-docx，请运行：pip install python-docx")
             else:
-                docx_path = output_base + ".docx"
+                docx_path = make_output_path(output_base, ".docx")
                 write_word_output(translated_pages_sorted, docx_path, Path(pdf_file.name).stem)
 
                 with open(docx_path, "rb") as f:
                     st.download_button(
                         "📥 下载 Word",
                         f,
-                        file_name=f"{Path(pdf_file.name).stem}_cn.docx",
+                        file_name=Path(docx_path).name,
                     )
 
         extractor.close()
