@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -49,13 +50,17 @@ except ImportError:
 try:
     from docx import Document as DocxDocument
     from docx.shared import Pt, Inches, Mm, RGBColor
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
     from docx.enum.section import WD_SECTION
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
+
+
+PROMPT_VERSION = "2026-05-14-concise-headings-v1"
+EXTRACTOR_VERSION = "2026-05-14-layout-aware-v3"
 
 
 # ============================================================
@@ -224,11 +229,11 @@ class PDFExtractor:
         output_blocks = []
         left_blocks = []
         right_blocks = []
+        median_size = self._median_font_size(sorted_input)
 
         def flush_columns():
             nonlocal left_blocks, right_blocks
-            output_blocks.extend(sorted(left_blocks, key=lambda b: b["bbox"][1]))
-            output_blocks.extend(sorted(right_blocks, key=lambda b: b["bbox"][1]))
+            output_blocks.extend(self._merge_columns_for_reading(left_blocks, right_blocks, median_size))
             left_blocks = []
             right_blocks = []
 
@@ -253,6 +258,79 @@ class PDFExtractor:
 
         flush_columns()
         return output_blocks
+
+    def _merge_columns_for_reading(self, left_blocks, right_blocks, median_size):
+        left_sorted = sorted(left_blocks, key=lambda b: b["bbox"][1])
+        right_sorted = sorted(right_blocks, key=lambda b: b["bbox"][1])
+        if not left_sorted or not right_sorted:
+            return left_sorted + right_sorted
+
+        merged = []
+        right_idx = 0
+
+        for idx, left_block in enumerate(left_sorted):
+            merged.append(left_block)
+            next_left = left_sorted[idx + 1] if idx + 1 < len(left_sorted) else None
+            if not next_left:
+                continue
+
+            if not self._is_heading_block(next_left, median_size):
+                continue
+            if self._ends_like_complete_sentence(self._extract_block_text(left_block)):
+                continue
+
+            heading_y = next_left["bbox"][1]
+            while right_idx < len(right_sorted):
+                right_block = right_sorted[right_idx]
+                if right_block["bbox"][1] >= heading_y:
+                    break
+                right_text = self._extract_block_text(right_block)
+                if not self._starts_with_lowercase(right_text):
+                    break
+                merged.append(right_block)
+                right_idx += 1
+
+        merged.extend(right_sorted[right_idx:])
+        return merged
+
+    def _median_font_size(self, blocks):
+        sizes = []
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    size = span.get("size")
+                    if size:
+                        sizes.append(size)
+        if not sizes:
+            return 10
+        sizes.sort()
+        return sizes[len(sizes) // 2]
+
+    def _block_avg_font_size(self, block):
+        sizes = [
+            span.get("size", 0)
+            for line in block.get("lines", [])
+            for span in line.get("spans", [])
+            if span.get("size")
+        ]
+        if not sizes:
+            return 0
+        return sum(sizes) / len(sizes)
+
+    def _is_heading_block(self, block, median_size):
+        text = self._extract_block_text(block).strip()
+        if not text or len(text) > 90:
+            return False
+        if re.search(r"[.!?。！？]$", text):
+            return False
+        return self._block_avg_font_size(block) >= median_size * 1.25
+
+    def _ends_like_complete_sentence(self, text):
+        return bool(re.search(r"[.!?。！？”\"’')\]]\s*$", text.strip()))
+
+    def _starts_with_lowercase(self, text):
+        match = re.search(r"[A-Za-z]", text.strip())
+        return bool(match and match.group(0).islower())
 
     def _extract_block_text(self, block):
         lines = []
@@ -384,6 +462,71 @@ def load_glossary(glossary_path: str) -> dict:
     return glossary
 
 
+def file_sha256(path: str) -> str:
+    if not path or not os.path.exists(path):
+        return ""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_progress_metadata(pdf_path: str, glossary_path: Optional[str], model: str,
+                            start_page: int, end_page: int | None) -> dict:
+    return {
+        "schema": 1,
+        "pdf_sha256": file_sha256(pdf_path),
+        "glossary_sha256": file_sha256(glossary_path) if glossary_path else "",
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+        "extractor_version": EXTRACTOR_VERSION,
+        "start_page": start_page,
+        "end_page": end_page,
+    }
+
+
+def compare_progress_metadata(expected: dict, actual: dict) -> list[str]:
+    if not expected:
+        return []
+    if not actual:
+        return ["进度文件缺少版本指纹"]
+
+    mismatches = []
+    for key, expected_value in expected.items():
+        actual_value = actual.get(key)
+        if actual_value != expected_value:
+            mismatches.append(f"{key}: {actual_value!r} -> {expected_value!r}")
+    return mismatches
+
+
+def parse_page_selection(selection: str, total_pages: int) -> set[int]:
+    """Parse 1-based page specs such as '8, 12-15' into zero-based page indexes."""
+    pages = set()
+    if not selection or not selection.strip():
+        return pages
+
+    for raw_part in re.split(r"[,\s，、]+", selection.strip()):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if start > end:
+                start, end = end, start
+            page_numbers = range(start, end + 1)
+        else:
+            page_numbers = [int(part)]
+
+        for page_number in page_numbers:
+            if page_number < 1 or page_number > total_pages:
+                raise ValueError(f"页码 {page_number} 超出范围 1-{total_pages}")
+            pages.add(page_number - 1)
+    return pages
+
+
 # ============================================================
 # TRANSLATOR — DeepSeek V4 API with Context Window
 # ============================================================
@@ -501,8 +644,14 @@ Translation rules:
 # ============================================================
 
 class ProgressTracker:
-    def __init__(self, progress_file: str):
+    def __init__(self, progress_file: str, expected_metadata: Optional[dict] = None,
+                 reuse_mismatched: bool = False):
         self.progress_file = progress_file
+        self.expected_metadata = expected_metadata or {}
+        self.reuse_mismatched = reuse_mismatched
+        self.metadata = dict(self.expected_metadata)
+        self.metadata_mismatches: list[str] = []
+        self.ignored_existing_progress = False
         self.completed_pages = set()
         self.translations = {}
         self._lock = threading.Lock()
@@ -513,6 +662,20 @@ class ProgressTracker:
             try:
                 with open(self.progress_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                loaded_metadata = data.get("metadata", {})
+                self.metadata_mismatches = compare_progress_metadata(
+                    self.expected_metadata,
+                    loaded_metadata,
+                )
+                if self.metadata_mismatches and not self.reuse_mismatched:
+                    self.ignored_existing_progress = True
+                    self.completed_pages = set()
+                    self.translations = {}
+                    self.metadata = dict(self.expected_metadata)
+                    print("Progress metadata mismatch, ignoring cached translations")
+                    return
+
+                self.metadata = loaded_metadata or dict(self.expected_metadata)
                 self.completed_pages = set(data.get("completed_pages", []))
                 self.translations = data.get("translations", {})
                 print(f"Loaded progress: {len(self.completed_pages)} pages done")
@@ -521,7 +684,11 @@ class ProgressTracker:
 
     def save(self):
         with self._lock:
-            data = {"completed_pages": sorted(self.completed_pages), "translations": self.translations}
+            data = {
+                "metadata": self.metadata,
+                "completed_pages": sorted(self.completed_pages),
+                "translations": self.translations,
+            }
             with open(self.progress_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -533,6 +700,23 @@ class ProgressTracker:
             self.completed_pages.add(page_num)
             self.translations[str(page_num)] = translation
         self.save()
+
+    def clear_pages(self, page_nums) -> int:
+        cleared = 0
+        with self._lock:
+            for page_num in page_nums:
+                page_cleared = False
+                if page_num in self.completed_pages:
+                    self.completed_pages.remove(page_num)
+                    page_cleared = True
+                if str(page_num) in self.translations:
+                    self.translations.pop(str(page_num), None)
+                    page_cleared = True
+                if page_cleared:
+                    cleared += 1
+        if cleared:
+            self.save()
+        return cleared
 
     def get_translation(self, page_num: int) -> str:
         return self.translations.get(str(page_num), "")
@@ -685,12 +869,59 @@ def set_section_page_layout(section, columns=1):
     section.page_width = Inches(8.5)
     section.page_height = Inches(11)
 
-    section.top_margin = Inches(0.55)
-    section.bottom_margin = Inches(0.55)
-    section.left_margin = Inches(0.45)
-    section.right_margin = Inches(0.45)
+    section.top_margin = Inches(0.6)
+    section.bottom_margin = Inches(0.6)
+    section.left_margin = Inches(0.55)
+    section.right_margin = Inches(0.55)
+    section.header_distance = Inches(0.3)
+    section.footer_distance = Inches(0.25)
 
-    set_section_columns(section, num=columns, space_twips=620)
+    set_section_columns(section, num=columns, space_twips=520)
+
+
+def _add_page_number(paragraph):
+    run = paragraph.add_run()
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = "PAGE"
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    run._r.append(fld_begin)
+    run._r.append(instr)
+    run._r.append(fld_end)
+    run.font.name = "宋体"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    run.font.size = Pt(9)
+
+
+def _header_title(title: str) -> str:
+    clean = re.sub(r"[_]+", " ", title).strip()
+    if " - " in clean:
+        clean = clean.split(" - ", 1)[1].strip()
+    return clean[:32]
+
+
+def set_running_header_footer(doc, title: str):
+    right_title = _header_title(title)
+    for section in doc.sections:
+        header_para = section.header.paragraphs[0]
+        header_para.text = ""
+        header_para.paragraph_format.tab_stops.add_tab_stop(Inches(7.1), WD_TAB_ALIGNMENT.RIGHT)
+        header_para.paragraph_format.space_after = Pt(0)
+        header_para.paragraph_format.line_spacing = 1.0
+        header_run = header_para.add_run(f"// 绿色三角洲 //\t// {right_title} //")
+        header_run.font.name = "宋体"
+        header_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        header_run.font.size = Pt(10)
+
+        footer_para = section.footer.paragraphs[0]
+        footer_para.text = ""
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        footer_para.paragraph_format.space_before = Pt(0)
+        footer_para.paragraph_format.space_after = Pt(0)
+        _add_page_number(footer_para)
 
 
 def set_document_base_layout(doc, columns=1):
@@ -701,41 +932,42 @@ def set_document_base_layout(doc, columns=1):
     # 正文
     normal = styles["Normal"]
     normal.font.name = "宋体"
-    normal.font.size = Pt(9)
-    normal.paragraph_format.first_line_indent = Pt(12)
-    normal.paragraph_format.line_spacing = 1.02
-    normal.paragraph_format.space_after = Pt(3)
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    normal.font.size = Pt(12)
+    normal.paragraph_format.first_line_indent = Pt(24)
+    normal.paragraph_format.line_spacing = 1.5
+    normal.paragraph_format.space_after = Pt(6)
     # 一级标题
     h1 = styles["Heading 1"]
     h1.font.name = "黑体"
     h1._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h1.font.size = Pt(18)
+    h1.font.size = Pt(28)
     h1.font.bold = False
     h1.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
-    h1.paragraph_format.space_before = Pt(10)
-    h1.paragraph_format.space_after = Pt(8)
+    h1.paragraph_format.space_before = Pt(14)
+    h1.paragraph_format.space_after = Pt(12)
     h1.paragraph_format.keep_with_next = True
 
     # 二级标题
     h2 = styles["Heading 2"]
     h2.font.name = "黑体"
     h2._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h2.font.size = Pt(14)
+    h2.font.size = Pt(20)
     h2.font.bold = True
     h2.font.color.rgb = RGBColor(0xD8, 0x00, 0x00)
-    h2.paragraph_format.space_before = Pt(8)
-    h2.paragraph_format.space_after = Pt(4)
+    h2.paragraph_format.space_before = Pt(12)
+    h2.paragraph_format.space_after = Pt(6)
     h2.paragraph_format.keep_with_next = True
 
     # 三级标题
     h3 = styles["Heading 3"]
     h3.font.name = "黑体"
     h3._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
-    h3.font.size = Pt(11)
+    h3.font.size = Pt(16)
     h3.font.bold = True
     h3.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
-    h3.paragraph_format.space_before = Pt(6)
-    h3.paragraph_format.space_after = Pt(3)
+    h3.paragraph_format.space_before = Pt(10)
+    h3.paragraph_format.space_after = Pt(5)
     h3.paragraph_format.keep_with_next = True
 
     # 项目符号
@@ -743,10 +975,11 @@ def set_document_base_layout(doc, columns=1):
         bullet = styles["List Bullet"]
         bullet.font.name = "宋体"
         bullet._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-        bullet.font.size = Pt(9.2)
-        bullet.paragraph_format.left_indent = Pt(14)
-        bullet.paragraph_format.first_line_indent = Pt(-8)
-        bullet.paragraph_format.space_after = Pt(2)
+        bullet.font.size = Pt(12)
+        bullet.paragraph_format.left_indent = Pt(22)
+        bullet.paragraph_format.first_line_indent = Pt(-12)
+        bullet.paragraph_format.line_spacing = 1.5
+        bullet.paragraph_format.space_after = Pt(4)
 
 
 def _translation_blocks(translated_pages):
@@ -966,6 +1199,7 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
 
     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
     set_section_page_layout(body_section, columns=2)
+    set_running_header_footer(doc, title)
 
     reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
     for page_idx, blocks in enumerate(reading_pages):
@@ -1014,7 +1248,20 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
     print()
 
     progress_file = output_path + ".progress.json"
-    tracker = ProgressTracker(progress_file)
+    progress_metadata = build_progress_metadata(
+        pdf_path=pdf_path,
+        glossary_path=glossary_path,
+        model=model,
+        start_page=start_page,
+        end_page=end_page,
+    )
+    tracker = ProgressTracker(progress_file, expected_metadata=progress_metadata)
+    if tracker.metadata_mismatches:
+        print("⚠️  进度文件与当前设置不一致。")
+        for mismatch in tracker.metadata_mismatches[:5]:
+            print(f"   - {mismatch}")
+        if tracker.ignored_existing_progress:
+            print("   已保留文件但本次不复用旧译文。")
     print()
 
     print("Extracting text and analyzing chapters...")

@@ -3,6 +3,7 @@
 Delta Green PDF Translator — Web UI (Streamlit)
 """
 import streamlit as st
+import hashlib
 import os
 import time
 import uuid
@@ -10,7 +11,8 @@ from pathlib import Path
 from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
     PDFOverlayWriter, load_glossary, translate_batch_concurrent,
-    write_markdown_output, write_word_output, HAS_DOCX
+    write_markdown_output, write_word_output, HAS_DOCX,
+    build_progress_metadata, parse_page_selection
 )
 
 
@@ -37,6 +39,25 @@ def format_duration(seconds):
     if minutes:
         return f"{minutes}m {sec}s"
     return f"{sec}s"
+
+
+def ensure_dir(path: Path):
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def uploaded_file_digest(uploaded_file) -> str:
+    return hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+
+
+def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
+    upload_dir = APP_DIR / "uploads"
+    ensure_dir(upload_dir)
+    digest = uploaded_file_digest(uploaded_file)[:12]
+    target = upload_dir / f"_preview_{Path(uploaded_file.name).stem}_{digest}{Path(uploaded_file.name).suffix}"
+    if not target.exists():
+        with open(target, "wb") as f:
+            f.write(uploaded_file.getvalue())
+    return target
 
 
 # === UI THEME ===
@@ -203,8 +224,16 @@ with st.sidebar:
         default=["Word"],
     )
 
-    start_page = st.number_input("起始页", value=0, min_value=0)
-    end_page_str = st.text_input("结束页", value="", placeholder="留空表示全部")
+    display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
+    end_page_str = st.text_input("结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
+    retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
+    reuse_mismatched_progress = st.checkbox(
+        "允许复用设置不匹配的旧进度",
+        value=False,
+        help="默认不复用不同 PDF、术语表、模型或提取器版本生成的旧译文。",
+    )
+    show_extraction_preview = st.checkbox("显示提取预览", value=False)
+    preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
 
 # === MAIN ===
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -226,6 +255,32 @@ with col2:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
+if pdf_file and show_extraction_preview:
+    preview_path = save_uploaded_pdf_for_preview(pdf_file)
+    preview_extractor = None
+    try:
+        preview_extractor = PDFExtractor(str(preview_path))
+        total_preview_pages = preview_extractor.total_pages
+        preview_index = min(max(int(preview_page) - 1, 0), total_preview_pages - 1)
+        preview_text = preview_extractor.extract_page(preview_index)
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("提取预览 / 诊断")
+        st.caption(
+            f"PDF 共 {total_preview_pages} 页；当前预览第 {preview_index + 1} 页。"
+            "这里只展示提取和排序后的文本，不会调用翻译 API。"
+        )
+        if preview_text.strip():
+            st.text_area("提取文本", preview_text, height=420)
+        else:
+            st.warning("这一页没有提取到正文文本。可能是图片页、扫描页，或文本被页眉页脚过滤规则排除了。")
+        st.markdown("</div>", unsafe_allow_html=True)
+    except Exception as e:
+        st.warning(f"提取预览失败：{e}")
+    finally:
+        if preview_extractor:
+            preview_extractor.close()
+
 if st.button("🔺 开始翻译", type="primary", use_container_width=True):
     if not pdf_file:
         st.error("✗ 请上传 PDF 文件")
@@ -233,26 +288,28 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         st.error("✗ 请输入 API Key")
     else:
         # Create organized directories
-        upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
-        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-        os.makedirs(upload_dir, exist_ok=True)
-        os.makedirs(output_dir, exist_ok=True)
+        upload_dir = APP_DIR / "uploads"
+        output_dir = APP_DIR / "output"
+        ensure_dir(upload_dir)
+        ensure_dir(output_dir)
 
         # Save uploaded files to uploads/
         pdf_upload_name = f"_upload_{Path(pdf_file.name).stem}_{uuid.uuid4().hex[:8]}{Path(pdf_file.name).suffix}"
-        pdf_path = os.path.join(upload_dir, pdf_upload_name)
+        pdf_path = str(upload_dir / pdf_upload_name)
         with open(pdf_path, "wb") as f:
-            f.write(pdf_file.read())
+            f.write(pdf_file.getvalue())
 
         glossary_path = str(DEFAULT_GLOSSARY_PATH) if DEFAULT_GLOSSARY_PATH.exists() else None
         if glossary_file:
             glossary_upload_name = f"_upload_{Path(glossary_file.name).stem}_{uuid.uuid4().hex[:8]}{Path(glossary_file.name).suffix}"
-            glossary_path = os.path.join(upload_dir, glossary_upload_name)
+            glossary_path = str(upload_dir / glossary_upload_name)
             with open(glossary_path, "wb") as f:
-                f.write(glossary_file.read())
+                f.write(glossary_file.getvalue())
 
-        end_page = int(end_page_str) if end_page_str.strip() else None
-        output_base = os.path.join(output_dir, f"{Path(pdf_file.name).stem}_cn")
+        start_page = int(display_start_page) - 1
+        display_end_page = int(end_page_str) if end_page_str.strip() else None
+        end_page = display_end_page
+        output_base = str(output_dir / f"{Path(pdf_file.name).stem}_cn")
 
         # Init
         stats = TokenStats()
@@ -260,6 +317,14 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         total = extractor.total_pages
         if end_page is None or end_page > total:
             end_page = total
+        if start_page >= total:
+            st.error(f"起始页超出范围：PDF 共 {total} 页。")
+            extractor.close()
+            st.stop()
+        if end_page <= start_page:
+            st.error("结束页必须大于或等于起始页。")
+            extractor.close()
+            st.stop()
 
         glossary = load_glossary(glossary_path) if glossary_path else {}
         if glossary_path:
@@ -271,10 +336,40 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         translator.set_glossary(glossary)
 
         progress_file = output_base + ".progress.json"
-        tracker = ProgressTracker(progress_file)
+        progress_metadata = build_progress_metadata(
+            pdf_path=pdf_path,
+            glossary_path=glossary_path,
+            model=model,
+            start_page=start_page,
+            end_page=end_page,
+        )
+        tracker = ProgressTracker(
+            progress_file,
+            expected_metadata=progress_metadata,
+            reuse_mismatched=reuse_mismatched_progress,
+        )
+        if tracker.metadata_mismatches:
+            st.warning(
+                "检测到 progress.json 与当前设置不一致："
+                + "；".join(tracker.metadata_mismatches[:3])
+            )
+            if tracker.ignored_existing_progress:
+                st.info("已保留原 progress 文件，但本次不会复用其中的旧译文。")
+
+        try:
+            retranslate_pages = parse_page_selection(retranslate_pages_str, total)
+        except ValueError as e:
+            st.error(f"重翻页码格式错误：{e}")
+            extractor.close()
+            st.stop()
+        retranslate_pages = {p for p in retranslate_pages if start_page <= p < end_page}
+        if retranslate_pages:
+            cleared = tracker.clear_pages(retranslate_pages)
+            display_pages = ", ".join(str(p + 1) for p in sorted(retranslate_pages))
+            st.info(f"已标记重翻页：{display_pages}（清理 {cleared} 条旧进度）。")
 
         # Extract
-        st.info(f"📑 提取文本: {total} 页, 翻译 {start_page+1}-{end_page} 页")
+        st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
         for pn in range(start_page, end_page):
             pages_text[pn] = extractor.extract_page(pn)
