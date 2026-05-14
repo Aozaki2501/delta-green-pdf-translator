@@ -27,10 +27,22 @@ import re
 import sys
 import time
 import threading
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
+
+
+def configure_console_output():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except AttributeError:
+            pass
+
+
+configure_console_output()
 
 try:
     import pymupdf  # PyMuPDF >= 1.24
@@ -60,7 +72,42 @@ except ImportError:
 
 
 PROMPT_VERSION = "2026-05-14-concise-headings-v1"
-EXTRACTOR_VERSION = "2026-05-14-layout-aware-v3"
+EXTRACTOR_VERSION = "2026-05-14-layout-aware-v4"
+SUPPORTED_OUTPUT_FORMATS = {"markdown", "pdf", "word", "both", "all"}
+TRANSLATION_FAILURE_PREFIX = "[Translation failed:"
+
+
+def ensure_output_parent(path: str):
+    parent = Path(path).expanduser().resolve().parent
+    parent.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_page_range(start_page, end_page, total_pages: int) -> tuple[int, int]:
+    try:
+        start = int(start_page or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("起始页必须是整数") from exc
+
+    try:
+        end = total_pages if end_page is None else int(end_page)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("结束页必须是整数") from exc
+
+    if total_pages < 1:
+        raise ValueError("PDF 没有可处理页面")
+    if start < 0:
+        raise ValueError("起始页不能小于 0")
+    if start >= total_pages:
+        raise ValueError(f"起始页超出范围：PDF 共 {total_pages} 页")
+    if end > total_pages:
+        end = total_pages
+    if end <= start:
+        raise ValueError("结束页必须大于起始页")
+    return start, end
+
+
+def is_failed_translation(text: str) -> bool:
+    return bool(text and text.lstrip().startswith(TRANSLATION_FAILURE_PREFIX))
 
 
 # ============================================================
@@ -212,6 +259,13 @@ class PDFExtractor:
         self.total_pages = len(self.doc)
         self.chapter_detector = ChapterDetector()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
     def _sort_blocks_layout_aware(self, blocks, page_width):
         sorted_input = sorted(blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
         non_full_blocks = [
@@ -332,22 +386,87 @@ class PDFExtractor:
         match = re.search(r"[A-Za-z]", text.strip())
         return bool(match and match.group(0).islower())
 
+    def _extract_line_text(self, line):
+        spans_text = []
+        last_span_norm = ""
+        for span in line.get("spans", []):
+            span_text = span["text"]
+            span_norm = re.sub(r"\s+", " ", span_text).strip().lower()
+            if span_norm and span_norm == last_span_norm:
+                continue
+            spans_text.append(span_text)
+            last_span_norm = span_norm
+        return "".join(spans_text).strip()
+
+    def _line_avg_font_size(self, line):
+        sizes = [
+            span.get("size", 0)
+            for span in line.get("spans", [])
+            if span.get("size")
+        ]
+        if not sizes:
+            return 0
+        return sum(sizes) / len(sizes)
+
+    def _join_line_into_paragraph(self, paragraph, line_text):
+        if not paragraph:
+            return line_text
+        tail = paragraph.rstrip()
+        if tail.endswith("-") and re.search(r"[A-Za-z]-$", tail) and re.match(r"^[A-Za-z]", line_text):
+            return tail[:-1] + line_text
+        return tail + " " + line_text
+
     def _extract_block_text(self, block):
-        lines = []
+        raw_lines = []
         for line in block.get("lines", []):
-            spans_text = []
-            last_span_norm = ""
-            for span in line.get("spans", []):
-                span_text = span["text"]
-                span_norm = re.sub(r"\s+", " ", span_text).strip().lower()
-                if span_norm and span_norm == last_span_norm:
-                    continue
-                spans_text.append(span_text)
-                last_span_norm = span_norm
-            line_text = "".join(spans_text).strip()
-            if line_text and (not lines or line_text != lines[-1]):
-                lines.append(line_text)
-        return " ".join(lines)
+            line_text = self._extract_line_text(line)
+            if not line_text:
+                continue
+            if raw_lines and line_text == raw_lines[-1]["text"]:
+                continue
+            raw_lines.append({
+                "text": line_text,
+                "bbox": line.get("bbox", block["bbox"]),
+                "size": self._line_avg_font_size(line),
+            })
+        if not raw_lines:
+            return ""
+
+        body_sizes = sorted(l["size"] for l in raw_lines if l["size"])
+        median_size = body_sizes[len(body_sizes) // 2] if body_sizes else 10
+        left_edge = min(l["bbox"][0] for l in raw_lines)
+
+        paragraphs = []
+        current = ""
+
+        def flush():
+            nonlocal current
+            if current.strip():
+                paragraphs.append(current.strip())
+                current = ""
+
+        for idx, line in enumerate(raw_lines):
+            text = line["text"]
+            indent = line["bbox"][0] - left_edge
+            visible = re.sub(r"\s+", "", text)
+            is_heading = (
+                line["size"] >= median_size * 1.6
+                and 2 <= len(visible) <= 40
+                and not re.search(r"[.!?。！？]$", text)
+            )
+            is_indented_para = idx > 0 and indent >= max(10, median_size * 1.2)
+
+            if is_heading:
+                flush()
+                paragraphs.append(text)
+                continue
+            if is_indented_para:
+                flush()
+
+            current = self._join_line_into_paragraph(current, text)
+
+        flush()
+        return "\n\n".join(paragraphs)
 
     def _is_header_footer(self, block, page_height, margin_ratio=0.08):
         top_margin = page_height * margin_ratio
@@ -434,7 +553,9 @@ class PDFExtractor:
         self.chapter_detector.finalize()
 
     def close(self):
-        self.doc.close()
+        if self.doc is not None:
+            self.doc.close()
+            self.doc = None
 
 
 # ============================================================
@@ -510,15 +631,20 @@ def parse_page_selection(selection: str, total_pages: int) -> set[int]:
         part = raw_part.strip()
         if not part:
             continue
-        if "-" in part:
-            start_text, end_text = part.split("-", 1)
-            start = int(start_text)
-            end = int(end_text)
-            if start > end:
-                start, end = end, start
-            page_numbers = range(start, end + 1)
-        else:
-            page_numbers = [int(part)]
+        try:
+            if "-" in part:
+                start_text, end_text = part.split("-", 1)
+                if not start_text.strip() or not end_text.strip():
+                    raise ValueError
+                start = int(start_text)
+                end = int(end_text)
+                if start > end:
+                    start, end = end, start
+                page_numbers = range(start, end + 1)
+            else:
+                page_numbers = [int(part)]
+        except ValueError as exc:
+            raise ValueError(f"无法解析页码片段：{part!r}") from exc
 
         for page_number in page_numbers:
             if page_number < 1 or page_number > total_pages:
@@ -637,6 +763,7 @@ def build_glossary_report(pages_text: dict, glossary: dict, title: str = "") -> 
 
 
 def write_glossary_report(pages_text: dict, glossary: dict, report_output: str, title: str = ""):
+    ensure_output_parent(report_output)
     report = build_glossary_report(pages_text, glossary, title)
     with open(report_output, "w", encoding="utf-8") as f:
         f.write(report)
@@ -667,6 +794,10 @@ Translation rules:
 
     def __init__(self, api_key: str, model: str = "deepseek-v4-pro",
                  base_url: str = "https://api.deepseek.com", stats: TokenStats = None):
+        if not api_key or not str(api_key).strip():
+            raise ValueError("API Key 不能为空")
+        if not model or not str(model).strip():
+            raise ValueError("模型名称不能为空")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.glossary = {}
@@ -719,8 +850,18 @@ Translation rules:
                 usage = response.usage
                 if usage:
                     cached = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
-                    self.stats.add(usage.prompt_tokens, usage.completion_tokens, cached)
-                return response.choices[0].message.content.strip()
+                    self.stats.add(
+                        getattr(usage, "prompt_tokens", 0) or 0,
+                        getattr(usage, "completion_tokens", 0) or 0,
+                        cached,
+                    )
+                if not response.choices:
+                    raise RuntimeError("API 返回空 choices")
+                content = response.choices[0].message.content or ""
+                content = content.strip()
+                if not content:
+                    raise RuntimeError("API 返回空译文")
+                return content
             except Exception as e:
                 self.stats.add_failure()
                 if attempt < self.retry_count - 1:
@@ -730,7 +871,7 @@ Translation rules:
                     time.sleep(wait)
                 else:
                     print(f"\n  API failed permanently: {e}")
-                    return f"[Translation failed: {e}]\n\nOriginal:\n{text[:200]}..."
+                    return f"{TRANSLATION_FAILURE_PREFIX} {e}]\n\nOriginal:\n{text[:200]}..."
         return ""
 
 
@@ -757,6 +898,8 @@ class ProgressTracker:
             try:
                 with open(self.progress_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("progress root must be an object")
                 loaded_metadata = data.get("metadata", {})
                 self.metadata_mismatches = compare_progress_metadata(
                     self.expected_metadata,
@@ -771,10 +914,17 @@ class ProgressTracker:
                     return
 
                 self.metadata = loaded_metadata or dict(self.expected_metadata)
-                self.completed_pages = set(data.get("completed_pages", []))
-                self.translations = data.get("translations", {})
+                self.completed_pages = {
+                    int(page_num)
+                    for page_num in data.get("completed_pages", [])
+                    if str(page_num).isdigit()
+                }
+                loaded_translations = data.get("translations", {})
+                self.translations = (
+                    loaded_translations if isinstance(loaded_translations, dict) else {}
+                )
                 print(f"Loaded progress: {len(self.completed_pages)} pages done")
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError, ValueError, TypeError):
                 print("Progress file corrupted, starting fresh")
 
     def save(self):
@@ -784,8 +934,21 @@ class ProgressTracker:
                 "completed_pages": sorted(self.completed_pages),
                 "translations": self.translations,
             }
-            with open(self.progress_file, "w", encoding="utf-8") as f:
+            progress_path = Path(self.progress_file)
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = None
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(progress_path.parent),
+                prefix=progress_path.name + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = Path(f.name)
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp_path, progress_path)
 
     def is_completed(self, page_num: int) -> bool:
         return page_num in self.completed_pages
@@ -828,6 +991,13 @@ class PDFOverlayWriter:
         self.source_path = source_pdf_path
         self.output_path = output_pdf_path
         self.doc = pymupdf.open(source_pdf_path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
 
     def overlay_page(self, page_num: int, translated_text: str):
         page = self.doc[page_num]
@@ -883,8 +1053,14 @@ class PDFOverlayWriter:
             para_idx += 1
 
     def save(self):
+        ensure_output_parent(self.output_path)
         self.doc.save(self.output_path, garbage=4, deflate=True)
-        self.doc.close()
+        self.close()
+
+    def close(self):
+        if self.doc is not None:
+            self.doc.close()
+            self.doc = None
 
 
 # ============================================================
@@ -895,6 +1071,7 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
     results = {}
     completed_count = 0
     total_count = len(pages_data)
+    max_workers = max(1, int(max_workers or 1))
 
     def report(page_num, translation):
         nonlocal completed_count
@@ -904,7 +1081,7 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
 
     def translate_one(page_num, text, prev_ctx):
         translation = translator.translate_chunk(text, page_num, prev_ctx)
-        if translation:
+        if translation and not is_failed_translation(translation):
             tracker.mark_completed(page_num, translation)
         return page_num, translation
 
@@ -930,10 +1107,16 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
                 futures[future] = page_num
 
             for future in as_completed(futures):
-                page_num, translation = future.result()
+                page_num = futures[future]
+                try:
+                    page_num, translation = future.result()
+                except Exception as exc:
+                    translation = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+                    print(f" p{page_num + 1} failed: {exc}", end="", flush=True)
                 results[page_num] = translation or ""
                 report(page_num, translation)
-                print(f" p{page_num + 1} done", end="", flush=True)
+                if not is_failed_translation(translation):
+                    print(f" p{page_num + 1} done", end="", flush=True)
 
         if group:
             last_page_num = group[-1][0]
@@ -1222,6 +1405,7 @@ def paginate_translated_blocks(translated_pages, min_chars=1000, max_chars=1500)
 
 def write_markdown_output(translated_pages, md_output: str, title: str, toc: str = "",
                           min_chars=1000, max_chars=1500):
+    ensure_output_parent(md_output)
     reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
     with open(md_output, "w", encoding="utf-8") as f:
         f.write(f"# {title} — 中文翻译\n\n---\n\n")
@@ -1281,10 +1465,24 @@ def _write_word_block(doc, text: str):
 def write_word_output(translated_pages, docx_output: str, title: str, subtitle: str = "\u4e2d\u6587\u7ffb\u8bd1",
                       min_chars=1000, max_chars=1500, body_font_size=12.0,
                       line_spacing=1.5, columns=2, header_left="绿色三角洲",
-                      header_right=None):
+                      header_right=None, hard_page_breaks=False):
     """Write translated Markdown-like page content to a Word document."""
     if not HAS_DOCX:
         raise RuntimeError("Word output requires python-docx")
+    min_chars = int(min_chars)
+    max_chars = int(max_chars)
+    columns = int(columns)
+    body_font_size = float(body_font_size)
+    line_spacing = float(line_spacing)
+    if min_chars < 1 or max_chars < min_chars:
+        raise ValueError("Word 阅读页字数范围无效")
+    if columns not in (1, 2):
+        raise ValueError("Word 正文分栏只支持 1 或 2 栏")
+    if not 6 <= body_font_size <= 24:
+        raise ValueError("Word 正文字号超出支持范围")
+    if not 0.8 <= line_spacing <= 3.0:
+        raise ValueError("Word 行距超出支持范围")
+    ensure_output_parent(docx_output)
 
     doc = DocxDocument()
     set_document_base_layout(doc, columns=1, body_font_size=body_font_size, line_spacing=line_spacing)
@@ -1307,7 +1505,7 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
 
     reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
     for page_idx, blocks in enumerate(reading_pages):
-        if page_idx > 0:
+        if hard_page_breaks and page_idx > 0:
             doc.add_page_break()
         for block in blocks:
             _write_word_block(doc, block["text"])
@@ -1325,182 +1523,203 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
     print("=" * 60)
     print()
 
+    if output_format not in SUPPORTED_OUTPUT_FORMATS:
+        raise ValueError(f"不支持的输出格式：{output_format}")
+    if not pdf_path or not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF 文件不存在：{pdf_path}")
+    if glossary_path and not os.path.exists(glossary_path):
+        raise FileNotFoundError(f"术语表文件不存在：{glossary_path}")
+    max_workers = max(1, min(16, int(max_workers or 1)))
+    ensure_output_parent(output_path)
+
     stats = TokenStats()
 
     print(f"Opening PDF: {pdf_path}")
     extractor = PDFExtractor(pdf_path)
-    total = extractor.total_pages
-    print(f"   Total pages: {total}")
+    try:
+        total = extractor.total_pages
+        print(f"   Total pages: {total}")
 
-    if end_page is None or end_page > total:
-        end_page = total
-    print(f"   Range: page {start_page + 1} to {end_page}")
-    print(f"   Workers: {max_workers}")
-    print(f"   Format: {output_format}")
-    print()
-
-    glossary = {}
-    if glossary_path:
-        print(f"Loading glossary: {glossary_path}")
-        glossary = load_glossary(glossary_path)
-        print(f"   Loaded {len(glossary)} terms")
+        start_page, end_page = normalize_page_range(start_page, end_page, total)
+        print(f"   Range: page {start_page + 1} to {end_page}")
+        print(f"   Workers: {max_workers}")
+        print(f"   Format: {output_format}")
         print()
 
-    print(f"Engine: DeepSeek V4 ({model})")
-    translator = Translator(api_key=api_key, model=model, stats=stats)
-    translator.set_glossary(glossary)
-    print()
+        glossary = {}
+        if glossary_path:
+            print(f"Loading glossary: {glossary_path}")
+            glossary = load_glossary(glossary_path)
+            print(f"   Loaded {len(glossary)} terms")
+            print()
 
-    progress_file = output_path + ".progress.json"
-    progress_metadata = build_progress_metadata(
-        pdf_path=pdf_path,
-        glossary_path=glossary_path,
-        model=model,
-        start_page=start_page,
-        end_page=end_page,
-    )
-    tracker = ProgressTracker(progress_file, expected_metadata=progress_metadata)
-    if tracker.metadata_mismatches:
-        print("⚠️  进度文件与当前设置不一致。")
-        for mismatch in tracker.metadata_mismatches[:5]:
-            print(f"   - {mismatch}")
-        if tracker.ignored_existing_progress:
-            print("   已保留文件但本次不复用旧译文。")
-    print()
+        print(f"Engine: DeepSeek V4 ({model})")
+        translator = Translator(api_key=api_key, model=model, stats=stats)
+        translator.set_glossary(glossary)
+        print()
 
-    print("Extracting text and analyzing chapters...")
-    pages_text = {}
-    for page_num in range(start_page, end_page):
-        text = extractor.extract_page(page_num)
-        pages_text[page_num] = text
+        progress_file = output_path + ".progress.json"
+        progress_metadata = build_progress_metadata(
+            pdf_path=pdf_path,
+            glossary_path=glossary_path,
+            model=model,
+            start_page=start_page,
+            end_page=end_page,
+        )
+        tracker = ProgressTracker(progress_file, expected_metadata=progress_metadata)
+        if tracker.metadata_mismatches:
+            print("⚠️  进度文件与当前设置不一致。")
+            for mismatch in tracker.metadata_mismatches[:5]:
+                print(f"   - {mismatch}")
+            if tracker.ignored_existing_progress:
+                print("   已保留文件但本次不复用旧译文。")
+        print()
 
-    extractor.finalize_chapters()
-    toc = extractor.chapter_detector.get_toc_markdown()
-    if toc:
-        print(f"   Detected {len(extractor.chapter_detector.headings)} headings")
-    else:
-        print("   No clear chapter structure detected")
-    print()
-
-    print("Translating...")
-    print("-" * 40)
-    start_time = time.time()
-
-    if max_workers > 1:
-        print(f"   Concurrent mode: {max_workers} workers")
-        pages_data = []
-        prev_text = ""
+        print("Extracting text and analyzing chapters...")
+        pages_text = {}
         for page_num in range(start_page, end_page):
-            text = pages_text.get(page_num, "")
-            context = prev_text[-300:] if prev_text else ""
-            pages_data.append((page_num, text, context))
-            if text.strip():
-                prev_text = text
-        results = translate_batch_concurrent(pages_data, translator, tracker, max_workers)
-        translated_pages = [(pn, t) for pn, t in results.items() if t.strip()]
-    else:
-        translated_pages = []
-        prev_translation_tail = ""
-        pages_to_process = list(range(start_page, end_page))
-        total_to_do = len(pages_to_process)
-        done_count = 0
+            text = extractor.extract_page(page_num)
+            pages_text[page_num] = text
 
-        for page_num in pages_to_process:
-            done_count += 1
-            progress_pct = done_count / total_to_do * 100
-
-            if tracker.is_completed(page_num):
-                translation = tracker.get_translation(page_num)
-                if translation:
-                    translated_pages.append((page_num, translation))
-                    prev_translation_tail = translation[-300:]
-                print(f"  [skip] Page {page_num + 1}/{total}")
-                continue
-
-            text = pages_text.get(page_num, "")
-            if not text.strip():
-                print(f"  [empty] Page {page_num + 1}/{total}")
-                tracker.mark_completed(page_num, "")
-                continue
-
-            print(f"  [{progress_pct:.0f}%] Page {page_num + 1}/{total}", end="", flush=True)
-            translation = translator.translate_chunk(text, page_num, prev_context=prev_translation_tail)
-
-            if translation:
-                translated_pages.append((page_num, translation))
-                tracker.mark_completed(page_num, translation)
-                prev_translation_tail = translation[-300:]
-                print(f" done (Y{stats.cost_yuan:.3f})")
-            else:
-                print(f" empty result")
-                tracker.mark_completed(page_num, "")
-            time.sleep(0.3)
-
-    elapsed = time.time() - start_time
-    print("-" * 40)
-    print()
-
-    translated_pages_sorted = sorted(translated_pages, key=lambda x: x[0])
-
-    # Determine output base name (without extension)
-    output_base = output_path
-    for ext in (".md", ".pdf", ".docx"):
-        if output_base.endswith(ext):
-            output_base = output_base[:-len(ext)]
-            break
-
-    if glossary:
-        report_output = output_base + "_glossary_report.md"
-        print(f"  生成术语命中报告: {report_output}")
-        write_glossary_report(pages_text, glossary, report_output, Path(pdf_path).stem)
-        print("   ✓ 术语报告输出完成")
-
-    # PDF output
-    if output_format in ("pdf", "both", "all"):
-        pdf_output = output_base + ".pdf"
-        print(f"  生成保留排版 PDF: {pdf_output}")
-        try:
-            writer = PDFOverlayWriter(pdf_path, pdf_output)
-            for page_num, translation in translated_pages_sorted:
-                writer.overlay_page(page_num, translation)
-            writer.save()
-            print("   ✅ PDF 输出完成")
-        except Exception as e:
-            print(f"   ❌ PDF 输出失败: {e}")
-
-    # Markdown output
-    if output_format in ("markdown", "both", "all"):
-        md_output = output_base + ".md"
-        print(f"  生成 Markdown: {md_output}")
-        write_markdown_output(translated_pages_sorted, md_output, Path(pdf_path).stem, toc)
-        print("   ✅ Markdown 输出完成")
-
-    # Word output
-    if output_format in ("word", "all"):
-        if not HAS_DOCX:
-            print("  ⚠️  Word 输出需要 python-docx，请运行: pip install python-docx")
+        extractor.finalize_chapters()
+        toc = extractor.chapter_detector.get_toc_markdown()
+        if toc:
+            print(f"   Detected {len(extractor.chapter_detector.headings)} headings")
         else:
-            docx_output = output_base + ".docx"
-            print(f"  生成 Word 文档: {docx_output}")
+            print("   No clear chapter structure detected")
+        print()
+
+        print("Translating...")
+        print("-" * 40)
+        start_time = time.time()
+
+        if max_workers > 1:
+            print(f"   Concurrent mode: {max_workers} workers")
+            pages_data = []
+            prev_text = ""
+            for page_num in range(start_page, end_page):
+                text = pages_text.get(page_num, "")
+                context = prev_text[-300:] if prev_text else ""
+                pages_data.append((page_num, text, context))
+                if text.strip():
+                    prev_text = text
+            results = translate_batch_concurrent(pages_data, translator, tracker, max_workers)
+            translated_pages = [(pn, t) for pn, t in results.items() if t.strip()]
+        else:
+            translated_pages = []
+            prev_translation_tail = ""
+            pages_to_process = list(range(start_page, end_page))
+            total_to_do = len(pages_to_process)
+            done_count = 0
+
+            for page_num in pages_to_process:
+                done_count += 1
+                progress_pct = done_count / total_to_do * 100
+
+                if tracker.is_completed(page_num):
+                    translation = tracker.get_translation(page_num)
+                    if translation:
+                        translated_pages.append((page_num, translation))
+                        prev_translation_tail = translation[-300:]
+                    print(f"  [skip] Page {page_num + 1}/{total}")
+                    continue
+
+                text = pages_text.get(page_num, "")
+                if not text.strip():
+                    print(f"  [empty] Page {page_num + 1}/{total}")
+                    tracker.mark_completed(page_num, "")
+                    continue
+
+                print(f"  [{progress_pct:.0f}%] Page {page_num + 1}/{total}", end="", flush=True)
+                translation = translator.translate_chunk(text, page_num, prev_context=prev_translation_tail)
+
+                if translation and not is_failed_translation(translation):
+                    translated_pages.append((page_num, translation))
+                    tracker.mark_completed(page_num, translation)
+                    prev_translation_tail = translation[-300:]
+                    print(f" done (Y{stats.cost_yuan:.3f})")
+                elif is_failed_translation(translation):
+                    translated_pages.append((page_num, translation))
+                    print(" failed; not cached")
+                else:
+                    print(f" empty result")
+                    tracker.mark_completed(page_num, "")
+                time.sleep(0.3)
+
+        elapsed = time.time() - start_time
+        print("-" * 40)
+        print()
+
+        translated_pages_sorted = sorted(translated_pages, key=lambda x: x[0])
+        failed_pages = [
+            page_num + 1
+            for page_num, translation in translated_pages_sorted
+            if is_failed_translation(translation)
+        ]
+        if failed_pages:
+            print("⚠️  以下页翻译失败且未写入进度缓存: " + ", ".join(map(str, failed_pages[:20])))
+
+        # Determine output base name (without extension)
+        output_base = output_path
+        for ext in (".md", ".pdf", ".docx"):
+            if output_base.endswith(ext):
+                output_base = output_base[:-len(ext)]
+                break
+
+        if glossary:
+            report_output = output_base + "_glossary_report.md"
+            print(f"  生成术语命中报告: {report_output}")
+            write_glossary_report(pages_text, glossary, report_output, Path(pdf_path).stem)
+            print("   ✓ 术语报告输出完成")
+
+        # PDF output
+        if output_format in ("pdf", "both", "all"):
+            pdf_output = output_base + ".pdf"
+            print(f"  生成保留排版 PDF: {pdf_output}")
             try:
-                write_word_output(translated_pages_sorted, docx_output, Path(pdf_path).stem)
-                print("   ✓ Word 输出完成")
-
+                with PDFOverlayWriter(pdf_path, pdf_output) as writer:
+                    for page_num, translation in translated_pages_sorted:
+                        if not is_failed_translation(translation):
+                            writer.overlay_page(page_num, translation)
+                    writer.save()
+                print("   ✅ PDF 输出完成")
             except Exception as e:
-                print(f"   ❌ Word 输出失败: {e}")
+                print(f"   ❌ PDF 输出失败: {e}")
 
-    page_count = len([t for _, t in translated_pages_sorted if t.strip()])
-    print(f"\n  共翻译 {page_count} 页")
+        # Markdown output
+        if output_format in ("markdown", "both", "all"):
+            md_output = output_base + ".md"
+            print(f"  生成 Markdown: {md_output}")
+            write_markdown_output(translated_pages_sorted, md_output, Path(pdf_path).stem, toc)
+            print("   ✅ Markdown 输出完成")
 
-    print()
-    print(f"Time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
-    print()
-    print(stats.summary())
-    print()
-    print(f"Progress file: {progress_file}")
-    print(f"Output: {output_path}")
+        # Word output
+        if output_format in ("word", "all"):
+            if not HAS_DOCX:
+                print("  ⚠️  Word 输出需要 python-docx，请运行: pip install python-docx")
+            else:
+                docx_output = output_base + ".docx"
+                print(f"  生成 Word 文档: {docx_output}")
+                try:
+                    write_word_output(translated_pages_sorted, docx_output, Path(pdf_path).stem)
+                    print("   ✓ Word 输出完成")
 
-    extractor.close()
+                except Exception as e:
+                    print(f"   ❌ Word 输出失败: {e}")
+
+        page_count = len([t for _, t in translated_pages_sorted if t.strip()])
+        print(f"\n  共翻译 {page_count} 页")
+
+        print()
+        print(f"Time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
+        print()
+        print(stats.summary())
+        print()
+        print(f"Progress file: {progress_file}")
+        print(f"Output: {output_path}")
+
+    finally:
+        extractor.close()
 
 
 # ============================================================
@@ -1512,8 +1731,15 @@ def load_config(config_path: str) -> dict:
     if not os.path.exists(config_path):
         print(f"❌ 配置文件不存在: {config_path}")
         sys.exit(1)
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except json.JSONDecodeError as exc:
+        print(f"❌ 配置文件 JSON 格式错误: {exc}")
+        sys.exit(1)
+    if not isinstance(config, dict):
+        print("❌ 配置文件顶层必须是 JSON 对象。")
+        sys.exit(1)
     return config
 
 
@@ -1578,6 +1804,9 @@ def main():
     if not api_key:
         print("❌ 缺少 API Key。请通过 --api-key 或配置文件指定。")
         sys.exit(1)
+    if output_format not in SUPPORTED_OUTPUT_FORMATS:
+        print(f"❌ 不支持的输出格式: {output_format}")
+        sys.exit(1)
 
     # Default output path
     if output_path is None:
@@ -1587,6 +1816,17 @@ def main():
     # Validate
     if not os.path.exists(pdf_path):
         print(f"❌ PDF 文件不存在: {pdf_path}")
+        sys.exit(1)
+    if glossary_path and not os.path.exists(glossary_path):
+        print(f"❌ 术语表文件不存在: {glossary_path}")
+        sys.exit(1)
+
+    try:
+        workers = int(workers)
+        start_page = int(start_page or 0)
+        end_page = None if end_page is None or end_page == "" else int(end_page)
+    except (TypeError, ValueError):
+        print("❌ workers/start/end 必须是整数。")
         sys.exit(1)
 
     if workers < 1:

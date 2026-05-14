@@ -13,6 +13,17 @@ import sys
 import os
 import argparse
 
+
+def configure_console_output():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except AttributeError:
+            pass
+
+
+configure_console_output()
+
 PASS = "✅"
 FAIL = "❌"
 WARN = "⚠️"

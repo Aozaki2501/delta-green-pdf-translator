@@ -5,6 +5,7 @@ Delta Green PDF Translator — Web UI (Streamlit)
 import streamlit as st
 import hashlib
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -12,7 +13,8 @@ from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
     PDFOverlayWriter, load_glossary, translate_batch_concurrent,
     write_markdown_output, write_word_output, HAS_DOCX,
-    build_progress_metadata, parse_page_selection, write_glossary_report
+    build_progress_metadata, parse_page_selection, write_glossary_report,
+    normalize_page_range, is_failed_translation
 )
 
 
@@ -45,6 +47,12 @@ def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def safe_filename_stem(filename: str, default: str = "document") -> str:
+    stem = Path(filename or default).stem
+    stem = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", stem).strip("._-")
+    return stem or default
+
+
 def uploaded_file_digest(uploaded_file) -> str:
     return hashlib.sha256(uploaded_file.getvalue()).hexdigest()
 
@@ -53,7 +61,7 @@ def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
     upload_dir = APP_DIR / "uploads"
     ensure_dir(upload_dir)
     digest = uploaded_file_digest(uploaded_file)[:12]
-    target = upload_dir / f"_preview_{Path(uploaded_file.name).stem}_{digest}{Path(uploaded_file.name).suffix}"
+    target = upload_dir / f"_preview_{safe_filename_stem(uploaded_file.name)}_{digest}.pdf"
     if not target.exists():
         with open(target, "wb") as f:
             f.write(uploaded_file.getvalue())
@@ -242,6 +250,11 @@ with st.sidebar:
         word_columns = st.selectbox("正文分栏", [1, 2], index=1, format_func=lambda n: f"{n} 栏")
         word_min_chars = st.number_input("阅读页最少字数", value=1000, min_value=300, max_value=3000, step=100)
         word_max_chars = st.number_input("阅读页最多字数", value=1500, min_value=500, max_value=5000, step=100)
+        word_hard_page_breaks = st.checkbox(
+            "按阅读页强制分页",
+            value=False,
+            help="关闭时 Word 会自然续排，减少半页空白；开启时每个阅读页后插入分页符。",
+        )
         word_header_left = st.text_input("页眉左侧", value="绿色三角洲")
         word_header_right = st.text_input("页眉右侧", value="", placeholder="留空则使用文件名")
 
@@ -296,6 +309,8 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         st.error("✗ 请上传 PDF 文件")
     elif not api_key:
         st.error("✗ 请输入 API Key")
+    elif not formats:
+        st.error("✗ 请至少选择一种输出格式")
     else:
         # Create organized directories
         upload_dir = APP_DIR / "uploads"
@@ -304,35 +319,36 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         ensure_dir(output_dir)
 
         # Save uploaded files to uploads/
-        pdf_upload_name = f"_upload_{Path(pdf_file.name).stem}_{uuid.uuid4().hex[:8]}{Path(pdf_file.name).suffix}"
+        pdf_stem = safe_filename_stem(pdf_file.name)
+        pdf_upload_name = f"_upload_{pdf_stem}_{uuid.uuid4().hex[:8]}.pdf"
         pdf_path = str(upload_dir / pdf_upload_name)
         with open(pdf_path, "wb") as f:
             f.write(pdf_file.getvalue())
 
         glossary_path = str(DEFAULT_GLOSSARY_PATH) if DEFAULT_GLOSSARY_PATH.exists() else None
         if glossary_file:
-            glossary_upload_name = f"_upload_{Path(glossary_file.name).stem}_{uuid.uuid4().hex[:8]}{Path(glossary_file.name).suffix}"
+            glossary_suffix = Path(glossary_file.name).suffix.lower() or ".tsv"
+            glossary_upload_name = f"_upload_{safe_filename_stem(glossary_file.name, 'glossary')}_{uuid.uuid4().hex[:8]}{glossary_suffix}"
             glossary_path = str(upload_dir / glossary_upload_name)
             with open(glossary_path, "wb") as f:
                 f.write(glossary_file.getvalue())
 
-        start_page = int(display_start_page) - 1
-        display_end_page = int(end_page_str) if end_page_str.strip() else None
-        end_page = display_end_page
-        output_base = str(output_dir / f"{Path(pdf_file.name).stem}_cn")
+        try:
+            start_page = int(display_start_page) - 1
+            display_end_page = int(end_page_str) if end_page_str.strip() else None
+        except ValueError:
+            st.error("结束页必须是整数，或留空表示全部。")
+            st.stop()
+        output_base = str(output_dir / f"{pdf_stem}_cn")
 
         # Init
         stats = TokenStats()
         extractor = PDFExtractor(pdf_path)
         total = extractor.total_pages
-        if end_page is None or end_page > total:
-            end_page = total
-        if start_page >= total:
-            st.error(f"起始页超出范围：PDF 共 {total} 页。")
-            extractor.close()
-            st.stop()
-        if end_page <= start_page:
-            st.error("结束页必须大于或等于起始页。")
+        try:
+            start_page, end_page = normalize_page_range(start_page, display_end_page, total)
+        except ValueError as e:
+            st.error(str(e))
             extractor.close()
             st.stop()
         if "Word" in formats and word_max_chars < word_min_chars:
@@ -465,6 +481,14 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             [(pn, t) for pn, t in results.items() if t.strip()],
             key=lambda x: x[0],
         )
+        failed_pages = [
+            pn + 1 for pn, text in translated_pages_sorted if is_failed_translation(text)
+        ]
+        if failed_pages:
+            st.warning(
+                "以下页翻译失败，未写入进度缓存，修复网络/API 问题后可直接重跑："
+                + ", ".join(map(str, failed_pages[:20]))
+            )
 
         # Stats
         col_a, col_b, col_c = st.columns(3)
@@ -475,7 +499,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         # Output & Download
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
-            write_glossary_report(pages_text, glossary, report_path, Path(pdf_file.name).stem)
+            write_glossary_report(pages_text, glossary, report_path, pdf_stem)
             with open(report_path, "rb") as f:
                 st.download_button(
                     "📥 下载术语命中报告",
@@ -485,7 +509,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
 
         if "Markdown" in formats:
             md_path = make_output_path(output_base, ".md")
-            write_markdown_output(translated_pages_sorted, md_path, Path(pdf_file.name).stem, toc)
+            write_markdown_output(translated_pages_sorted, md_path, pdf_stem, toc)
 
             with open(md_path, "rb") as f:
                 st.download_button(
@@ -497,13 +521,11 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         if "PDF" in formats:
             pdf_out_path = make_output_path(output_base, ".pdf")
             try:
-                writer = PDFOverlayWriter(pdf_path, pdf_out_path)
-
-                for pn, t in translated_pages_sorted:
-                    if t.strip():
-                        writer.overlay_page(pn, t)
-
-                writer.save()
+                with PDFOverlayWriter(pdf_path, pdf_out_path) as writer:
+                    for pn, t in translated_pages_sorted:
+                        if t.strip() and not is_failed_translation(t):
+                            writer.overlay_page(pn, t)
+                    writer.save()
 
                 with open(pdf_out_path, "rb") as f:
                     st.download_button(
@@ -522,7 +544,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                 write_word_output(
                     translated_pages_sorted,
                     docx_path,
-                    Path(pdf_file.name).stem,
+                    pdf_stem,
                     min_chars=int(word_min_chars),
                     max_chars=int(word_max_chars),
                     body_font_size=float(word_body_font_size),
@@ -530,6 +552,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     columns=int(word_columns),
                     header_left=word_header_left,
                     header_right=word_header_right or None,
+                    hard_page_breaks=bool(word_hard_page_breaks),
                 )
 
                 with open(docx_path, "rb") as f:
