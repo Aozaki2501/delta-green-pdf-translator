@@ -404,6 +404,17 @@ class PDFExtractor:
             r"\bPROFILE\s+OF\b",
             r"\b(?:Birth|Medical|Police|USMC|Military|News|School|Juvenile)\s+Records?\b",
             r"^\s*(?:Timeline|Briefing|Report|Memo|Evidence|Clue|Handout|Photograph|Letter|Note)\b",
+            # DG Labyrinth 特有的卡片标题
+            r"\bDISINFORMATION\b",
+            r"\bOPINT\s*:",
+            r"\bIN\s+THE\s+FIELD\s*:",
+            r"\bTRADECRAFT\s*:",
+            r"\bCASE\s+FILE\b",
+            r"\bFIELD\s+NOTES?\b",
+            r"\bINTELLIGENCE\s+BRIEF\b",
+            r"\bSITUATION\s+REPORT\b",
+            r"\bAFTER[\s-]?ACTION\b",
+            r"\bOPERATION(?:AL)?\s+(?:BRIEF|NOTES?|INTEL)\b",
         ]
         return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
@@ -421,11 +432,20 @@ class PDFExtractor:
             return True
         if self._has_card_label(text) and (width >= page_width * 0.28 or line_count >= 2):
             return True
+        # 等宽字体块：放宽宽度阈值（从 0.42 降到 0.30），因为 DG 的卡片
+        # 有时嵌在单栏里，宽度只有页面的 30-40%
         if (
             self._is_monospace_block(block)
             and line_count >= 4
-            and width >= page_width * 0.42
-            and self._block_height(block) >= page_height * 0.08
+            and width >= page_width * 0.30
+            and self._block_height(block) >= page_height * 0.06
+        ):
+            return True
+        # 大面积等宽字体块（跨栏卡片）
+        if (
+            self._is_monospace_block(block)
+            and line_count >= 3
+            and width >= page_width * 0.55
         ):
             return True
         if (
@@ -437,6 +457,39 @@ class PDFExtractor:
             return True
         return False
 
+    def _is_non_body_font_block(self, block, body_fonts: set) -> bool:
+        """检测文本块是否使用了与正文不同的字体族（卡片/侧栏的特征）。"""
+        if not body_fonts:
+            return False
+        block_fonts = self._block_fonts(block)
+        if not block_fonts:
+            return False
+        # 去掉装饰性标题字体（如 Industria），只看正文级别的字体
+        text_fonts = {f for f in block_fonts if self._block_line_count(block) >= 3}
+        if not text_fonts:
+            text_fonts = block_fonts
+        # 如果块的字体和正文字体完全没有交集，说明是不同的字体族
+        return not text_fonts.intersection(body_fonts)
+
+    def _page_body_fonts(self, content_blocks, page_width) -> set:
+        """识别页面正文使用的主要字体族（出现在双栏窄块中的字体）。"""
+        font_counts = {}
+        for block in content_blocks:
+            width = self._block_width(block)
+            # 只统计双栏宽度范围内的块（正文块）
+            if width > page_width * 0.55:
+                continue
+            line_count = self._block_line_count(block)
+            if line_count < 3:
+                continue
+            for font in self._block_fonts(block):
+                font_counts[font] = font_counts.get(font, 0) + line_count
+        if not font_counts:
+            return set()
+        # 取出现次数最多的字体作为正文字体
+        max_count = max(font_counts.values())
+        return {f for f, c in font_counts.items() if c >= max_count * 0.3}
+
     def _visual_card_regions(self, page, content_blocks, page_width, page_height):
         page_area = page_width * page_height
         regions = []
@@ -446,9 +499,10 @@ class PDFExtractor:
             if not rect:
                 continue
             area = rect.width * rect.height
-            if area < page_area * 0.025 or area > page_area * 0.78:
+            # 降低最小面积阈值（从 0.025 到 0.015），捕捉更小的卡片
+            if area < page_area * 0.015 or area > page_area * 0.78:
                 continue
-            if rect.width < page_width * 0.24 or rect.height < page_height * 0.08:
+            if rect.width < page_width * 0.20 or rect.height < page_height * 0.05:
                 continue
             regions.append(rect)
 
@@ -456,9 +510,10 @@ class PDFExtractor:
             xref = image[0]
             for rect in page.get_image_rects(xref):
                 area = rect.width * rect.height
-                if area < page_area * 0.035 or area > page_area * 0.78:
+                # 降低图片区域的最小面积阈值
+                if area < page_area * 0.02 or area > page_area * 0.78:
                     continue
-                if rect.width < page_width * 0.28 or rect.height < page_height * 0.10:
+                if rect.width < page_width * 0.22 or rect.height < page_height * 0.06:
                     continue
                 regions.append(rect)
 
@@ -479,7 +534,12 @@ class PDFExtractor:
                 self._block_line_count(block) for block in inside
                 if self._is_monospace_block(block)
             )
-            if has_card_text or monospace_lines >= 4:
+            # 降低等宽行数要求（从 4 到 2），并增加卡片标签检测
+            has_card_label = any(
+                self._has_card_label(self._extract_block_text(block))
+                for block in inside
+            )
+            if has_card_text or monospace_lines >= 2 or has_card_label:
                 accepted.append(rect)
 
         merged = []
@@ -536,6 +596,46 @@ class PDFExtractor:
             for block in group:
                 card_ids.add(id(block))
             card_groups.append(group)
+
+        # 字体检测：如果连续多个块使用了和正文不同的字体族，
+        # 把它们合并成一组来判断是否构成卡片。
+        # 这解决了 PDF 把卡片文本拆成每行一个块的问题。
+        body_fonts = self._page_body_fonts(content_blocks, page_width)
+        if body_fonts:
+            # 收集所有使用非正文字体的块（排除标题字体的单行块）
+            non_body_blocks = [
+                block for block in content_blocks
+                if id(block) not in card_ids
+                and self._is_non_body_font_block(block, body_fonts)
+                and self._block_line_count(block) >= 1
+            ]
+            # 按 y 坐标排序，把相邻的非正文字体块合并成组
+            if non_body_blocks:
+                non_body_sorted = sorted(non_body_blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+                groups = []
+                current_group = [non_body_sorted[0]]
+                for block in non_body_sorted[1:]:
+                    prev = current_group[-1]
+                    # 如果两个块垂直距离很近（< 页面高度的3%），认为是同一组
+                    gap = block["bbox"][1] - prev["bbox"][3]
+                    if gap < page_height * 0.03:
+                        current_group.append(block)
+                    else:
+                        groups.append(current_group)
+                        current_group = [block]
+                groups.append(current_group)
+
+                for group in groups:
+                    # 计算组的总行数和覆盖宽度
+                    total_lines = sum(self._block_line_count(b) for b in group)
+                    min_x = min(b["bbox"][0] for b in group)
+                    max_x = max(b["bbox"][2] for b in group)
+                    group_width = max_x - min_x
+                    # 如果组的总行数>=4 且宽度>=页面30%，判定为卡片
+                    if total_lines >= 4 and group_width >= page_width * 0.30:
+                        for block in group:
+                            card_ids.add(id(block))
+                        card_groups.append(group)
 
         body_blocks = [
             block for block in content_blocks
@@ -716,6 +816,38 @@ class PDFExtractor:
         top_text = self._extract_block_text(top_blocks[0]) if top_blocks else ""
         if len(handout_blocks) >= 3 or re.match(r"\s*Player Aid\b", top_text, re.IGNORECASE):
             return "handout"
+
+        # 检测整页都是非正文字体的情况（如整页卡片/情报页）
+        # 如果页面没有任何衬线体正文块，说明整页都是特殊排版，用单栏
+        body_fonts = self._page_body_fonts(content_blocks, page_width)
+        if not body_fonts and len(content_blocks) >= 3:
+            # 没有找到正文字体，检查是否所有块都用同一种非衬线字体
+            all_fonts = set()
+            for block in content_blocks:
+                all_fonts.update(self._block_fonts(block))
+            # 排除纯标题字体页面（如章节封面）
+            has_body_text = any(self._block_line_count(b) >= 3 for b in content_blocks)
+            if has_body_text:
+                return "single"
+
+        # 检测高度碎片化的页面（PDF 把每行拆成独立块）
+        # 这通常是卡片/信息框页面的特征，应该用单栏
+        if len(content_blocks) >= 15:
+            single_line_blocks = sum(1 for b in content_blocks if self._block_line_count(b) == 1)
+            if single_line_blocks >= len(content_blocks) * 0.7:
+                return "single"
+
+        # 检测整页都是非衬线字体的情况（无 Sabon/Times 等衬线体）
+        page_all_fonts = set()
+        for block in content_blocks:
+            page_all_fonts.update(self._block_fonts(block))
+        has_serif = any(
+            "Sabon" in f or "Times" in f or "Garamond" in f or "Minion" in f or "Caslon" in f
+            for f in page_all_fonts
+        )
+        has_body_text_blocks = any(self._block_line_count(b) >= 3 for b in content_blocks)
+        if not has_serif and has_body_text_blocks and len(content_blocks) >= 3:
+            return "single"
 
         left_count = 0
         right_count = 0
