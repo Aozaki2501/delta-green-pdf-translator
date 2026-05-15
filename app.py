@@ -286,6 +286,7 @@ if pdf_file and show_extraction_preview:
         total_preview_pages = preview_extractor.total_pages
         preview_index = min(max(int(preview_page) - 1, 0), total_preview_pages - 1)
         preview_text = preview_extractor.extract_page(preview_index)
+        preview_notes = preview_extractor.get_layout_notes(preview_index)
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.subheader("提取预览 / 诊断")
@@ -293,6 +294,8 @@ if pdf_file and show_extraction_preview:
             f"PDF 共 {total_preview_pages} 页；当前预览第 {preview_index + 1} 页。"
             "这里只展示提取和排序后的文本，不会调用翻译 API。"
         )
+        if preview_notes:
+            st.caption("版面识别：" + "；".join(preview_notes))
         if preview_text.strip():
             st.text_area("提取文本", preview_text, height=420)
         else:
@@ -425,8 +428,9 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         for pn in pages_list:
             text = pages_text.get(pn, "")
             pages_data.append((pn, text, prev_text[-300:] if prev_text else ""))
-            if text.strip():
-                prev_text = text
+            context_text = extractor.get_context_text(pn)
+            if context_text.strip():
+                prev_text = context_text
 
         translation_started_at = time.time()
 

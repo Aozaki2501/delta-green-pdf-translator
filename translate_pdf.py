@@ -72,8 +72,8 @@ except ImportError:
     HAS_DOCX = False
 
 
-PROMPT_VERSION = "2026-05-14-concise-headings-v1"
-EXTRACTOR_VERSION = "2026-05-14-layout-aware-v4"
+PROMPT_VERSION = "2026-05-15-preserve-layout-markers-v4"
+EXTRACTOR_VERSION = "2026-05-15-card-sections-v1"
 SUPPORTED_OUTPUT_FORMATS = {"markdown", "html", "word", "both", "all"}
 TRANSLATION_FAILURE_PREFIX = "[Translation failed:"
 
@@ -259,6 +259,14 @@ class PDFExtractor:
         self.doc = pymupdf.open(pdf_path)
         self.total_pages = len(self.doc)
         self.chapter_detector = ChapterDetector()
+        self._page_body_context: dict[int, str] = {}
+        self._page_layout_notes: dict[int, list[str]] = {}
+
+    def get_context_text(self, page_num: int) -> str:
+        return self._page_body_context.get(page_num, "")
+
+    def get_layout_notes(self, page_num: int) -> list[str]:
+        return self._page_layout_notes.get(page_num, [])
 
     def __enter__(self):
         return self
@@ -380,6 +388,51 @@ class PDFExtractor:
             return 0
         return sum(sizes) / len(sizes)
 
+    def _block_width(self, block):
+        x0, _, x1, _ = block["bbox"]
+        return x1 - x0
+
+    def _block_height(self, block):
+        _, y0, _, y1 = block["bbox"]
+        return y1 - y0
+
+    def _block_center_x(self, block):
+        x0, _, x1, _ = block["bbox"]
+        return (x0 + x1) / 2
+
+    def _block_line_count(self, block):
+        return sum(
+            1 for line in block.get("lines", [])
+            if self._extract_line_text(line).strip()
+        )
+
+    def _rect_from_bbox(self, bbox):
+        return pymupdf.Rect(*bbox)
+
+    def _rect_contains_block(self, rect, block, tolerance=4):
+        x0, y0, x1, y1 = block["bbox"]
+        return (
+            x0 >= rect.x0 - tolerance
+            and y0 >= rect.y0 - tolerance
+            and x1 <= rect.x1 + tolerance
+            and y1 <= rect.y1 + tolerance
+        )
+
+    def _rects_touch_or_overlap(self, left, right, tolerance=10):
+        return not (
+            left.x1 < right.x0 - tolerance
+            or right.x1 < left.x0 - tolerance
+            or left.y1 < right.y0 - tolerance
+            or right.y1 < left.y0 - tolerance
+        )
+
+    def _union_rect(self, rects):
+        x0 = min(rect.x0 for rect in rects)
+        y0 = min(rect.y0 for rect in rects)
+        x1 = max(rect.x1 for rect in rects)
+        y1 = max(rect.y1 for rect in rects)
+        return pymupdf.Rect(x0, y0, x1, y1)
+
     def _block_fonts(self, block):
         return {
             span.get("font", "")
@@ -484,6 +537,156 @@ class PDFExtractor:
         if not text:
             return False
         return bool(re.search(r"\b(SUBJECT|Records?|Stories?|Profile)\b", text, re.IGNORECASE))
+
+    def _has_card_label(self, text: str) -> bool:
+        patterns = [
+            r"\b(?:YELLOW|GREEN|RED|BLUE|WHITE|BLACK)\s+CARD\b",
+            r"\bPLAYER\s+AID\b",
+            r"\bSUBJECT\s*:",
+            r"\bPROFILE\s+OF\b",
+            r"\b(?:Birth|Medical|Police|USMC|Military|News|School|Juvenile)\s+Records?\b",
+            r"^\s*(?:Timeline|Briefing|Report|Memo|Evidence|Clue|Handout|Photograph|Letter|Note)\b",
+        ]
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+    def _is_card_text_block(self, block, page_width, page_height, median_size=None):
+        text = self._extract_block_text(block).strip()
+        if not text:
+            return False
+        if self._is_contents_block(block) or self._is_table_block(block, page_width):
+            return False
+        width = self._block_width(block)
+        line_count = self._block_line_count(block)
+        avg_size = self._block_avg_font_size(block)
+        median_size = median_size or avg_size or 10
+        if self._is_handout_block(block):
+            return True
+        if self._has_card_label(text) and (width >= page_width * 0.28 or line_count >= 2):
+            return True
+        if (
+            self._is_monospace_block(block)
+            and line_count >= 4
+            and width >= page_width * 0.42
+            and self._block_height(block) >= page_height * 0.08
+        ):
+            return True
+        if (
+            width >= page_width * 0.68
+            and line_count >= 5
+            and avg_size <= median_size * 1.35
+            and self._has_card_label(text[:300])
+        ):
+            return True
+        return False
+
+    def _visual_card_regions(self, page, content_blocks, page_width, page_height):
+        page_area = page_width * page_height
+        regions = []
+
+        for drawing in page.get_drawings():
+            rect = drawing.get("rect")
+            if not rect:
+                continue
+            area = rect.width * rect.height
+            if area < page_area * 0.025 or area > page_area * 0.78:
+                continue
+            if rect.width < page_width * 0.24 or rect.height < page_height * 0.08:
+                continue
+            regions.append(rect)
+
+        for image in page.get_images(full=True):
+            xref = image[0]
+            for rect in page.get_image_rects(xref):
+                area = rect.width * rect.height
+                if area < page_area * 0.035 or area > page_area * 0.78:
+                    continue
+                if rect.width < page_width * 0.28 or rect.height < page_height * 0.10:
+                    continue
+                regions.append(rect)
+
+        median_size = self._median_font_size(content_blocks)
+        accepted = []
+        for rect in regions:
+            inside = [
+                block for block in content_blocks
+                if self._rect_contains_block(rect, block, tolerance=8)
+            ]
+            if not inside:
+                continue
+            has_card_text = any(
+                self._is_card_text_block(block, page_width, page_height, median_size)
+                for block in inside
+            )
+            monospace_lines = sum(
+                self._block_line_count(block) for block in inside
+                if self._is_monospace_block(block)
+            )
+            if has_card_text or monospace_lines >= 4:
+                accepted.append(rect)
+
+        merged = []
+        for rect in sorted(accepted, key=lambda item: (item.y0, item.x0)):
+            for idx, existing in enumerate(merged):
+                if self._rects_touch_or_overlap(existing, rect, tolerance=14):
+                    merged[idx] = self._union_rect([existing, rect])
+                    break
+            else:
+                merged.append(rect)
+        return merged
+
+    def _group_card_blocks(self, card_blocks, page_width, page_height):
+        groups = []
+        for block in sorted(card_blocks, key=lambda item: (item["bbox"][1], item["bbox"][0])):
+            rect = self._rect_from_bbox(block["bbox"])
+            placed = False
+            for group in groups:
+                group_rect = self._union_rect([self._rect_from_bbox(b["bbox"]) for b in group])
+                same_band = abs(rect.y0 - group_rect.y1) <= page_height * 0.08
+                horizontal_overlap = min(rect.x1, group_rect.x1) - max(rect.x0, group_rect.x0)
+                overlap_ratio = horizontal_overlap / max(min(rect.width, group_rect.width), 1)
+                if same_band and overlap_ratio >= 0.35:
+                    group.append(block)
+                    placed = True
+                    break
+            if not placed:
+                groups.append([block])
+        return groups
+
+    def _split_card_blocks(self, page, content_blocks, page_width, page_height):
+        median_size = self._median_font_size(content_blocks)
+        card_ids = set()
+        card_groups = []
+        notes = []
+
+        for rect in self._visual_card_regions(page, content_blocks, page_width, page_height):
+            group = [
+                block for block in content_blocks
+                if id(block) not in card_ids and self._rect_contains_block(rect, block, tolerance=8)
+            ]
+            if not group:
+                continue
+            for block in group:
+                card_ids.add(id(block))
+            card_groups.append(group)
+
+        loose_card_blocks = [
+            block for block in content_blocks
+            if id(block) not in card_ids
+            and self._is_card_text_block(block, page_width, page_height, median_size)
+        ]
+        for group in self._group_card_blocks(loose_card_blocks, page_width, page_height):
+            for block in group:
+                card_ids.add(id(block))
+            card_groups.append(group)
+
+        body_blocks = [
+            block for block in content_blocks
+            if id(block) not in card_ids
+        ]
+        if card_groups:
+            card_blocks_count = sum(len(group) for group in card_groups)
+            notes.append(f"{len(card_groups)} card section(s), {card_blocks_count} block(s)")
+        return body_blocks, card_groups, notes
 
     def _is_heading_block(self, block, median_size):
         text = self._extract_block_text(block).strip()
@@ -621,11 +824,13 @@ class PDFExtractor:
         if re.fullmatch(r"\d{1,4}", compact):
             return True
 
-        running_titles = ("DELTA GREEN", "PISCES", "THE MILLENNIUM")
+        running_titles = ("DELTA GREEN", "PISCES", "THE MILLENNIUM", "THE NEW AGE", "THE LABYRINTH")
         if in_margin and any(title in normalized for title in running_titles):
             return True
+        if in_margin and "//" in compact:
+            return True
 
-        if in_margin and len(compact) <= 80:
+        if in_bottom and len(compact) <= 80:
             return True
         return False
 
@@ -698,28 +903,53 @@ class PDFExtractor:
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
-    def extract_page(self, page_num: int) -> str:
-        page = self.doc[page_num]
-        page_width = page.rect.width
-        page_height = page.rect.height
-        page_dict = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
-        blocks = page_dict.get("blocks", [])
-        self.chapter_detector.analyze_page(page_num, page_dict)
+    def _layout_notes_for_page(self, layout: str, content_blocks, page_width: float) -> list[str]:
+        notes = [f"layout: {layout}"]
+        table_count = sum(1 for block in content_blocks if self._is_table_block(block, page_width))
+        handout_count = sum(1 for block in content_blocks if self._is_handout_block(block))
+        if any(self._is_contents_block(block) for block in content_blocks):
+            notes.append("contents page preserved as TOC")
+        if table_count:
+            notes.append(f"{table_count} table-like block(s)")
+        if handout_count:
+            notes.append(f"{handout_count} handout block(s)")
+        return notes
+
+    def _context_from_extracted_text(self, text: str, layout: str) -> str:
+        if layout == "toc":
+            return ""
+        context_lines = []
+        in_fenced_block = False
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("```"):
+                in_fenced_block = not in_fenced_block
+                continue
+            if in_fenced_block:
+                continue
+            if line == "[[TOC]]":
+                continue
+            if line.startswith("|") and line.count("|") >= 2:
+                continue
+            if line.startswith(">"):
+                line = line.lstrip(">").strip()
+            context_lines.append(line)
+        return self._clean_text("\n".join(context_lines))[-1200:]
+
+    def _quote_card_text(self, text: str) -> str:
+        quoted = []
+        for line in text.splitlines():
+            quoted.append("> " + line.strip() if line.strip() else ">")
+        return "\n".join(quoted).strip()
+
+    def _blocks_to_extracted_text(self, blocks, page_width, page_height, layout_aware=True,
+                                  mark_handouts=True) -> str:
         if not blocks:
             return ""
-        content_blocks = [
-            b for b in blocks
-            if b.get("type") == 0 and not self._is_header_footer(b, page_height)
-        ]
-        if not content_blocks:
-            return ""
-        if self.detect_page_layout(page_num) == "toc":
-            toc_text = self._extract_contents_page(content_blocks)
-            return self._clean_text(toc_text)
-        sorted_blocks = self._sort_blocks_layout_aware(content_blocks, page_width, page_height)
-        paragraphs = []
-        current_para = ""
-        current_is_title_card = False
+        if layout_aware:
+            sorted_blocks = self._sort_blocks_layout_aware(blocks, page_width, page_height)
+        else:
+            sorted_blocks = sorted(blocks, key=lambda item: (item["bbox"][1], item["bbox"][0]))
 
         processed_blocks = []
         idx = 0
@@ -732,14 +962,18 @@ class PDFExtractor:
                     idx += 1
                 table_text = self._blocks_to_markdown_table(table_blocks)
                 if not table_text:
-                    table_text = "\n".join(self._extract_block_text(b).strip() for b in table_blocks if self._extract_block_text(b).strip())
+                    table_text = "\n".join(
+                        self._extract_block_text(b).strip()
+                        for b in table_blocks
+                        if self._extract_block_text(b).strip()
+                    )
                 processed_blocks.append({"text": table_text, "title_card": False})
                 continue
 
-            if self._is_handout_block(block):
+            if mark_handouts and self._is_handout_block(block):
                 text = self._extract_block_text(block).strip()
                 if text:
-                    text = "> " + text.replace("\n\n", "\n> ")
+                    text = self._quote_card_text(text)
                 processed_blocks.append({"text": text, "title_card": False})
                 idx += 1
                 continue
@@ -749,6 +983,10 @@ class PDFExtractor:
                 "title_card": bool(block.get("_dg_title_card")),
             })
             idx += 1
+
+        paragraphs = []
+        current_para = ""
+        current_is_title_card = False
 
         for item in processed_blocks:
             text = item["text"].strip()
@@ -770,7 +1008,7 @@ class PDFExtractor:
             current_tail = current_para.rstrip()
             first_alpha = re.search(r"[A-Za-z]", text)
             starts_lower = bool(first_alpha and first_alpha.group(0).islower())
-            joins_from_punctuation = current_tail.endswith((",", ":", ";", "—", "-"))
+            joins_from_punctuation = current_tail.endswith((",", ":", ";", "-"))
 
             if joins_from_punctuation or starts_lower:
                 if current_tail.endswith("-"):
@@ -785,9 +1023,56 @@ class PDFExtractor:
 
         if current_para:
             paragraphs.append(current_para)
+        return self._clean_text("\n\n".join(paragraphs))
 
-        full_text = "\n\n".join(paragraphs)
-        return self._clean_text(full_text)
+    def extract_page(self, page_num: int) -> str:
+        page = self.doc[page_num]
+        page_width = page.rect.width
+        page_height = page.rect.height
+        page_dict = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
+        blocks = page_dict.get("blocks", [])
+        self.chapter_detector.analyze_page(page_num, page_dict)
+        if not blocks:
+            self._page_body_context[page_num] = ""
+            self._page_layout_notes[page_num] = ["empty page"]
+            return ""
+        content_blocks = [
+            b for b in blocks
+            if b.get("type") == 0 and not self._is_header_footer(b, page_height)
+        ]
+        if not content_blocks:
+            self._page_body_context[page_num] = ""
+            self._page_layout_notes[page_num] = ["no content blocks"]
+            return ""
+        layout = self.detect_page_layout(page_num)
+        self._page_layout_notes[page_num] = self._layout_notes_for_page(layout, content_blocks, page_width)
+        if layout == "toc":
+            toc_text = self._extract_contents_page(content_blocks)
+            clean_toc = self._clean_text(toc_text)
+            self._page_body_context[page_num] = ""
+            return clean_toc
+
+        body_blocks, card_groups, card_notes = self._split_card_blocks(
+            page, content_blocks, page_width, page_height
+        )
+        self._page_layout_notes[page_num].extend(card_notes)
+
+        body_text = self._blocks_to_extracted_text(
+            body_blocks, page_width, page_height, layout_aware=True, mark_handouts=True
+        )
+        sections = []
+        if body_text:
+            sections.append(body_text)
+        for group in sorted(card_groups, key=lambda group: min(block["bbox"][1] for block in group)):
+            card_text = self._blocks_to_extracted_text(
+                group, page_width, page_height, layout_aware=False, mark_handouts=False
+            )
+            if card_text:
+                sections.append(self._quote_card_text(card_text))
+
+        clean_text = self._clean_text("\n\n".join(sections))
+        self._page_body_context[page_num] = self._context_from_extracted_text(body_text, layout)
+        return clean_text
 
     def _extract_contents_page(self, content_blocks):
         toc_blocks = [
@@ -1064,7 +1349,7 @@ Translation rules:
 9. If OCR errors/garbled text exists, infer meaning from context. Mark unreadable as [damaged].
 10. If previous context is provided, ensure continuity. Do not re-translate previous content.
 11. Preserve Markdown tables as Markdown tables. Translate cell text but keep the same columns.
-12. Preserve blockquotes starting with > for handouts/player aids.
+12. Preserve blockquotes starting with > for handouts/player aids/cards. Do not merge blockquoted card text into the surrounding body text.
 
 {glossary_section}"""
 
@@ -2007,10 +2292,11 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         margin: 0 auto;
     }}
     .handout-card {{
+        column-span: all;
         margin: 0.16in 0 0.26in;
         padding: 0.16in 0.22in;
-        background: rgba(220, 236, 232, 0.76);
-        border: 1px solid rgba(130, 150, 144, 0.38);
+        background: rgba(244, 225, 125, 0.62);
+        border: 1px solid rgba(145, 126, 55, 0.42);
         box-shadow: 0 0.06in 0.12in rgba(0, 0, 0, 0.14);
         font-family: "Courier New", "VT323", monospace;
         break-inside: avoid;
@@ -2167,6 +2453,18 @@ def _write_word_block(doc, text: str):
         elif clean_line.startswith("# "):
             p = doc.add_heading(clean_line[2:], level=1)
             p.paragraph_format.first_line_indent = Pt(0)
+        elif clean_line.startswith(">"):
+            card_text = clean_line.lstrip(">").strip()
+            if not card_text:
+                continue
+            p = doc.add_paragraph(card_text)
+            p.paragraph_format.left_indent = Pt(14)
+            p.paragraph_format.right_indent = Pt(8)
+            p.paragraph_format.first_line_indent = Pt(0)
+            p_pr = p._p.get_or_add_pPr()
+            shading = OxmlElement("w:shd")
+            shading.set(qn("w:fill"), "F4E17D")
+            p_pr.append(shading)
         elif _is_plain_heading_line(clean_line):
             p = doc.add_heading(clean_line, level=2)
             p.paragraph_format.first_line_indent = Pt(0)
@@ -2319,8 +2617,9 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 text = pages_text.get(page_num, "")
                 context = prev_text[-300:] if prev_text else ""
                 pages_data.append((page_num, text, context))
-                if text.strip():
-                    prev_text = text
+                context_text = extractor.get_context_text(page_num)
+                if context_text.strip():
+                    prev_text = context_text
             results = translate_batch_concurrent(pages_data, translator, tracker, max_workers)
             translated_pages = [(pn, t) for pn, t in results.items() if t.strip()]
         else:
