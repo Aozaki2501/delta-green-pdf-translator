@@ -1,0 +1,157 @@
+"""
+Progress tracking with thread-safe persistence.
+
+Provides ProgressTracker for resumable translation sessions, plus
+metadata fingerprint construction and comparison utilities.
+
+Dependencies: core.constants (for PROMPT_VERSION, EXTRACTOR_VERSION),
+              core.utils (for file_sha256)
+"""
+
+import json
+import os
+import tempfile
+import threading
+from pathlib import Path
+from typing import Optional
+
+from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
+from core.utils import file_sha256
+
+
+def build_progress_metadata(pdf_path: str, glossary_path: Optional[str], model: str,
+                            start_page: int, end_page: int | None) -> dict:
+    """Build a metadata fingerprint dict for a translation session."""
+    return {
+        "schema": 1,
+        "pdf_sha256": file_sha256(pdf_path),
+        "glossary_sha256": file_sha256(glossary_path) if glossary_path else "",
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+        "extractor_version": EXTRACTOR_VERSION,
+        "start_page": start_page,
+        "end_page": end_page,
+    }
+
+
+def compare_progress_metadata(expected: dict, actual: dict) -> list[str]:
+    """Compare two metadata dicts and return a list of mismatch descriptions."""
+    if not expected:
+        return []
+    if not actual:
+        return ["进度文件缺少版本指纹"]
+
+    mismatches = []
+    for key, expected_value in expected.items():
+        actual_value = actual.get(key)
+        if actual_value != expected_value:
+            mismatches.append(f"{key}: {actual_value!r} -> {expected_value!r}")
+    return mismatches
+
+
+class ProgressTracker:
+    """Thread-safe progress tracker with atomic file persistence."""
+
+    def __init__(self, progress_file: str, expected_metadata: Optional[dict] = None,
+                 reuse_mismatched: bool = False):
+        self.progress_file = progress_file
+        self.expected_metadata = expected_metadata or {}
+        self.reuse_mismatched = reuse_mismatched
+        self.metadata = dict(self.expected_metadata)
+        self.metadata_mismatches: list[str] = []
+        self.ignored_existing_progress = False
+        self.completed_pages = set()
+        self.translations = {}
+        self._lock = threading.Lock()
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self.progress_file):
+            try:
+                with open(self.progress_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("progress root must be an object")
+                loaded_metadata = data.get("metadata", {})
+                self.metadata_mismatches = compare_progress_metadata(
+                    self.expected_metadata,
+                    loaded_metadata,
+                )
+                if self.metadata_mismatches and not self.reuse_mismatched:
+                    self.ignored_existing_progress = True
+                    self.completed_pages = set()
+                    self.translations = {}
+                    self.metadata = dict(self.expected_metadata)
+                    print("Progress metadata mismatch, ignoring cached translations")
+                    return
+
+                self.metadata = loaded_metadata or dict(self.expected_metadata)
+                self.completed_pages = {
+                    int(page_num)
+                    for page_num in data.get("completed_pages", [])
+                    if str(page_num).isdigit()
+                }
+                loaded_translations = data.get("translations", {})
+                self.translations = (
+                    loaded_translations if isinstance(loaded_translations, dict) else {}
+                )
+                print(f"Loaded progress: {len(self.completed_pages)} pages done")
+            except (json.JSONDecodeError, IOError, ValueError, TypeError):
+                print("Progress file corrupted, starting fresh")
+
+    def save(self):
+        """Persist progress to disk atomically (write temp file, then os.replace)."""
+        with self._lock:
+            data = {
+                "metadata": self.metadata,
+                "completed_pages": sorted(self.completed_pages),
+                "translations": self.translations,
+            }
+            progress_path = Path(self.progress_file)
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = None
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(progress_path.parent),
+                prefix=progress_path.name + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = Path(f.name)
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp_path, progress_path)
+
+    def is_completed(self, page_num: int) -> bool:
+        """Check whether a page has already been translated."""
+        return page_num in self.completed_pages
+
+    def mark_completed(self, page_num: int, translation: str):
+        """Record a page translation and persist immediately."""
+        with self._lock:
+            self.completed_pages.add(page_num)
+            self.translations[str(page_num)] = translation
+        self.save()
+
+    def clear_pages(self, page_nums) -> int:
+        """Remove specified pages from completed state. Returns count cleared."""
+        cleared = 0
+        with self._lock:
+            for page_num in page_nums:
+                page_cleared = False
+                if page_num in self.completed_pages:
+                    self.completed_pages.remove(page_num)
+                    page_cleared = True
+                if str(page_num) in self.translations:
+                    self.translations.pop(str(page_num), None)
+                    page_cleared = True
+                if page_cleared:
+                    cleared += 1
+        if cleared:
+            self.save()
+        return cleared
+
+    def get_translation(self, page_num: int) -> str:
+        """Retrieve the cached translation for a page, or empty string."""
+        return self.translations.get(str(page_num), "")
