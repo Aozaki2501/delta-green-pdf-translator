@@ -226,10 +226,20 @@ def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1
 # Word content writing helpers
 # ---------------------------------------------------------------------------
 
+def _is_table_line(line: str) -> bool:
+    """Check if a line is part of a Markdown table."""
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3
+
+
 def _split_card_segments(text: str):
+    """Split block text into segments: normal (dual-column), card (single-column),
+    and table (single-column). This allows the Word renderer to switch column
+    layout around cards and tables."""
     segments = []
     normal_lines = []
     card_lines = []
+    table_lines = []
     in_card = False
 
     def flush_normal():
@@ -244,10 +254,17 @@ def _split_card_segments(text: str):
             segments.append(("card", "\n".join(card_lines).strip()))
         card_lines = []
 
+    def flush_table():
+        nonlocal table_lines
+        if table_lines:
+            segments.append(("table", "\n".join(table_lines).strip()))
+        table_lines = []
+
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if line == "[CARD]":
             flush_normal()
+            flush_table()
             in_card = True
             continue
         if line == "[/CARD]":
@@ -256,12 +273,22 @@ def _split_card_segments(text: str):
             continue
         if in_card:
             card_lines.append(raw_line)
+            continue
+
+        # Detect table lines
+        if _is_table_line(line):
+            if not table_lines:
+                flush_normal()
+            table_lines.append(raw_line)
         else:
+            if table_lines:
+                flush_table()
             normal_lines.append(raw_line)
 
     if in_card:
         flush_card()
     else:
+        flush_table()
         flush_normal()
     return segments
 
@@ -306,7 +333,65 @@ def _write_word_block(doc, text: str):
             doc.add_paragraph(clean_line)
 
 
-def _write_word_card(doc, text: str):
+def _write_word_table(doc, text: str):
+    """Render a Markdown table as a Word table."""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if len(lines) < 2:
+        # Not enough lines for a table, fall back to plain text
+        for line in lines:
+            doc.add_paragraph(line.strip("| "))
+        return
+
+    # Parse header
+    header_cells = [cell.strip() for cell in lines[0].strip("|").split("|")]
+
+    # Skip separator line (e.g. |---|---|---|)
+    data_start = 1
+    if len(lines) > 1 and re.fullmatch(r"\|[\s:|-]+\|", lines[1]):
+        data_start = 2
+
+    # Parse data rows
+    data_rows = []
+    for line in lines[data_start:]:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        data_rows.append(cells)
+
+    col_count = len(header_cells)
+    if col_count < 1:
+        return
+
+    # Create Word table
+    table = doc.add_table(rows=1 + len(data_rows), cols=col_count)
+    table.style = "Table Grid"
+
+    # Write header
+    for idx, cell_text in enumerate(header_cells):
+        if idx < col_count:
+            cell = table.rows[0].cells[idx]
+            cell.text = cell_text
+            # Bold header
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.first_line_indent = Pt(0)
+                paragraph.paragraph_format.space_before = Pt(2)
+                paragraph.paragraph_format.space_after = Pt(2)
+                for run in paragraph.runs:
+                    run.bold = True
+
+    # Write data rows
+    for row_idx, row_cells in enumerate(data_rows):
+        for col_idx in range(col_count):
+            cell_text = row_cells[col_idx] if col_idx < len(row_cells) else ""
+            cell = table.rows[row_idx + 1].cells[col_idx]
+            cell.text = cell_text
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.first_line_indent = Pt(0)
+                paragraph.paragraph_format.space_before = Pt(2)
+                paragraph.paragraph_format.space_after = Pt(2)
+
+    # Add spacing after table
+    doc.add_paragraph()
+
+
     for idx, line in enumerate(text.split("\n")):
         clean_line = line.strip()
         if not clean_line:
@@ -381,6 +466,12 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                     card_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(card_section, columns=1)
                     _write_word_card(doc, content)
+                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(body_section, columns=columns)
+                elif kind == "table":
+                    table_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(table_section, columns=1)
+                    _write_word_table(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(body_section, columns=columns)
                 else:
