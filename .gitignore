@@ -4,3 +4,5 @@ __pycache__/
 .streamlit/
 uploads/
 output/
+diag_*.py
+test_card_*.py
