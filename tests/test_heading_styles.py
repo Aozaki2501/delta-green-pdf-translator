@@ -98,3 +98,34 @@ def test_disinformation_in_body_sentence_is_not_card_label():
 
     assert not extractor._has_card_label("They pass disinformation to the Russians.")
     assert extractor._has_card_label("DISINFORMATION\nCase summary follows.")
+
+
+def _block(text, x0, y0, x1, y1, size=10):
+    return {
+        "bbox": (x0, y0, x1, y1),
+        "type": 0,
+        "lines": [_line(text, size, y0)],
+    }
+
+
+def test_single_block_per_column_still_reads_left_column_first():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    left_top = _block("left top", 70, 100, 300, 140)
+    right = _block("right column", 340, 110, 560, 300)
+    left_bottom = _block("left bottom", 72, 180, 300, 240)
+
+    sorted_blocks = extractor._sort_blocks_layout_aware(
+        [left_top, right, left_bottom],
+        page_width=612,
+        page_height=792,
+    )
+
+    assert sorted_blocks == [left_top, left_bottom, right]
+
+
+def test_adjacent_same_level_heading_lines_are_merged():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+
+    text = extractor._merge_adjacent_heading_paragraphs("# Haley Production Company\n\n# and Arthur Tallent")
+
+    assert text == "# Haley Production Company and Arthur Tallent"

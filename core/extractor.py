@@ -148,7 +148,7 @@ class PDFExtractor:
             if ((b["bbox"][0] + b["bbox"][2]) / 2) < page_width / 2
         )
         right_count = len(non_full_blocks) - left_count
-        if left_count < 2 or right_count < 2:
+        if left_count < 1 or right_count < 1:
             return sorted_input
 
         output_blocks = []
@@ -751,6 +751,29 @@ class PDFExtractor:
         clean = re.sub(r"\s+", " ", text).strip()
         return f"{'#' * max(1, min(4, level))} {clean}"
 
+    def _merge_adjacent_heading_paragraphs(self, text: str) -> str:
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+        merged = []
+        for paragraph in paragraphs:
+            current = re.match(r"^(#{1,4})\s+(.+)$", paragraph)
+            previous = re.match(r"^(#{1,4})\s+(.+)$", merged[-1]) if merged else None
+            if (
+                current
+                and previous
+                and current.group(1) == previous.group(1)
+                and not re.search(r"[.!?。！？；;]$", previous.group(2))
+            ):
+                merged[-1] = (
+                    previous.group(1)
+                    + " "
+                    + previous.group(2).strip()
+                    + " "
+                    + current.group(2).strip()
+                )
+            else:
+                merged.append(paragraph)
+        return "\n\n".join(merged)
+
     def _join_line_into_paragraph(self, paragraph, line_text):
         if not paragraph:
             return line_text
@@ -813,7 +836,7 @@ class PDFExtractor:
             current = self._join_line_into_paragraph(current, text)
 
         flush()
-        text = "\n\n".join(paragraphs)
+        text = self._merge_adjacent_heading_paragraphs("\n\n".join(paragraphs))
         if block.get("_dg_title_card"):
             title = re.sub(r"\s+", " ", text).strip()
             return f"# {title}" if title else ""
@@ -1115,6 +1138,24 @@ class PDFExtractor:
                 left = re.sub(r"^#\s*", "", current_para).strip()
                 right = re.sub(r"^#\s*", "", text).strip()
                 current_para = "# " + " ".join(part for part in (left, right) if part)
+                continue
+
+            current_heading = re.match(r"^(#{1,4})\s+(.+)$", current_para.rstrip())
+            next_heading = re.match(r"^(#{1,4})\s+(.+)$", text)
+            if (
+                current_heading
+                and next_heading
+                and current_heading.group(1) == next_heading.group(1)
+                and not re.search(r"[.!?。！？；;]$", current_heading.group(2))
+            ):
+                current_para = (
+                    current_heading.group(1)
+                    + " "
+                    + current_heading.group(2).strip()
+                    + " "
+                    + next_heading.group(2).strip()
+                )
+                current_is_title_card = current_is_title_card and is_title_card
                 continue
 
             current_tail = current_para.rstrip()
