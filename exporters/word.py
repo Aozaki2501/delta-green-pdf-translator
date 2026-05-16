@@ -392,6 +392,7 @@ def _write_word_table(doc, text: str):
     doc.add_paragraph()
 
 
+def _write_word_card(doc, text: str):
     for idx, line in enumerate(text.split("\n")):
         clean_line = line.strip()
         if not clean_line:
