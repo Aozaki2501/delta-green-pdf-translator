@@ -6,6 +6,6 @@ from other project modules.
 """
 
 PROMPT_VERSION = "2026-05-16-preserve-heading-levels-v6"
-EXTRACTOR_VERSION = "2026-05-16-heading-colors-card-context-v3"
+EXTRACTOR_VERSION = "2026-05-16-card-labels-heading-context-v4"
 SUPPORTED_OUTPUT_FORMATS = {"markdown", "html", "word", "both", "all"}
 TRANSLATION_FAILURE_PREFIX = "[Translation failed:"

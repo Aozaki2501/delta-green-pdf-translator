@@ -405,16 +405,16 @@ class PDFExtractor:
             r"\b(?:Birth|Medical|Police|USMC|Military|News|School|Juvenile)\s+Records?\b",
             r"^\s*(?:Timeline|Briefing|Report|Memo|Evidence|Clue|Handout|Photograph|Letter|Note)\b",
             # DG Labyrinth 特有的卡片标题
-            r"\bDISINFORMATION\b",
-            r"\bOPINT\s*:",
-            r"\bIN\s+THE\s+FIELD\s*:",
-            r"\bTRADECRAFT\s*:",
-            r"\bCASE\s+FILE\b",
-            r"\bFIELD\s+NOTES?\b",
-            r"\bINTELLIGENCE\s+BRIEF\b",
-            r"\bSITUATION\s+REPORT\b",
-            r"\bAFTER[\s-]?ACTION\b",
-            r"\bOPERATION(?:AL)?\s+(?:BRIEF|NOTES?|INTEL)\b",
+            r"(?m)^\s*DISINFORMATION\b",
+            r"(?m)^\s*OPINT\s*:",
+            r"(?m)^\s*IN\s+THE\s+FIELD\s*:",
+            r"(?m)^\s*TRADECRAFT\s*:",
+            r"(?m)^\s*CASE\s+FILE\b",
+            r"(?m)^\s*FIELD\s+NOTES?\b",
+            r"(?m)^\s*INTELLIGENCE\s+BRIEF\b",
+            r"(?m)^\s*SITUATION\s+REPORT\b",
+            r"(?m)^\s*AFTER[\s-]?ACTION\b",
+            r"(?m)^\s*OPERATION(?:AL)?\s+(?:BRIEF|NOTES?|INTEL)\b",
         ]
         return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 

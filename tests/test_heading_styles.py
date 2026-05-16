@@ -91,3 +91,10 @@ def test_card_sections_keep_page_order_and_context():
     assert text.index("Body before card.") < text.index("[CARD]")
     assert text.index("[/CARD]") < text.index("Body after card.")
     assert "Card information." in context
+
+
+def test_disinformation_in_body_sentence_is_not_card_label():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+
+    assert not extractor._has_card_label("They pass disinformation to the Russians.")
+    assert extractor._has_card_label("DISINFORMATION\nCase summary follows.")
