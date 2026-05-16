@@ -82,9 +82,54 @@ def _clean_translated_block(text: str) -> str:
         line = _clean_decorative_slash_line(line)
         lines.append(line)
 
+    lines = _merge_soft_wrapped_lines(lines)
     text = "\n".join(lines)
     text = _dedupe_adjacent_repeated_units(text)
     return text.strip()
+
+
+def _is_structural_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped in ("[CARD]", "[/CARD]", "[[TOC]]"):
+        return True
+    if stripped.startswith(("#", "-", "\u2022", "|", ">", "```")):
+        return True
+    visible = re.sub(r"\s+", "", stripped)
+    return len(visible) <= 10 and _is_plain_heading_line(stripped)
+
+
+def _join_wrapped_text(left: str, right: str) -> str:
+    if not left:
+        return right
+    if re.search(r"[\u4e00-\u9fff]$", left) or re.match(r"^[\u4e00-\u9fff，。！？；：、）】》”]", right):
+        return left + right
+    return left + " " + right
+
+
+def _merge_soft_wrapped_lines(lines: list[str]) -> list[str]:
+    merged = []
+    current = ""
+
+    def flush():
+        nonlocal current
+        if current:
+            merged.append(current)
+            current = ""
+
+    for line in lines:
+        if _is_structural_line(line):
+            flush()
+            merged.append(line)
+            continue
+        if not current:
+            current = line
+            continue
+        current = _join_wrapped_text(current, line)
+
+    flush()
+    return merged
 
 
 def _clean_decorative_slash_line(line: str) -> str:

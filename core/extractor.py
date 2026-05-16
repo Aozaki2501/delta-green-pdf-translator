@@ -404,6 +404,17 @@ class PDFExtractor:
             r"\bPROFILE\s+OF\b",
             r"\b(?:Birth|Medical|Police|USMC|Military|News|School|Juvenile)\s+Records?\b",
             r"^\s*(?:Timeline|Briefing|Report|Memo|Evidence|Clue|Handout|Photograph|Letter|Note)\b",
+            # DG Labyrinth 特有的卡片标题
+            r"(?m)^\s*DISINFORMATION\b",
+            r"(?m)^\s*OPINT\s*:",
+            r"(?m)^\s*IN\s+THE\s+FIELD\s*:",
+            r"(?m)^\s*TRADECRAFT\s*:",
+            r"(?m)^\s*CASE\s+FILE\b",
+            r"(?m)^\s*FIELD\s+NOTES?\b",
+            r"(?m)^\s*INTELLIGENCE\s+BRIEF\b",
+            r"(?m)^\s*SITUATION\s+REPORT\b",
+            r"(?m)^\s*AFTER[\s-]?ACTION\b",
+            r"(?m)^\s*OPERATION(?:AL)?\s+(?:BRIEF|NOTES?|INTEL)\b",
         ]
         return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
@@ -421,11 +432,20 @@ class PDFExtractor:
             return True
         if self._has_card_label(text) and (width >= page_width * 0.28 or line_count >= 2):
             return True
+        # 等宽字体块：放宽宽度阈值（从 0.42 降到 0.30），因为 DG 的卡片
+        # 有时嵌在单栏里，宽度只有页面的 30-40%
         if (
             self._is_monospace_block(block)
             and line_count >= 4
-            and width >= page_width * 0.42
-            and self._block_height(block) >= page_height * 0.08
+            and width >= page_width * 0.30
+            and self._block_height(block) >= page_height * 0.06
+        ):
+            return True
+        # 大面积等宽字体块（跨栏卡片）
+        if (
+            self._is_monospace_block(block)
+            and line_count >= 3
+            and width >= page_width * 0.55
         ):
             return True
         if (
@@ -437,6 +457,39 @@ class PDFExtractor:
             return True
         return False
 
+    def _is_non_body_font_block(self, block, body_fonts: set) -> bool:
+        """检测文本块是否使用了与正文不同的字体族（卡片/侧栏的特征）。"""
+        if not body_fonts:
+            return False
+        block_fonts = self._block_fonts(block)
+        if not block_fonts:
+            return False
+        # 去掉装饰性标题字体（如 Industria），只看正文级别的字体
+        text_fonts = {f for f in block_fonts if self._block_line_count(block) >= 3}
+        if not text_fonts:
+            text_fonts = block_fonts
+        # 如果块的字体和正文字体完全没有交集，说明是不同的字体族
+        return not text_fonts.intersection(body_fonts)
+
+    def _page_body_fonts(self, content_blocks, page_width) -> set:
+        """识别页面正文使用的主要字体族（出现在双栏窄块中的字体）。"""
+        font_counts = {}
+        for block in content_blocks:
+            width = self._block_width(block)
+            # 只统计双栏宽度范围内的块（正文块）
+            if width > page_width * 0.55:
+                continue
+            line_count = self._block_line_count(block)
+            if line_count < 3:
+                continue
+            for font in self._block_fonts(block):
+                font_counts[font] = font_counts.get(font, 0) + line_count
+        if not font_counts:
+            return set()
+        # 取出现次数最多的字体作为正文字体
+        max_count = max(font_counts.values())
+        return {f for f, c in font_counts.items() if c >= max_count * 0.3}
+
     def _visual_card_regions(self, page, content_blocks, page_width, page_height):
         page_area = page_width * page_height
         regions = []
@@ -446,9 +499,10 @@ class PDFExtractor:
             if not rect:
                 continue
             area = rect.width * rect.height
-            if area < page_area * 0.025 or area > page_area * 0.78:
+            # 降低最小面积阈值（从 0.025 到 0.015），捕捉更小的卡片
+            if area < page_area * 0.015 or area > page_area * 0.78:
                 continue
-            if rect.width < page_width * 0.24 or rect.height < page_height * 0.08:
+            if rect.width < page_width * 0.20 or rect.height < page_height * 0.05:
                 continue
             regions.append(rect)
 
@@ -456,9 +510,10 @@ class PDFExtractor:
             xref = image[0]
             for rect in page.get_image_rects(xref):
                 area = rect.width * rect.height
-                if area < page_area * 0.035 or area > page_area * 0.78:
+                # 降低图片区域的最小面积阈值
+                if area < page_area * 0.02 or area > page_area * 0.78:
                     continue
-                if rect.width < page_width * 0.28 or rect.height < page_height * 0.10:
+                if rect.width < page_width * 0.22 or rect.height < page_height * 0.06:
                     continue
                 regions.append(rect)
 
@@ -479,7 +534,12 @@ class PDFExtractor:
                 self._block_line_count(block) for block in inside
                 if self._is_monospace_block(block)
             )
-            if has_card_text or monospace_lines >= 4:
+            # 降低等宽行数要求（从 4 到 2），并增加卡片标签检测
+            has_card_label = any(
+                self._has_card_label(self._extract_block_text(block))
+                for block in inside
+            )
+            if has_card_text or monospace_lines >= 2 or has_card_label:
                 accepted.append(rect)
 
         merged = []
@@ -536,6 +596,46 @@ class PDFExtractor:
             for block in group:
                 card_ids.add(id(block))
             card_groups.append(group)
+
+        # 字体检测：如果连续多个块使用了和正文不同的字体族，
+        # 把它们合并成一组来判断是否构成卡片。
+        # 这解决了 PDF 把卡片文本拆成每行一个块的问题。
+        body_fonts = self._page_body_fonts(content_blocks, page_width)
+        if body_fonts:
+            # 收集所有使用非正文字体的块（排除标题字体的单行块）
+            non_body_blocks = [
+                block for block in content_blocks
+                if id(block) not in card_ids
+                and self._is_non_body_font_block(block, body_fonts)
+                and self._block_line_count(block) >= 1
+            ]
+            # 按 y 坐标排序，把相邻的非正文字体块合并成组
+            if non_body_blocks:
+                non_body_sorted = sorted(non_body_blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+                groups = []
+                current_group = [non_body_sorted[0]]
+                for block in non_body_sorted[1:]:
+                    prev = current_group[-1]
+                    # 如果两个块垂直距离很近（< 页面高度的3%），认为是同一组
+                    gap = block["bbox"][1] - prev["bbox"][3]
+                    if gap < page_height * 0.03:
+                        current_group.append(block)
+                    else:
+                        groups.append(current_group)
+                        current_group = [block]
+                groups.append(current_group)
+
+                for group in groups:
+                    # 计算组的总行数和覆盖宽度
+                    total_lines = sum(self._block_line_count(b) for b in group)
+                    min_x = min(b["bbox"][0] for b in group)
+                    max_x = max(b["bbox"][2] for b in group)
+                    group_width = max_x - min_x
+                    # 如果组的总行数>=4 且宽度>=页面30%，判定为卡片
+                    if total_lines >= 4 and group_width >= page_width * 0.30:
+                        for block in group:
+                            card_ids.add(id(block))
+                        card_groups.append(group)
 
         body_blocks = [
             block for block in content_blocks
@@ -600,6 +700,57 @@ class PDFExtractor:
             return 0
         return sum(sizes) / len(sizes)
 
+    def _line_is_bold(self, line) -> bool:
+        return any(span.get("flags", 0) & 2 for span in line.get("spans", []))
+
+    def _line_text_color(self, line) -> Optional[int]:
+        colors = [
+            span.get("color")
+            for span in line.get("spans", [])
+            if span.get("text", "").strip() and span.get("color") is not None
+        ]
+        if not colors:
+            return None
+        return max(set(colors), key=colors.count)
+
+    def _is_red_text_color(self, color: Optional[int]) -> bool:
+        if color is None:
+            return False
+        red = (color >> 16) & 0xFF
+        green = (color >> 8) & 0xFF
+        blue = color & 0xFF
+        return red >= 120 and red > green * 1.35 and red > blue * 1.35
+
+    def _heading_level_for_line(self, text: str, size: float, body_size: float,
+                                bold: bool, color: Optional[int] = None) -> Optional[int]:
+        if not text or not size or not body_size:
+            return None
+        clean = re.sub(r"\s+", " ", text).strip()
+        visible = re.sub(r"\s+", "", clean)
+        if not (2 <= len(visible) <= 70):
+            return None
+        if clean.startswith(("#", "-", "\u2022", "//", "|", ">", "[", "`")):
+            return None
+        is_all_caps = clean == clean.upper() and clean != clean.lower()
+        ratio = size / body_size
+        if re.search(r"[!?。！？；;]$", clean) and ratio < 1.75:
+            return None
+        if re.search(r"\.$", clean) and ratio < 1.75:
+            return None
+        if self._is_red_text_color(color) and ratio >= 1.35:
+            return 2
+        if ratio >= 2.55:
+            return 1
+        if ratio >= 1.75:
+            return 3
+        if ratio >= 1.22 and (bold or is_all_caps):
+            return 4
+        return None
+
+    def _format_heading_line(self, text: str, level: int) -> str:
+        clean = re.sub(r"\s+", " ", text).strip()
+        return f"{'#' * max(1, min(4, level))} {clean}"
+
     def _join_line_into_paragraph(self, paragraph, line_text):
         if not paragraph:
             return line_text
@@ -608,7 +759,7 @@ class PDFExtractor:
             return tail[:-1] + line_text
         return tail + " " + line_text
 
-    def _extract_block_text(self, block):
+    def _extract_block_text(self, block, page_median_size=None):
         raw_lines = []
         for line in block.get("lines", []):
             line_text = self._extract_line_text(line)
@@ -620,12 +771,15 @@ class PDFExtractor:
                 "text": line_text,
                 "bbox": line.get("bbox", block["bbox"]),
                 "size": self._line_avg_font_size(line),
+                "bold": self._line_is_bold(line),
+                "color": self._line_text_color(line),
             })
         if not raw_lines:
             return ""
 
         body_sizes = sorted(l["size"] for l in raw_lines if l["size"])
-        median_size = body_sizes[len(body_sizes) // 2] if body_sizes else 10
+        block_median_size = body_sizes[len(body_sizes) // 2] if body_sizes else 10
+        body_size = page_median_size or block_median_size
         left_edge = min(l["bbox"][0] for l in raw_lines)
 
         paragraphs = []
@@ -640,17 +794,18 @@ class PDFExtractor:
         for idx, line in enumerate(raw_lines):
             text = line["text"]
             indent = line["bbox"][0] - left_edge
-            visible = re.sub(r"\s+", "", text)
-            is_heading = (
-                line["size"] >= median_size * 1.6
-                and 2 <= len(visible) <= 40
-                and not re.search(r"[.!?。！？]$", text)
+            heading_level = self._heading_level_for_line(
+                text,
+                line["size"],
+                body_size,
+                line["bold"],
+                line["color"],
             )
-            is_indented_para = idx > 0 and indent >= max(10, median_size * 1.2)
+            is_indented_para = idx > 0 and indent >= max(10, block_median_size * 1.2)
 
-            if is_heading:
+            if heading_level:
                 flush()
-                paragraphs.append(text)
+                paragraphs.append(self._format_heading_line(text, heading_level))
                 continue
             if is_indented_para:
                 flush()
@@ -717,6 +872,38 @@ class PDFExtractor:
         if len(handout_blocks) >= 3 or re.match(r"\s*Player Aid\b", top_text, re.IGNORECASE):
             return "handout"
 
+        # 检测整页都是非正文字体的情况（如整页卡片/情报页）
+        # 如果页面没有任何衬线体正文块，说明整页都是特殊排版，用单栏
+        body_fonts = self._page_body_fonts(content_blocks, page_width)
+        if not body_fonts and len(content_blocks) >= 3:
+            # 没有找到正文字体，检查是否所有块都用同一种非衬线字体
+            all_fonts = set()
+            for block in content_blocks:
+                all_fonts.update(self._block_fonts(block))
+            # 排除纯标题字体页面（如章节封面）
+            has_body_text = any(self._block_line_count(b) >= 3 for b in content_blocks)
+            if has_body_text:
+                return "single"
+
+        # 检测高度碎片化的页面（PDF 把每行拆成独立块）
+        # 这通常是卡片/信息框页面的特征，应该用单栏
+        if len(content_blocks) >= 15:
+            single_line_blocks = sum(1 for b in content_blocks if self._block_line_count(b) == 1)
+            if single_line_blocks >= len(content_blocks) * 0.7:
+                return "single"
+
+        # 检测整页都是非衬线字体的情况（无 Sabon/Times 等衬线体）
+        page_all_fonts = set()
+        for block in content_blocks:
+            page_all_fonts.update(self._block_fonts(block))
+        has_serif = any(
+            "Sabon" in f or "Times" in f or "Garamond" in f or "Minion" in f or "Caslon" in f
+            for f in page_all_fonts
+        )
+        has_body_text_blocks = any(self._block_line_count(b) >= 3 for b in content_blocks)
+        if not has_serif and has_body_text_blocks and len(content_blocks) >= 3:
+            return "single"
+
         left_count = 0
         right_count = 0
         full_width_height = 0
@@ -778,7 +965,6 @@ class PDFExtractor:
             return ""
         context_lines = []
         in_fenced_block = False
-        in_card_block = False
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if line.startswith("```"):
@@ -786,13 +972,7 @@ class PDFExtractor:
                 continue
             if in_fenced_block:
                 continue
-            if line == "[CARD]":
-                in_card_block = True
-                continue
-            if line == "[/CARD]":
-                in_card_block = False
-                continue
-            if in_card_block:
+            if line in ("[CARD]", "[/CARD]"):
                 continue
             if line == "[[TOC]]":
                 continue
@@ -815,14 +995,73 @@ class PDFExtractor:
             return ""
         return "[CARD]\n" + clean + "\n[/CARD]"
 
+    def _interleaved_body_and_card_sections(self, body_blocks, card_groups,
+                                            page_width, page_height) -> list[str]:
+        sections = []
+        sorted_body = self._sort_blocks_layout_aware(body_blocks, page_width, page_height)
+        body_median_size = self._median_font_size(body_blocks)
+        cards = sorted(
+            card_groups,
+            key=lambda group: (
+                min(block["bbox"][1] for block in group),
+                min(block["bbox"][0] for block in group),
+            ),
+        )
+        body_idx = 0
+
+        def flush_body(until_y=None):
+            nonlocal body_idx
+            segment = []
+            while body_idx < len(sorted_body):
+                block = sorted_body[body_idx]
+                if until_y is not None and block["bbox"][1] >= until_y:
+                    break
+                segment.append(block)
+                body_idx += 1
+            if segment:
+                body_text = self._blocks_to_extracted_text(
+                    segment,
+                    page_width,
+                    page_height,
+                    layout_aware=False,
+                    mark_handouts=True,
+                    presorted=True,
+                    page_median_size=body_median_size,
+                )
+                if body_text:
+                    sections.append(body_text)
+
+        for group in cards:
+            card_top = min(block["bbox"][1] for block in group)
+            flush_body(card_top)
+            card_text = self._blocks_to_extracted_text(
+                group,
+                page_width,
+                page_height,
+                layout_aware=False,
+                mark_handouts=False,
+            )
+            if card_text:
+                sections.append(self._card_block_text(card_text))
+
+        flush_body()
+        return sections
+
     def _blocks_to_extracted_text(self, blocks, page_width, page_height, layout_aware=True,
-                                  mark_handouts=True) -> str:
+                                  mark_handouts=True, presorted=False,
+                                  page_median_size=None) -> str:
         if not blocks:
             return ""
-        if layout_aware:
+        if presorted:
+            sorted_blocks = list(blocks)
+        elif layout_aware:
             sorted_blocks = self._sort_blocks_layout_aware(blocks, page_width, page_height)
         else:
             sorted_blocks = sorted(blocks, key=lambda item: (item["bbox"][1], item["bbox"][0]))
+        page_median_size = page_median_size or self._median_font_size(sorted_blocks)
+
+        def extract_text(block):
+            return self._extract_block_text(block, page_median_size=page_median_size)
 
         processed_blocks = []
         idx = 0
@@ -836,15 +1075,15 @@ class PDFExtractor:
                 table_text = self._blocks_to_markdown_table(table_blocks)
                 if not table_text:
                     table_text = "\n".join(
-                        self._extract_block_text(b).strip()
+                        extract_text(b).strip()
                         for b in table_blocks
-                        if self._extract_block_text(b).strip()
+                        if extract_text(b).strip()
                     )
                 processed_blocks.append({"text": table_text, "title_card": False})
                 continue
 
             if mark_handouts and self._is_handout_block(block):
-                text = self._extract_block_text(block).strip()
+                text = extract_text(block).strip()
                 if text:
                     text = self._quote_card_text(text)
                 processed_blocks.append({"text": text, "title_card": False})
@@ -852,7 +1091,7 @@ class PDFExtractor:
                 continue
 
             processed_blocks.append({
-                "text": self._extract_block_text(block).strip(),
+                "text": extract_text(block).strip(),
                 "title_card": bool(block.get("_dg_title_card")),
             })
             idx += 1
@@ -882,8 +1121,9 @@ class PDFExtractor:
             first_alpha = re.search(r"[A-Za-z]", text)
             starts_lower = bool(first_alpha and first_alpha.group(0).islower())
             joins_from_punctuation = current_tail.endswith((",", ":", ";", "-"))
+            current_is_heading = bool(re.match(r"^#{1,4}\s+", current_tail))
 
-            if joins_from_punctuation or starts_lower:
+            if not current_is_heading and (joins_from_punctuation or starts_lower):
                 if current_tail.endswith("-"):
                     current_para = current_tail[:-1].rstrip() + text
                 else:
@@ -930,21 +1170,15 @@ class PDFExtractor:
         )
         self._page_layout_notes[page_num].extend(card_notes)
 
-        body_text = self._blocks_to_extracted_text(
-            body_blocks, page_width, page_height, layout_aware=True, mark_handouts=True
+        sections = self._interleaved_body_and_card_sections(
+            body_blocks,
+            card_groups,
+            page_width,
+            page_height,
         )
-        sections = []
-        if body_text:
-            sections.append(body_text)
-        for group in sorted(card_groups, key=lambda group: min(block["bbox"][1] for block in group)):
-            card_text = self._blocks_to_extracted_text(
-                group, page_width, page_height, layout_aware=False, mark_handouts=False
-            )
-            if card_text:
-                sections.append(self._card_block_text(card_text))
 
         clean_text = self._clean_text("\n\n".join(sections))
-        self._page_body_context[page_num] = self._context_from_extracted_text(body_text, layout)
+        self._page_body_context[page_num] = self._context_from_extracted_text(clean_text, layout)
         return clean_text
 
     def _extract_contents_page(self, content_blocks):

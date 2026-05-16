@@ -160,12 +160,13 @@ def set_running_header_footer(doc, title: str, header_left: str = "绿色三角�
 
 
 def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1.5,
-                             h1_size=None, h2_size=None, h3_size=None):
+                             h1_size=None, h2_size=None, h3_size=None, h4_size=None):
     set_section_page_layout(doc.sections[0], columns=columns)
     body_font_size = float(body_font_size)
-    h1_size = float(h1_size) if h1_size else body_font_size + 16
-    h2_size = float(h2_size) if h2_size else body_font_size + 8
-    h3_size = float(h3_size) if h3_size else body_font_size + 4
+    h1_size = float(h1_size) if h1_size else 20
+    h2_size = float(h2_size) if h2_size else 18
+    h3_size = float(h3_size) if h3_size else 16
+    h4_size = float(h4_size) if h4_size else 16
 
     styles = doc.styles
 
@@ -210,6 +211,17 @@ def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1
     h3.paragraph_format.space_after = Pt(5)
     h3.paragraph_format.keep_with_next = True
 
+    # 四级标题
+    h4 = styles["Heading 4"]
+    h4.font.name = "黑体"
+    h4._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    h4.font.size = Pt(h4_size)
+    h4.font.bold = True
+    h4.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+    h4.paragraph_format.space_before = Pt(8)
+    h4.paragraph_format.space_after = Pt(4)
+    h4.paragraph_format.keep_with_next = True
+
     # 项目符号
     if "List Bullet" in styles:
         bullet = styles["List Bullet"]
@@ -226,10 +238,20 @@ def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1
 # Word content writing helpers
 # ---------------------------------------------------------------------------
 
+def _is_table_line(line: str) -> bool:
+    """Check if a line is part of a Markdown table."""
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3
+
+
 def _split_card_segments(text: str):
+    """Split block text into segments: normal (dual-column), card (single-column),
+    and table (single-column). This allows the Word renderer to switch column
+    layout around cards and tables."""
     segments = []
     normal_lines = []
     card_lines = []
+    table_lines = []
     in_card = False
 
     def flush_normal():
@@ -244,10 +266,17 @@ def _split_card_segments(text: str):
             segments.append(("card", "\n".join(card_lines).strip()))
         card_lines = []
 
+    def flush_table():
+        nonlocal table_lines
+        if table_lines:
+            segments.append(("table", "\n".join(table_lines).strip()))
+        table_lines = []
+
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if line == "[CARD]":
             flush_normal()
+            flush_table()
             in_card = True
             continue
         if line == "[/CARD]":
@@ -256,12 +285,22 @@ def _split_card_segments(text: str):
             continue
         if in_card:
             card_lines.append(raw_line)
+            continue
+
+        # Detect table lines
+        if _is_table_line(line):
+            if not table_lines:
+                flush_normal()
+            table_lines.append(raw_line)
         else:
+            if table_lines:
+                flush_table()
             normal_lines.append(raw_line)
 
     if in_card:
         flush_card()
     else:
+        flush_table()
         flush_normal()
     return segments
 
@@ -275,7 +314,10 @@ def _write_word_block(doc, text: str):
         clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
         clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
 
-        if clean_line.startswith("### "):
+        if clean_line.startswith("#### "):
+            p = doc.add_heading(clean_line[5:], level=4)
+            p.paragraph_format.first_line_indent = Pt(0)
+        elif clean_line.startswith("### "):
             p = doc.add_heading(clean_line[4:], level=3)
             p.paragraph_format.first_line_indent = Pt(0)
         elif clean_line.startswith("## "):
@@ -304,6 +346,65 @@ def _write_word_block(doc, text: str):
             p.paragraph_format.first_line_indent = Pt(-8)
         else:
             doc.add_paragraph(clean_line)
+
+
+def _write_word_table(doc, text: str):
+    """Render a Markdown table as a Word table."""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if len(lines) < 2:
+        # Not enough lines for a table, fall back to plain text
+        for line in lines:
+            doc.add_paragraph(line.strip("| "))
+        return
+
+    # Parse header
+    header_cells = [cell.strip() for cell in lines[0].strip("|").split("|")]
+
+    # Skip separator line (e.g. |---|---|---|)
+    data_start = 1
+    if len(lines) > 1 and re.fullmatch(r"\|[\s:|-]+\|", lines[1]):
+        data_start = 2
+
+    # Parse data rows
+    data_rows = []
+    for line in lines[data_start:]:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        data_rows.append(cells)
+
+    col_count = len(header_cells)
+    if col_count < 1:
+        return
+
+    # Create Word table
+    table = doc.add_table(rows=1 + len(data_rows), cols=col_count)
+    table.style = "Table Grid"
+
+    # Write header
+    for idx, cell_text in enumerate(header_cells):
+        if idx < col_count:
+            cell = table.rows[0].cells[idx]
+            cell.text = cell_text
+            # Bold header
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.first_line_indent = Pt(0)
+                paragraph.paragraph_format.space_before = Pt(2)
+                paragraph.paragraph_format.space_after = Pt(2)
+                for run in paragraph.runs:
+                    run.bold = True
+
+    # Write data rows
+    for row_idx, row_cells in enumerate(data_rows):
+        for col_idx in range(col_count):
+            cell_text = row_cells[col_idx] if col_idx < len(row_cells) else ""
+            cell = table.rows[row_idx + 1].cells[col_idx]
+            cell.text = cell_text
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.first_line_indent = Pt(0)
+                paragraph.paragraph_format.space_before = Pt(2)
+                paragraph.paragraph_format.space_after = Pt(2)
+
+    # Add spacing after table
+    doc.add_paragraph()
 
 
 def _write_word_card(doc, text: str):
@@ -381,6 +482,12 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                     card_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(card_section, columns=1)
                     _write_word_card(doc, content)
+                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(body_section, columns=columns)
+                elif kind == "table":
+                    table_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(table_section, columns=1)
+                    _write_word_table(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(body_section, columns=columns)
                 else:
