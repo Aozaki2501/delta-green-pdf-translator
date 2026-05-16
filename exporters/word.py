@@ -160,12 +160,13 @@ def set_running_header_footer(doc, title: str, header_left: str = "绿色三角�
 
 
 def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1.5,
-                             h1_size=None, h2_size=None, h3_size=None):
+                             h1_size=None, h2_size=None, h3_size=None, h4_size=None):
     set_section_page_layout(doc.sections[0], columns=columns)
     body_font_size = float(body_font_size)
     h1_size = float(h1_size) if h1_size else body_font_size + 16
     h2_size = float(h2_size) if h2_size else body_font_size + 8
-    h3_size = float(h3_size) if h3_size else body_font_size + 4
+    h3_size = float(h3_size) if h3_size else body_font_size + 5
+    h4_size = float(h4_size) if h4_size else body_font_size + 2
 
     styles = doc.styles
 
@@ -209,6 +210,17 @@ def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1
     h3.paragraph_format.space_before = Pt(10)
     h3.paragraph_format.space_after = Pt(5)
     h3.paragraph_format.keep_with_next = True
+
+    # 四级标题
+    h4 = styles["Heading 4"]
+    h4.font.name = "黑体"
+    h4._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    h4.font.size = Pt(h4_size)
+    h4.font.bold = True
+    h4.font.color.rgb = RGBColor(0x7A, 0x1F, 0x12)
+    h4.paragraph_format.space_before = Pt(8)
+    h4.paragraph_format.space_after = Pt(4)
+    h4.paragraph_format.keep_with_next = True
 
     # 项目符号
     if "List Bullet" in styles:
@@ -302,7 +314,10 @@ def _write_word_block(doc, text: str):
         clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
         clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
 
-        if clean_line.startswith("### "):
+        if clean_line.startswith("#### "):
+            p = doc.add_heading(clean_line[5:], level=4)
+            p.paragraph_format.first_line_indent = Pt(0)
+        elif clean_line.startswith("### "):
             p = doc.add_heading(clean_line[4:], level=3)
             p.paragraph_format.first_line_indent = Pt(0)
         elif clean_line.startswith("## "):

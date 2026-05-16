@@ -85,11 +85,11 @@ Translation rules:
 0. If the source starts with [[TOC]], preserve the table of contents structure. Do not translate entries; keep dotted leaders and page numbers.
 1. Follow the glossary strictly for proper nouns. If glossary entries overlap, the longest matching phrase wins.
 2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
-3. Output in Markdown format with ## headings, - bullet lists, paragraph spacing.
+3. Output in Markdown format with preserved heading levels, - bullet lists, paragraph spacing.
 4. Professional, fluent Chinese. Maintain horror atmosphere. Precise rule descriptions.
 5. Keep the Chinese translation concise. Do not expand, explain, embellish, or add information not present in the source.
 6. Do not translate page headers, footers, page numbers, or running titles such as DELTA GREEN, PISCES, and THE MILLENNIUM when they appear as standalone navigation text.
-7. Preserve section and subsection headings. Output article titles as ## headings and smaller section headings as ### headings.
+7. Preserve section and subsection headings. If the source uses Markdown headings (#, ##, ###, ####), keep the same heading level in the Chinese output.
 8. If decorative title-card text, drop shadows, or stylized text is extracted twice, translate it only once.
 9. If OCR errors/garbled text exists, infer meaning from context. Mark unreadable as [damaged].
 10. If previous context is provided, ensure continuity. Do not re-translate previous content.

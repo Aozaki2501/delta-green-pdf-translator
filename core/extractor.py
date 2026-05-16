@@ -700,6 +700,36 @@ class PDFExtractor:
             return 0
         return sum(sizes) / len(sizes)
 
+    def _line_is_bold(self, line) -> bool:
+        return any(span.get("flags", 0) & 2 for span in line.get("spans", []))
+
+    def _heading_level_for_line(self, text: str, size: float, body_size: float, bold: bool) -> Optional[int]:
+        if not text or not size or not body_size:
+            return None
+        clean = re.sub(r"\s+", " ", text).strip()
+        visible = re.sub(r"\s+", "", clean)
+        if not (2 <= len(visible) <= 70):
+            return None
+        if clean.startswith(("#", "-", "\u2022", "//", "|", ">", "[", "`")):
+            return None
+        if re.search(r"[.!?。！？；;]$", clean):
+            return None
+        is_all_caps = clean == clean.upper() and clean != clean.lower()
+        ratio = size / body_size
+        if ratio >= 2.2:
+            return 1
+        if ratio >= 1.75:
+            return 2
+        if ratio >= 1.42:
+            return 3
+        if ratio >= 1.22 and (bold or is_all_caps):
+            return 4
+        return None
+
+    def _format_heading_line(self, text: str, level: int) -> str:
+        clean = re.sub(r"\s+", " ", text).strip()
+        return f"{'#' * max(1, min(4, level))} {clean}"
+
     def _join_line_into_paragraph(self, paragraph, line_text):
         if not paragraph:
             return line_text
@@ -708,7 +738,7 @@ class PDFExtractor:
             return tail[:-1] + line_text
         return tail + " " + line_text
 
-    def _extract_block_text(self, block):
+    def _extract_block_text(self, block, page_median_size=None):
         raw_lines = []
         for line in block.get("lines", []):
             line_text = self._extract_line_text(line)
@@ -720,12 +750,14 @@ class PDFExtractor:
                 "text": line_text,
                 "bbox": line.get("bbox", block["bbox"]),
                 "size": self._line_avg_font_size(line),
+                "bold": self._line_is_bold(line),
             })
         if not raw_lines:
             return ""
 
         body_sizes = sorted(l["size"] for l in raw_lines if l["size"])
-        median_size = body_sizes[len(body_sizes) // 2] if body_sizes else 10
+        block_median_size = body_sizes[len(body_sizes) // 2] if body_sizes else 10
+        body_size = page_median_size or block_median_size
         left_edge = min(l["bbox"][0] for l in raw_lines)
 
         paragraphs = []
@@ -740,17 +772,17 @@ class PDFExtractor:
         for idx, line in enumerate(raw_lines):
             text = line["text"]
             indent = line["bbox"][0] - left_edge
-            visible = re.sub(r"\s+", "", text)
-            is_heading = (
-                line["size"] >= median_size * 1.6
-                and 2 <= len(visible) <= 40
-                and not re.search(r"[.!?。！？]$", text)
+            heading_level = self._heading_level_for_line(
+                text,
+                line["size"],
+                body_size,
+                line["bold"],
             )
-            is_indented_para = idx > 0 and indent >= max(10, median_size * 1.2)
+            is_indented_para = idx > 0 and indent >= max(10, block_median_size * 1.2)
 
-            if is_heading:
+            if heading_level:
                 flush()
-                paragraphs.append(text)
+                paragraphs.append(self._format_heading_line(text, heading_level))
                 continue
             if is_indented_para:
                 flush()
@@ -955,6 +987,10 @@ class PDFExtractor:
             sorted_blocks = self._sort_blocks_layout_aware(blocks, page_width, page_height)
         else:
             sorted_blocks = sorted(blocks, key=lambda item: (item["bbox"][1], item["bbox"][0]))
+        page_median_size = self._median_font_size(sorted_blocks)
+
+        def extract_text(block):
+            return self._extract_block_text(block, page_median_size=page_median_size)
 
         processed_blocks = []
         idx = 0
@@ -968,15 +1004,15 @@ class PDFExtractor:
                 table_text = self._blocks_to_markdown_table(table_blocks)
                 if not table_text:
                     table_text = "\n".join(
-                        self._extract_block_text(b).strip()
+                        extract_text(b).strip()
                         for b in table_blocks
-                        if self._extract_block_text(b).strip()
+                        if extract_text(b).strip()
                     )
                 processed_blocks.append({"text": table_text, "title_card": False})
                 continue
 
             if mark_handouts and self._is_handout_block(block):
-                text = self._extract_block_text(block).strip()
+                text = extract_text(block).strip()
                 if text:
                     text = self._quote_card_text(text)
                 processed_blocks.append({"text": text, "title_card": False})
@@ -984,7 +1020,7 @@ class PDFExtractor:
                 continue
 
             processed_blocks.append({
-                "text": self._extract_block_text(block).strip(),
+                "text": extract_text(block).strip(),
                 "title_card": bool(block.get("_dg_title_card")),
             })
             idx += 1
@@ -1014,8 +1050,9 @@ class PDFExtractor:
             first_alpha = re.search(r"[A-Za-z]", text)
             starts_lower = bool(first_alpha and first_alpha.group(0).islower())
             joins_from_punctuation = current_tail.endswith((",", ":", ";", "-"))
+            current_is_heading = bool(re.match(r"^#{1,4}\s+", current_tail))
 
-            if joins_from_punctuation or starts_lower:
+            if not current_is_heading and (joins_from_punctuation or starts_lower):
                 if current_tail.endswith("-"):
                     current_para = current_tail[:-1].rstrip() + text
                 else:

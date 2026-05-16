@@ -123,7 +123,9 @@ def _html_block(text: str) -> str:
             parts.append(_html_handout_card(quote_lines))
             continue
 
-        if clean_line.startswith("### "):
+        if clean_line.startswith("#### "):
+            parts.append(f"<h4>{_html_inline(clean_line[5:])}</h4>")
+        elif clean_line.startswith("### "):
             parts.append(f"<h3>{_html_inline(clean_line[4:])}</h3>")
         elif clean_line.startswith("## "):
             parts.append(f"<h2>{_html_inline(clean_line[3:])}</h2>")
@@ -218,7 +220,7 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         column-gap: 0.52in;
         font-size: 12pt;
     }}
-    h1, h2, h3 {{
+    h1, h2, h3, h4 {{
         break-after: avoid;
         page-break-after: avoid;
         font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
@@ -230,23 +232,34 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         margin: 0 0 0.28in;
         font-size: 26pt;
         font-weight: 500;
+        color: var(--ink);
     }}
     h2 {{
         margin: 0.06in 0 0.18in;
         color: var(--red);
+        font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
         font-size: 20pt;
         font-weight: 700;
     }}
     h3 {{
         margin: 0.16in 0 0.08in;
-        font-size: 14pt;
+        color: var(--ink);
+        font-family: "Courier New", "VT323", monospace;
+        font-size: 17pt;
+        font-weight: 700;
+    }}
+    h4 {{
+        margin: 0.12in 0 0.06in;
+        color: #7a1f12;
+        font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        font-size: 13pt;
         font-weight: 700;
     }}
     p {{
         margin: 0 0 0.11in;
         text-indent: 2em;
     }}
-    h1 + p, h2 + p, h3 + p {{
+    h1 + p, h2 + p, h3 + p, h4 + p {{
         text-indent: 0;
     }}
     ul {{
