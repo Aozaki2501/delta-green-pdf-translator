@@ -230,7 +230,7 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     h1 {{
         column-span: all;
         margin: 0 0 0.28in;
-        font-size: 26pt;
+        font-size: 20pt;
         font-weight: 500;
         color: var(--ink);
     }}
@@ -238,21 +238,21 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         margin: 0.06in 0 0.18in;
         color: var(--red);
         font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
-        font-size: 20pt;
+        font-size: 18pt;
         font-weight: 700;
     }}
     h3 {{
         margin: 0.16in 0 0.08in;
         color: var(--ink);
         font-family: "Courier New", "VT323", monospace;
-        font-size: 17pt;
+        font-size: 16pt;
         font-weight: 700;
     }}
     h4 {{
         margin: 0.12in 0 0.06in;
-        color: #7a1f12;
+        color: var(--ink);
         font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
-        font-size: 13pt;
+        font-size: 16pt;
         font-weight: 700;
     }}
     p {{

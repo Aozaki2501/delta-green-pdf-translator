@@ -703,7 +703,26 @@ class PDFExtractor:
     def _line_is_bold(self, line) -> bool:
         return any(span.get("flags", 0) & 2 for span in line.get("spans", []))
 
-    def _heading_level_for_line(self, text: str, size: float, body_size: float, bold: bool) -> Optional[int]:
+    def _line_text_color(self, line) -> Optional[int]:
+        colors = [
+            span.get("color")
+            for span in line.get("spans", [])
+            if span.get("text", "").strip() and span.get("color") is not None
+        ]
+        if not colors:
+            return None
+        return max(set(colors), key=colors.count)
+
+    def _is_red_text_color(self, color: Optional[int]) -> bool:
+        if color is None:
+            return False
+        red = (color >> 16) & 0xFF
+        green = (color >> 8) & 0xFF
+        blue = color & 0xFF
+        return red >= 120 and red > green * 1.35 and red > blue * 1.35
+
+    def _heading_level_for_line(self, text: str, size: float, body_size: float,
+                                bold: bool, color: Optional[int] = None) -> Optional[int]:
         if not text or not size or not body_size:
             return None
         clean = re.sub(r"\s+", " ", text).strip()
@@ -712,15 +731,17 @@ class PDFExtractor:
             return None
         if clean.startswith(("#", "-", "\u2022", "//", "|", ">", "[", "`")):
             return None
-        if re.search(r"[.!?。！？；;]$", clean):
-            return None
         is_all_caps = clean == clean.upper() and clean != clean.lower()
         ratio = size / body_size
-        if ratio >= 2.2:
+        if re.search(r"[!?。！？；;]$", clean) and ratio < 1.75:
+            return None
+        if re.search(r"\.$", clean) and ratio < 1.75:
+            return None
+        if self._is_red_text_color(color) and ratio >= 1.35:
+            return 2
+        if ratio >= 2.55:
             return 1
         if ratio >= 1.75:
-            return 2
-        if ratio >= 1.42:
             return 3
         if ratio >= 1.22 and (bold or is_all_caps):
             return 4
@@ -751,6 +772,7 @@ class PDFExtractor:
                 "bbox": line.get("bbox", block["bbox"]),
                 "size": self._line_avg_font_size(line),
                 "bold": self._line_is_bold(line),
+                "color": self._line_text_color(line),
             })
         if not raw_lines:
             return ""
@@ -777,6 +799,7 @@ class PDFExtractor:
                 line["size"],
                 body_size,
                 line["bold"],
+                line["color"],
             )
             is_indented_para = idx > 0 and indent >= max(10, block_median_size * 1.2)
 
@@ -942,7 +965,6 @@ class PDFExtractor:
             return ""
         context_lines = []
         in_fenced_block = False
-        in_card_block = False
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if line.startswith("```"):
@@ -950,13 +972,7 @@ class PDFExtractor:
                 continue
             if in_fenced_block:
                 continue
-            if line == "[CARD]":
-                in_card_block = True
-                continue
-            if line == "[/CARD]":
-                in_card_block = False
-                continue
-            if in_card_block:
+            if line in ("[CARD]", "[/CARD]"):
                 continue
             if line == "[[TOC]]":
                 continue
@@ -979,15 +995,70 @@ class PDFExtractor:
             return ""
         return "[CARD]\n" + clean + "\n[/CARD]"
 
+    def _interleaved_body_and_card_sections(self, body_blocks, card_groups,
+                                            page_width, page_height) -> list[str]:
+        sections = []
+        sorted_body = self._sort_blocks_layout_aware(body_blocks, page_width, page_height)
+        body_median_size = self._median_font_size(body_blocks)
+        cards = sorted(
+            card_groups,
+            key=lambda group: (
+                min(block["bbox"][1] for block in group),
+                min(block["bbox"][0] for block in group),
+            ),
+        )
+        body_idx = 0
+
+        def flush_body(until_y=None):
+            nonlocal body_idx
+            segment = []
+            while body_idx < len(sorted_body):
+                block = sorted_body[body_idx]
+                if until_y is not None and block["bbox"][1] >= until_y:
+                    break
+                segment.append(block)
+                body_idx += 1
+            if segment:
+                body_text = self._blocks_to_extracted_text(
+                    segment,
+                    page_width,
+                    page_height,
+                    layout_aware=False,
+                    mark_handouts=True,
+                    presorted=True,
+                    page_median_size=body_median_size,
+                )
+                if body_text:
+                    sections.append(body_text)
+
+        for group in cards:
+            card_top = min(block["bbox"][1] for block in group)
+            flush_body(card_top)
+            card_text = self._blocks_to_extracted_text(
+                group,
+                page_width,
+                page_height,
+                layout_aware=False,
+                mark_handouts=False,
+            )
+            if card_text:
+                sections.append(self._card_block_text(card_text))
+
+        flush_body()
+        return sections
+
     def _blocks_to_extracted_text(self, blocks, page_width, page_height, layout_aware=True,
-                                  mark_handouts=True) -> str:
+                                  mark_handouts=True, presorted=False,
+                                  page_median_size=None) -> str:
         if not blocks:
             return ""
-        if layout_aware:
+        if presorted:
+            sorted_blocks = list(blocks)
+        elif layout_aware:
             sorted_blocks = self._sort_blocks_layout_aware(blocks, page_width, page_height)
         else:
             sorted_blocks = sorted(blocks, key=lambda item: (item["bbox"][1], item["bbox"][0]))
-        page_median_size = self._median_font_size(sorted_blocks)
+        page_median_size = page_median_size or self._median_font_size(sorted_blocks)
 
         def extract_text(block):
             return self._extract_block_text(block, page_median_size=page_median_size)
@@ -1099,21 +1170,15 @@ class PDFExtractor:
         )
         self._page_layout_notes[page_num].extend(card_notes)
 
-        body_text = self._blocks_to_extracted_text(
-            body_blocks, page_width, page_height, layout_aware=True, mark_handouts=True
+        sections = self._interleaved_body_and_card_sections(
+            body_blocks,
+            card_groups,
+            page_width,
+            page_height,
         )
-        sections = []
-        if body_text:
-            sections.append(body_text)
-        for group in sorted(card_groups, key=lambda group: min(block["bbox"][1] for block in group)):
-            card_text = self._blocks_to_extracted_text(
-                group, page_width, page_height, layout_aware=False, mark_handouts=False
-            )
-            if card_text:
-                sections.append(self._card_block_text(card_text))
 
         clean_text = self._clean_text("\n\n".join(sections))
-        self._page_body_context[page_num] = self._context_from_extracted_text(body_text, layout)
+        self._page_body_context[page_num] = self._context_from_extracted_text(clean_text, layout)
         return clean_text
 
     def _extract_contents_page(self, content_blocks):

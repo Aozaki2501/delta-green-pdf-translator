@@ -163,10 +163,10 @@ def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1
                              h1_size=None, h2_size=None, h3_size=None, h4_size=None):
     set_section_page_layout(doc.sections[0], columns=columns)
     body_font_size = float(body_font_size)
-    h1_size = float(h1_size) if h1_size else body_font_size + 16
-    h2_size = float(h2_size) if h2_size else body_font_size + 8
-    h3_size = float(h3_size) if h3_size else body_font_size + 5
-    h4_size = float(h4_size) if h4_size else body_font_size + 2
+    h1_size = float(h1_size) if h1_size else 20
+    h2_size = float(h2_size) if h2_size else 18
+    h3_size = float(h3_size) if h3_size else 16
+    h4_size = float(h4_size) if h4_size else 16
 
     styles = doc.styles
 
@@ -217,7 +217,7 @@ def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1
     h4._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
     h4.font.size = Pt(h4_size)
     h4.font.bold = True
-    h4.font.color.rgb = RGBColor(0x7A, 0x1F, 0x12)
+    h4.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
     h4.paragraph_format.space_before = Pt(8)
     h4.paragraph_format.space_after = Pt(4)
     h4.paragraph_format.keep_with_next = True
