@@ -96,6 +96,7 @@ Translation rules:
 11. Preserve Markdown tables as Markdown tables. Translate cell text but keep the same columns.
 12. Preserve blockquotes starting with > for handouts/player aids.
 13. Preserve [CARD] and [/CARD] marker lines exactly. Text inside a card must stay inside the card and must not be merged into surrounding body text.
+14. Preserve [FULL_WIDTH_TITLE] and [/FULL_WIDTH_TITLE] marker lines exactly. Text inside marks a full-width section title; translate only the title text inside.
 
 {glossary_section}"""
 

@@ -20,7 +20,9 @@ def _split_translation_chunks(text: str) -> list[str]:
     chunks = []
     normal_lines = []
     card_lines = []
+    full_title_lines = []
     in_card = False
+    in_full_title = False
 
     def flush_normal():
         nonlocal normal_lines
@@ -36,8 +38,26 @@ def _split_translation_chunks(text: str) -> list[str]:
             chunks.append(card_text)
         card_lines = []
 
+    def flush_full_title():
+        nonlocal full_title_lines
+        title_text = "\n".join(full_title_lines).strip()
+        if title_text:
+            chunks.append(title_text)
+        full_title_lines = []
+
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        if line == "[FULL_WIDTH_TITLE]":
+            flush_normal()
+            flush_card()
+            in_full_title = True
+            full_title_lines = [raw_line]
+            continue
+        if line == "[/FULL_WIDTH_TITLE]":
+            full_title_lines.append(raw_line)
+            flush_full_title()
+            in_full_title = False
+            continue
         if line == "[CARD]":
             flush_normal()
             in_card = True
@@ -48,12 +68,17 @@ def _split_translation_chunks(text: str) -> list[str]:
             flush_card()
             in_card = False
             continue
+        if in_full_title:
+            full_title_lines.append(raw_line)
+            continue
         if in_card:
             card_lines.append(raw_line)
         else:
             normal_lines.append(raw_line)
 
-    if in_card:
+    if in_full_title:
+        flush_full_title()
+    elif in_card:
         flush_card()
     else:
         flush_normal()
@@ -92,7 +117,7 @@ def _is_structural_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return True
-    if stripped in ("[CARD]", "[/CARD]", "[[TOC]]"):
+    if stripped in ("[CARD]", "[/CARD]", "[FULL_WIDTH_TITLE]", "[/FULL_WIDTH_TITLE]", "[[TOC]]"):
         return True
     if stripped.startswith(("#", "-", "\u2022", "|", ">", "```")):
         return True
@@ -169,6 +194,7 @@ def _dedupe_adjacent_repeated_units(text: str) -> str:
 def _visible_text_length(text: str) -> int:
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     text = re.sub(r"^\[/?CARD\]\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\[/?FULL_WIDTH_TITLE\]\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
@@ -179,6 +205,11 @@ def _visible_text_length(text: str) -> int:
 
 def _is_markdown_heading(text: str) -> bool:
     return bool(re.match(r"^#{1,6}\s+", text.strip()))
+
+
+def _is_full_width_title_block(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith("[FULL_WIDTH_TITLE]") and "[/FULL_WIDTH_TITLE]" in stripped
 
 
 def _is_plain_heading_line(text: str) -> bool:
@@ -251,7 +282,9 @@ def paginate_translated_blocks(translated_pages, min_chars=1000, max_chars=1500,
         if split_on_layout and current and block_layout != current_layout:
             flush()
 
-        if starts_heading and current and current_len >= min_chars:
+        if _is_full_width_title_block(block["text"]) and current:
+            flush()
+        elif starts_heading and current and current_len >= min_chars:
             flush()
         elif current and current_len + block_len > max_chars and current_len >= min_chars:
             flush()

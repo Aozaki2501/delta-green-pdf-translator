@@ -251,8 +251,10 @@ def _split_card_segments(text: str):
     segments = []
     normal_lines = []
     card_lines = []
+    full_title_lines = []
     table_lines = []
     in_card = False
+    in_full_title = False
 
     def flush_normal():
         nonlocal normal_lines
@@ -266,6 +268,12 @@ def _split_card_segments(text: str):
             segments.append(("card", "\n".join(card_lines).strip()))
         card_lines = []
 
+    def flush_full_title():
+        nonlocal full_title_lines
+        if any(line.strip() for line in full_title_lines):
+            segments.append(("full_title", "\n".join(full_title_lines).strip()))
+        full_title_lines = []
+
     def flush_table():
         nonlocal table_lines
         if table_lines:
@@ -274,6 +282,15 @@ def _split_card_segments(text: str):
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        if line == "[FULL_WIDTH_TITLE]":
+            flush_normal()
+            flush_table()
+            in_full_title = True
+            continue
+        if line == "[/FULL_WIDTH_TITLE]":
+            flush_full_title()
+            in_full_title = False
+            continue
         if line == "[CARD]":
             flush_normal()
             flush_table()
@@ -286,6 +303,9 @@ def _split_card_segments(text: str):
         if in_card:
             card_lines.append(raw_line)
             continue
+        if in_full_title:
+            full_title_lines.append(raw_line)
+            continue
 
         # Detect table lines
         if _is_table_line(line):
@@ -297,7 +317,9 @@ def _split_card_segments(text: str):
                 flush_table()
             normal_lines.append(raw_line)
 
-    if in_card:
+    if in_full_title:
+        flush_full_title()
+    elif in_card:
         flush_card()
     else:
         flush_table()
@@ -426,6 +448,27 @@ def _write_word_card(doc, text: str):
         p_pr.append(shading)
 
 
+def _write_word_full_title(doc, text: str):
+    lines = [
+        re.sub(r"^\s*#{1,6}\s*", "", line).strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    lines = [re.sub(r"\s+", " ", line) for line in lines if line]
+    if not lines:
+        return
+    p = doc.add_heading(lines[0], level=1)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.first_line_indent = Pt(0)
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(6 if len(lines) > 1 else 18)
+    if len(lines) > 1:
+        subtitle = doc.add_paragraph(" ".join(lines[1:]))
+        subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        subtitle.paragraph_format.first_line_indent = Pt(0)
+        subtitle.paragraph_format.space_after = Pt(18)
+
+
 # ---------------------------------------------------------------------------
 # Main Word output function
 # ---------------------------------------------------------------------------
@@ -482,6 +525,13 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                     card_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(card_section, columns=1)
                     _write_word_card(doc, content)
+                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(body_section, columns=columns)
+                elif kind == "full_title":
+                    doc.add_page_break()
+                    title_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(title_section, columns=1)
+                    _write_word_full_title(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(body_section, columns=columns)
                 elif kind == "table":

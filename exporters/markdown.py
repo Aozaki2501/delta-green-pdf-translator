@@ -21,9 +21,17 @@ from exporters._shared import (
 
 def _format_markdown_block(text: str) -> str:
     lines = []
+    in_full_title = False
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped in ("[CARD]", "[/CARD]"):
+        if stripped == "[FULL_WIDTH_TITLE]":
+            in_full_title = True
+            lines.append("<div style=\"page-break-before: always;\"></div>")
+        elif stripped == "[/FULL_WIDTH_TITLE]":
+            in_full_title = False
+        elif stripped in ("[CARD]", "[/CARD]"):
+            lines.append(stripped)
+        elif in_full_title:
             lines.append(stripped)
         elif _is_plain_heading_line(stripped):
             lines.append(f"### {stripped}")

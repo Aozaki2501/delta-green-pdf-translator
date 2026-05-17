@@ -258,6 +258,27 @@ class PDFExtractor:
         x0, _, x1, _ = block["bbox"]
         return (x0 + x1) / 2
 
+    def _blocks_share_column(self, left, right, page_width) -> bool:
+        left_rect = self._rect_from_bbox(left["bbox"])
+        right_rect = self._rect_from_bbox(right["bbox"])
+        horizontal_overlap = min(left_rect.x1, right_rect.x1) - max(left_rect.x0, right_rect.x0)
+        overlap_ratio = horizontal_overlap / max(min(left_rect.width, right_rect.width), 1)
+        center_gap = abs(self._block_center_x(left) - self._block_center_x(right))
+        same_side = (
+            self._block_center_x(left) < page_width / 2
+            and self._block_center_x(right) < page_width / 2
+        ) or (
+            self._block_center_x(left) >= page_width / 2
+            and self._block_center_x(right) >= page_width / 2
+        )
+        return overlap_ratio >= 0.20 or (same_side and center_gap <= page_width * 0.22)
+
+    def _is_full_band_block(self, block, page_width) -> bool:
+        x0, _, x1, _ = block["bbox"]
+        centered = abs(self._block_center_x(block) - page_width / 2) <= page_width * 0.16
+        spans_center = x0 <= page_width * 0.42 and x1 >= page_width * 0.58
+        return self._block_width(block) > page_width * 0.62 or (centered and spans_center)
+
     def _block_line_count(self, block):
         return sum(
             1 for line in block.get("lines", [])
@@ -609,21 +630,49 @@ class PDFExtractor:
                 and self._is_non_body_font_block(block, body_fonts)
                 and self._block_line_count(block) >= 1
             ]
-            # 按 y 坐标排序，把相邻的非正文字体块合并成组
+            # 按栏分开处理，避免左栏标题打断或混入右栏人物数据框。
             if non_body_blocks:
-                non_body_sorted = sorted(non_body_blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
                 groups = []
-                current_group = [non_body_sorted[0]]
-                for block in non_body_sorted[1:]:
-                    prev = current_group[-1]
-                    # 如果两个块垂直距离很近（< 页面高度的3%），认为是同一组
-                    gap = block["bbox"][1] - prev["bbox"][3]
-                    if gap < page_height * 0.03:
-                        current_group.append(block)
+                buckets = {"left": [], "right": [], "full": []}
+                full_like_blocks = []
+                for block in non_body_blocks:
+                    if self._is_full_band_block(block, page_width):
+                        full_like_blocks.append(block)
+
+                for block in non_body_blocks:
+                    x0, _, x1, _ = block["bbox"]
+                    near_full_like = any(
+                        other is not block
+                        and x0 >= page_width * 0.12
+                        and x1 <= page_width * 0.92
+                        and not (
+                            block["bbox"][3] < other["bbox"][1] - page_height * 0.03
+                            or other["bbox"][3] < block["bbox"][1] - page_height * 0.03
+                        )
+                        for other in full_like_blocks
+                    )
+                    if self._is_full_band_block(block, page_width) or near_full_like:
+                        buckets["full"].append(block)
+                    elif self._block_center_x(block) < page_width / 2:
+                        buckets["left"].append(block)
                     else:
-                        groups.append(current_group)
-                        current_group = [block]
-                groups.append(current_group)
+                        buckets["right"].append(block)
+
+                for bucket in buckets.values():
+                    non_body_sorted = sorted(bucket, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+                    if not non_body_sorted:
+                        continue
+                    current_group = [non_body_sorted[0]]
+                    for block in non_body_sorted[1:]:
+                        prev = current_group[-1]
+                        # 如果两个块垂直距离很近（< 页面高度的3%），认为是同一组
+                        gap = block["bbox"][1] - prev["bbox"][3]
+                        if gap < page_height * 0.03 and self._blocks_share_column(prev, block, page_width):
+                            current_group.append(block)
+                        else:
+                            groups.append(current_group)
+                            current_group = [block]
+                    groups.append(current_group)
 
                 for group in groups:
                     # 计算组的总行数和覆盖宽度
@@ -632,7 +681,9 @@ class PDFExtractor:
                     max_x = max(b["bbox"][2] for b in group)
                     group_width = max_x - min_x
                     # 如果组的总行数>=4 且宽度>=页面30%，判定为卡片
-                    if total_lines >= 4 and group_width >= page_width * 0.30:
+                    column_sidebar = page_width * 0.30 <= group_width <= page_width * 0.52
+                    wide_sidebar = group_width >= page_width * 0.65 and total_lines >= 6
+                    if total_lines >= 4 and (column_sidebar or wide_sidebar):
                         for block in group:
                             card_ids.add(id(block))
                         card_groups.append(group)
@@ -668,8 +719,14 @@ class PDFExtractor:
         avg_size = self._block_avg_font_size(block)
         size_floor = (median_size * 2.0) if median_size else 22
         near_top = True if page_height is None else y0 < page_height * 0.22
-        centered = abs(center_x - page_center) <= page_width * 0.22
-        return near_top and centered and avg_size >= size_floor
+        top_band = True if page_height is None else y0 < page_height * 0.13
+        centered = abs(center_x - page_center) <= page_width * 0.16
+        spans_page_center = x0 <= page_width * 0.42 and x1 >= page_width * 0.58
+        left_page_title = x0 <= page_width * 0.20 and x1 >= page_width * 0.50
+        return avg_size >= size_floor and (
+            (near_top and centered and spans_page_center)
+            or (top_band and left_page_title)
+        )
 
     def _ends_like_complete_sentence(self, text):
         return bool(re.search(r"[.!?\u3002\uff01\uff1f\u201d\\\"\u2019')\]]\s*$", text.strip()))
@@ -838,8 +895,17 @@ class PDFExtractor:
         flush()
         text = self._merge_adjacent_heading_paragraphs("\n\n".join(paragraphs))
         if block.get("_dg_title_card"):
-            title = re.sub(r"\s+", " ", text).strip()
-            return f"# {title}" if title else ""
+            title_lines = []
+            for part in re.split(r"\n+", text):
+                clean = re.sub(r"^\s*#{1,6}\s*", "", part).strip()
+                if clean:
+                    title_lines.append(re.sub(r"\s+", " ", clean))
+            if not title_lines:
+                return ""
+            title_text = "# " + title_lines[0]
+            if len(title_lines) > 1:
+                title_text += "\n" + "\n".join(title_lines[1:])
+            return self._full_width_title_text(title_text)
         return text
 
     def _is_header_footer(self, block, page_height, margin_ratio=0.08):
@@ -995,7 +1061,7 @@ class PDFExtractor:
                 continue
             if in_fenced_block:
                 continue
-            if line in ("[CARD]", "[/CARD]"):
+            if line in ("[CARD]", "[/CARD]", "[FULL_WIDTH_TITLE]", "[/FULL_WIDTH_TITLE]"):
                 continue
             if line == "[[TOC]]":
                 continue
@@ -1018,29 +1084,31 @@ class PDFExtractor:
             return ""
         return "[CARD]\n" + clean + "\n[/CARD]"
 
+    def _full_width_title_text(self, text: str) -> str:
+        clean = self._clean_text(text)
+        if not clean:
+            return ""
+        return "[FULL_WIDTH_TITLE]\n" + clean + "\n[/FULL_WIDTH_TITLE]"
+
     def _interleaved_body_and_card_sections(self, body_blocks, card_groups,
                                             page_width, page_height) -> list[str]:
         sections = []
-        sorted_body = self._sort_blocks_layout_aware(body_blocks, page_width, page_height)
         body_median_size = self._median_font_size(body_blocks)
-        cards = sorted(
-            card_groups,
-            key=lambda group: (
-                min(block["bbox"][1] for block in group),
-                min(block["bbox"][0] for block in group),
-            ),
-        )
-        body_idx = 0
 
-        def flush_body(until_y=None):
-            nonlocal body_idx
-            segment = []
-            while body_idx < len(sorted_body):
-                block = sorted_body[body_idx]
-                if until_y is not None and block["bbox"][1] >= until_y:
-                    break
-                segment.append(block)
-                body_idx += 1
+        sortable_blocks = list(body_blocks)
+        for group in card_groups:
+            rect = self._union_rect([self._rect_from_bbox(block["bbox"]) for block in group])
+            sortable_blocks.append({
+                "type": 0,
+                "bbox": (rect.x0, rect.y0, rect.x1, rect.y1),
+                "lines": [],
+                "_dg_card_group": group,
+            })
+        sorted_items = self._sort_blocks_layout_aware(sortable_blocks, page_width, page_height)
+        segment = []
+
+        def flush_body():
+            nonlocal segment
             if segment:
                 body_text = self._blocks_to_extracted_text(
                     segment,
@@ -1053,10 +1121,15 @@ class PDFExtractor:
                 )
                 if body_text:
                     sections.append(body_text)
+                segment = []
 
-        for group in cards:
-            card_top = min(block["bbox"][1] for block in group)
-            flush_body(card_top)
+        for item in sorted_items:
+            group = item.get("_dg_card_group")
+            if not group:
+                segment.append(item)
+                continue
+
+            flush_body()
             card_text = self._blocks_to_extracted_text(
                 group,
                 page_width,

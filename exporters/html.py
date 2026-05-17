@@ -87,6 +87,30 @@ def _html_block(text: str) -> str:
         if clean_line == "[[TOC]]":
             continue
 
+        if clean_line == "[FULL_WIDTH_TITLE]":
+            title_lines = []
+            while idx < len(lines) and lines[idx].strip() != "[/FULL_WIDTH_TITLE]":
+                title_lines.append(lines[idx].strip())
+                idx += 1
+            if idx < len(lines) and lines[idx].strip() == "[/FULL_WIDTH_TITLE]":
+                idx += 1
+            clean_title_lines = [
+                re.sub(r"^#{1,6}\s*", "", line).strip()
+                for line in title_lines
+                if line.strip()
+            ]
+            clean_title_lines = [line for line in clean_title_lines if line]
+            if clean_title_lines:
+                title = clean_title_lines[0]
+                subtitle = " ".join(clean_title_lines[1:])
+                subtitle_html = f'<p>{_html_inline(subtitle)}</p>' if subtitle else ""
+                parts.append(
+                    '<div class="full-width-title"><span></span><div>'
+                    f'<h1>{_html_inline(title)}</h1>{subtitle_html}'
+                    '</div><span></span></div>'
+                )
+            continue
+
         if clean_line == "[CARD]":
             card_lines = []
             while idx < len(lines) and lines[idx].strip() != "[/CARD]":
@@ -233,6 +257,35 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         font-size: 20pt;
         font-weight: 500;
         color: var(--ink);
+    }}
+    .full-width-title {{
+        column-span: all;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 0.14in;
+        margin: 0.04in 0 0.28in;
+        break-after: avoid;
+        page-break-after: avoid;
+    }}
+    .full-width-title span {{
+        height: 0.08in;
+        background: var(--ink);
+    }}
+    .full-width-title h1 {{
+        margin: 0;
+        font-size: 24pt;
+        font-weight: 700;
+        white-space: normal;
+        text-align: center;
+    }}
+    .full-width-title p {{
+        margin: 0.04in 0 0;
+        text-indent: 0;
+        text-align: center;
+        font-family: "Courier New", "VT323", monospace;
+        font-size: 11pt;
+        line-height: 1.25;
     }}
     h2 {{
         margin: 0.06in 0 0.18in;
