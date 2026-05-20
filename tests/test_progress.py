@@ -47,6 +47,19 @@ class TestSaveLoadRoundTrip:
         tracker2 = ProgressTracker(progress_file, expected_metadata=metadata)
         assert tracker2.completed_pages == set()
         assert tracker2.translations == {}
+        assert tracker2.translation_cache == {}
+
+    def test_round_trip_translation_cache(self, tmp_path):
+        """Exact prompt translation cache is saved and loaded."""
+        progress_file = str(tmp_path / "cache.progress.json")
+        metadata = {"schema": 1, "model": "m"}
+
+        tracker = ProgressTracker(progress_file, expected_metadata=metadata)
+        tracker.mark_cached_prompt_translation("abc123", "cached translation")
+
+        tracker2 = ProgressTracker(progress_file, expected_metadata=metadata)
+        assert tracker2.get_cached_prompt_translation("abc123") == "cached translation"
+        assert tracker2.get_cached_prompt_translation("missing") == ""
 
     def test_completed_pages_sorted_in_json(self, tmp_path):
         """The saved JSON file stores completed_pages as a sorted integer array."""
@@ -83,6 +96,7 @@ class TestMetadataMismatch:
         assert tracker2.metadata_mismatches != []
         assert tracker2.completed_pages == set()
         assert tracker2.translations == {}
+        assert tracker2.translation_cache == {}
         assert tracker2.ignored_existing_progress is True
 
     def test_mismatch_with_reuse_preserves_translations(self, tmp_path):

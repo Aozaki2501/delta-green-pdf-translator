@@ -83,6 +83,24 @@ class TestLoadGlossaryParsing:
         assert result["Handler"] == "管理者"
         assert result["Agent"] == "特工"
 
+    def test_corrupted_chinese_column_raises(self, tmp_path):
+        """Question marks in the Chinese column mean the glossary is corrupted."""
+        tsv = tmp_path / "glossary.tsv"
+        tsv.write_text(
+            "绿色三角洲\tDelta Green\n"
+            "??????\tLast Things Last\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="术语表疑似编码损坏"):
+            load_glossary(str(tsv))
+
+    def test_question_mark_in_english_column_is_allowed(self, tmp_path):
+        """Only the Chinese column is checked for encoding damage."""
+        tsv = tmp_path / "glossary.tsv"
+        tsv.write_text("未知问题\tUnknown?\n", encoding="utf-8")
+        result = load_glossary(str(tsv))
+        assert result == {"Unknown?": "未知问题"}
+
 
 # ---------------------------------------------------------------------------
 # Tests for load_glossary: None, empty, and nonexistent path

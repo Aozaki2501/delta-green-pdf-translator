@@ -10,6 +10,8 @@ Dependencies: openai, core.constants, core.glossary (for find_relevant_glossary_
 
 import time
 import threading
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
@@ -31,6 +33,7 @@ class TokenStats:
     cached_tokens: int = 0
     api_calls: int = 0
     failed_calls: int = 0
+    translation_cache_hits: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     PRICE_INPUT_PER_M = 1.0
@@ -47,6 +50,10 @@ class TokenStats:
     def add_failure(self):
         with self._lock:
             self.failed_calls += 1
+
+    def add_translation_cache_hit(self):
+        with self._lock:
+            self.translation_cache_hits += 1
 
     @property
     def total_tokens(self):
@@ -67,6 +74,7 @@ class TokenStats:
             f"   Input: {self.input_tokens:,} tokens\n"
             f"   Output: {self.output_tokens:,} tokens\n"
             f"   Cache hit: {self.cached_tokens:,} tokens\n"
+            f"   Translation cache hits: {self.translation_cache_hits}\n"
             f"   API calls: {self.api_calls} (failed {self.failed_calls})\n"
             f"   Est. cost: Y{self.cost_yuan:.3f}"
         )
@@ -127,7 +135,18 @@ Translation rules:
     def _find_relevant_glossary_terms(self, text: str) -> dict:
         return find_relevant_glossary_terms(text, self.glossary)
 
-    def translate_chunk(self, text: str, page_num: int = None, prev_context: str = "") -> str:
+    def _translation_cache_key(self, system_prompt: str, user_prompt: str) -> str:
+        payload = {
+            "model": self.model,
+            "prompt_version": PROMPT_VERSION,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def translate_chunk(self, text: str, page_num: int = None, prev_context: str = "",
+                        cache=None) -> str:
         if not text.strip():
             return ""
         glossary_section = self._build_glossary_for_chunk(text)
@@ -142,6 +161,13 @@ Translation rules:
             )
         else:
             user_prompt = f"Translate the following{page_info}:\n\n{text}"
+
+        cache_key = self._translation_cache_key(system_prompt, user_prompt)
+        if cache is not None:
+            cached_translation = cache.get_cached_prompt_translation(cache_key)
+            if cached_translation:
+                self.stats.add_translation_cache_hit()
+                return cached_translation
 
         for attempt in range(self.retry_count):
             try:
@@ -168,6 +194,8 @@ Translation rules:
                 content = content.strip()
                 if not content:
                     raise RuntimeError("API 返回空译文")
+                if cache is not None:
+                    cache.mark_cached_prompt_translation(cache_key, content)
                 return content
             except Exception as e:
                 self.stats.add_failure()
@@ -204,13 +232,12 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
             progress_callback(page_num, translation or "", completed_count, total_count)
 
     def translate_one(page_num, text, prev_ctx):
-        translation = translator.translate_chunk(text, page_num, prev_ctx)
+        translation = translator.translate_chunk(text, page_num, prev_ctx, cache=tracker)
         if translation and not _is_failed_translation(translation):
             tracker.mark_completed(page_num, translation)
         return page_num, translation
 
     group_size = max_workers
-    prev_context = ""
 
     for group_start in range(0, len(pages_data), group_size):
         group = pages_data[group_start:group_start + group_size]
@@ -227,7 +254,7 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
                     results[page_num] = ""
                     report(page_num, "")
                     continue
-                future = executor.submit(translate_one, page_num, text, prev_context or page_context)
+                future = executor.submit(translate_one, page_num, text, page_context)
                 futures[future] = page_num
 
             for future in as_completed(futures):
@@ -242,11 +269,6 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
                 if not _is_failed_translation(translation):
                     print(f" p{page_num + 1} done", end="", flush=True)
 
-        if group:
-            last_page_num = group[-1][0]
-            last_translation = results.get(last_page_num, "")
-            if last_translation:
-                prev_context = last_translation[-300:]
         print()
 
     return results

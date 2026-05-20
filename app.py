@@ -427,7 +427,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         prev_text = ""
         for pn in pages_list:
             text = pages_text.get(pn, "")
-            pages_data.append((pn, text, prev_text[-300:] if prev_text else ""))
+            pages_data.append((pn, text, prev_text[-900:] if prev_text else ""))
             context_text = extractor.get_context_text(pn)
             if context_text.strip():
                 prev_text = context_text
@@ -515,7 +515,13 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
 
         if "Markdown" in formats:
             md_path = make_output_path(output_base, ".md")
-            write_markdown_output(translated_pages_sorted, md_path, pdf_stem, toc)
+            write_markdown_output(
+                translated_pages_sorted,
+                md_path,
+                pdf_stem,
+                toc,
+                page_layouts=page_layouts,
+            )
 
             with open(md_path, "rb") as f:
                 st.download_button(
@@ -560,6 +566,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     header_left=word_header_left,
                     header_right=word_header_right or None,
                     hard_page_breaks=bool(word_hard_page_breaks),
+                    page_layouts=page_layouts,
                 )
 
                 with open(docx_path, "rb") as f:

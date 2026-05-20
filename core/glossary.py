@@ -18,8 +18,9 @@ def load_glossary(glossary_path: str) -> dict:
     glossary = {}
     if not glossary_path or not os.path.exists(glossary_path):
         return glossary
+    corrupted_entries = []
     with open(glossary_path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -31,7 +32,19 @@ def load_glossary(glossary_path: str) -> dict:
                 chinese = parts[0].strip()
                 english = parts[1].strip()
                 if english and chinese:
+                    if "?" in chinese:
+                        corrupted_entries.append((line_number, chinese, english))
+                        continue
                     glossary[english] = chinese
+    if corrupted_entries:
+        examples = "; ".join(
+            f"第 {line_number} 行 {chinese} -> {english}"
+            for line_number, chinese, english in corrupted_entries[:10]
+        )
+        raise ValueError(
+            f"术语表疑似编码损坏：{glossary_path}。"
+            f"中文列含英文问号的词条 {len(corrupted_entries)} 条，例如：{examples}"
+        )
     return glossary
 
 

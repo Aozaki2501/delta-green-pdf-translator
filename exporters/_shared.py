@@ -11,10 +11,36 @@ Dependencies: core.constants (for future use), core.utils (for future use)
 import re
 from typing import Optional
 
+SINGLE_COLUMN_LAYOUTS = {
+    "single",
+    "handout",
+    "toc",
+    "character",
+    "document",
+    "credits",
+    "art",
+}
+
 
 # ---------------------------------------------------------------------------
 # Block splitting and cleaning
 # ---------------------------------------------------------------------------
+
+def _layout_uses_columns(layout: str) -> bool:
+    return (layout or "columns") not in SINGLE_COLUMN_LAYOUTS
+
+
+def _normalize_heading_markup(line: str) -> str:
+    stripped = line.strip()
+    match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+    if not match:
+        return line
+    prefix, title = match.groups()
+    title = re.sub(r"\s*#{1,6}\s*", " ", title)
+    title = re.sub(r"\*\*(.+?)\*\*", r"\1", title)
+    title = re.sub(r"\*(.+?)\*", r"\1", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    return f"{prefix} {title}" if title else stripped
 
 def _split_translation_chunks(text: str) -> list[str]:
     chunks = []
