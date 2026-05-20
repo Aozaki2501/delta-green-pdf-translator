@@ -1061,7 +1061,12 @@ class PDFExtractor:
                 continue
             if in_fenced_block:
                 continue
-            if line in ("[CARD]", "[/CARD]", "[FULL_WIDTH_TITLE]", "[/FULL_WIDTH_TITLE]"):
+            if line in (
+                "[CARD]", "[/CARD]",
+                "[STAT_BLOCK]", "[/STAT_BLOCK]",
+                "[IMAGE]", "[/IMAGE]",
+                "[FULL_WIDTH_TITLE]", "[/FULL_WIDTH_TITLE]",
+            ):
                 continue
             if line == "[[TOC]]":
                 continue
@@ -1084,14 +1089,91 @@ class PDFExtractor:
             return ""
         return "[CARD]\n" + clean + "\n[/CARD]"
 
+    def _stat_block_text(self, text: str) -> str:
+        clean = self._clean_text(text)
+        if not clean:
+            return ""
+        return "[STAT_BLOCK]\n" + clean + "\n[/STAT_BLOCK]"
+
+    def _image_placeholder_text(self) -> str:
+        return "[IMAGE]\nIllustration placeholder\n[/IMAGE]"
+
+    def _merge_visual_rects(self, rects, tolerance=8):
+        merged = []
+        for rect in sorted(rects, key=lambda item: (item.y0, item.x0)):
+            merged_rect = rect
+            idx = 0
+            while idx < len(merged):
+                if self._rects_touch_or_overlap(merged[idx], merged_rect, tolerance=tolerance):
+                    merged_rect = self._union_rect([merged.pop(idx), merged_rect])
+                    idx = 0
+                    continue
+                idx += 1
+            merged.append(merged_rect)
+        return sorted(merged, key=lambda item: (item.y0, item.x0))
+
     def _full_width_title_text(self, text: str) -> str:
         clean = self._clean_text(text)
         if not clean:
             return ""
         return "[FULL_WIDTH_TITLE]\n" + clean + "\n[/FULL_WIDTH_TITLE]"
 
+    def _is_stat_text(self, text: str) -> bool:
+        upper = text.upper()
+        attributes = ("STR", "CON", "DEX", "INT", "POW", "CHA")
+        attr_number_hits = sum(1 for attr in attributes if re.search(rf"\b{attr}\s*\d+", upper))
+        has_secondary_stats = bool(re.search(r"\b(?:HP|WP|SAN)\s*\d+", upper))
+        has_game_sections = bool(re.search(r"(?m)^\s*(?:SKILLS|ATTACKS|ARMOR|DISORDER)\s*:", upper))
+        return (
+            attr_number_hits >= 4
+            or (attr_number_hits >= 2 and has_secondary_stats)
+            or (attr_number_hits >= 1 and has_game_sections)
+        )
+
+    def _is_stat_group(self, group) -> bool:
+        text = "\n".join(self._extract_block_text(block) for block in group)
+        return self._is_stat_text(text)
+
+    def _rect_overlap_ratio(self, left, right) -> float:
+        x_overlap = max(0, min(left.x1, right.x1) - max(left.x0, right.x0))
+        y_overlap = max(0, min(left.y1, right.y1) - max(left.y0, right.y0))
+        overlap = x_overlap * y_overlap
+        return overlap / max(min(left.width * left.height, right.width * right.height), 1)
+
+    def _visual_image_regions(self, page, content_blocks, card_groups, page_width, page_height):
+        page_area = page_width * page_height
+        card_rects = [
+            self._union_rect([self._rect_from_bbox(block["bbox"]) for block in group])
+            for group in card_groups
+        ]
+        regions = []
+
+        def add_rect(rect):
+            area = rect.width * rect.height
+            if area < page_area * 0.025 or area > page_area * 0.55:
+                return
+            if rect.width < page_width * 0.20 or rect.height < page_height * 0.08:
+                return
+            touches_page_edge = (
+                rect.x0 <= 2
+                or rect.y0 <= 2
+                or rect.x1 >= page_width - 2
+                or rect.y1 >= page_height - 2
+            )
+            if touches_page_edge and area > page_area * 0.06:
+                return
+            if any(self._rect_overlap_ratio(rect, card_rect) > 0.20 for card_rect in card_rects):
+                return
+            regions.append(rect)
+
+        for block in page.get_text("dict").get("blocks", []):
+            if block.get("type") == 1:
+                add_rect(self._rect_from_bbox(block["bbox"]))
+
+        return self._merge_visual_rects(regions, tolerance=8)
+
     def _interleaved_body_and_card_sections(self, body_blocks, card_groups,
-                                            page_width, page_height) -> list[str]:
+                                            page_width, page_height, image_regions=None) -> list[str]:
         sections = []
         body_median_size = self._median_font_size(body_blocks)
 
@@ -1103,6 +1185,13 @@ class PDFExtractor:
                 "bbox": (rect.x0, rect.y0, rect.x1, rect.y1),
                 "lines": [],
                 "_dg_card_group": group,
+            })
+        for rect in image_regions or []:
+            sortable_blocks.append({
+                "type": 0,
+                "bbox": (rect.x0, rect.y0, rect.x1, rect.y1),
+                "lines": [],
+                "_dg_image_placeholder": True,
             })
         sorted_items = self._sort_blocks_layout_aware(sortable_blocks, page_width, page_height)
         segment = []
@@ -1125,11 +1214,15 @@ class PDFExtractor:
 
         for item in sorted_items:
             group = item.get("_dg_card_group")
-            if not group:
+            if not group and not item.get("_dg_image_placeholder"):
                 segment.append(item)
                 continue
 
             flush_body()
+            if item.get("_dg_image_placeholder"):
+                sections.append(self._image_placeholder_text())
+                continue
+
             card_text = self._blocks_to_extracted_text(
                 group,
                 page_width,
@@ -1138,7 +1231,10 @@ class PDFExtractor:
                 mark_handouts=False,
             )
             if card_text:
-                sections.append(self._card_block_text(card_text))
+                if self._is_stat_group(group):
+                    sections.append(self._stat_block_text(card_text))
+                else:
+                    sections.append(self._card_block_text(card_text))
 
         flush_body()
         return sections
@@ -1283,12 +1379,18 @@ class PDFExtractor:
             page, content_blocks, page_width, page_height
         )
         self._page_layout_notes[page_num].extend(card_notes)
+        image_regions = self._visual_image_regions(
+            page, content_blocks, card_groups, page_width, page_height
+        )
+        if image_regions:
+            self._page_layout_notes[page_num].append(f"{len(image_regions)} image placeholder(s)")
 
         sections = self._interleaved_body_and_card_sections(
             body_blocks,
             card_groups,
             page_width,
             page_height,
+            image_regions=image_regions,
         )
 
         clean_text = self._clean_text("\n\n".join(sections))

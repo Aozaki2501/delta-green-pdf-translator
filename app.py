@@ -560,6 +560,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     header_left=word_header_left,
                     header_right=word_header_right or None,
                     hard_page_breaks=bool(word_hard_page_breaks),
+                    source_pages_text=pages_text,
                 )
 
                 with open(docx_path, "rb") as f:

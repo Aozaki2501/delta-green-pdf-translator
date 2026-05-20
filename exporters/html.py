@@ -14,6 +14,8 @@ from exporters._shared import (
     _is_plain_heading_line,
     _format_page_ranges,
     _header_title,
+    attach_running_headers,
+    _looks_like_stat_block,
 )
 from core.utils import ensure_output_parent
 
@@ -65,12 +67,34 @@ def _html_handout_card(lines: list[str]) -> str:
         clean = line.strip()
         if not clean:
             continue
+        clean = re.sub(r"^#{1,6}\s*", "", clean)
         if idx == 0 and len(re.sub(r"\s+", "", clean)) <= 80:
             parts.append(f"<h3>{_html_inline(clean)}</h3>")
         else:
             parts.append(f"<p>{_html_inline(clean)}</p>")
     parts.append("</div>")
     return "".join(parts)
+
+
+def _html_stat_block(lines: list[str]) -> str:
+    if not _looks_like_stat_block("\n".join(lines)):
+        return _html_handout_card(lines)
+    parts = ['<div class="stat-block">']
+    for idx, line in enumerate(lines):
+        clean = line.strip()
+        if not clean:
+            continue
+        if idx == 0 and len(re.sub(r"\s+", "", clean)) <= 80:
+            parts.append(f"<h3>{_html_inline(clean)}</h3>")
+        else:
+            parts.append(f"<p>{_html_inline(clean)}</p>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _html_image_placeholder(lines: list[str]) -> str:
+    label = " ".join(line.strip() for line in lines if line.strip()) or "Illustration"
+    return f'<figure class="image-placeholder"><div></div><figcaption>{_html_inline(label)}</figcaption></figure>'
 
 
 def _html_block(text: str) -> str:
@@ -119,6 +143,26 @@ def _html_block(text: str) -> str:
             if idx < len(lines) and lines[idx].strip() == "[/CARD]":
                 idx += 1
             parts.append(_html_handout_card(card_lines))
+            continue
+
+        if clean_line == "[STAT_BLOCK]":
+            stat_lines = []
+            while idx < len(lines) and lines[idx].strip() != "[/STAT_BLOCK]":
+                stat_lines.append(lines[idx].strip())
+                idx += 1
+            if idx < len(lines) and lines[idx].strip() == "[/STAT_BLOCK]":
+                idx += 1
+            parts.append(_html_stat_block(stat_lines))
+            continue
+
+        if clean_line == "[IMAGE]":
+            image_lines = []
+            while idx < len(lines) and lines[idx].strip() != "[/IMAGE]":
+                image_lines.append(lines[idx].strip())
+                idx += 1
+            if idx < len(lines) and lines[idx].strip() == "[/IMAGE]":
+                idx += 1
+            parts.append(_html_image_placeholder(image_lines))
             continue
 
         if clean_line.startswith("```toc"):
@@ -186,13 +230,13 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     left_title = html.escape((header_left or "绿色三角洲").strip())
     safe_title = html.escape(title)
     safe_subtitle = html.escape(subtitle or "")
-    reading_pages = paginate_translated_blocks(
+    reading_pages = attach_running_headers(paginate_translated_blocks(
         translated_pages,
         min_chars,
         max_chars,
         page_layouts=page_layouts,
         split_on_layout=True,
-    )
+    ), title)
 
     css = f"""
     :root {{
@@ -293,6 +337,8 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
         font-size: 18pt;
         font-weight: 700;
+        padding-bottom: 0.04in;
+        border-bottom: 2px solid var(--rule);
     }}
     h3 {{
         margin: 0.16in 0 0.08in;
@@ -372,6 +418,45 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         text-indent: 0;
         font-size: 10.5pt;
         line-height: 1.5;
+    }}
+    .stat-block {{
+        column-span: all;
+        margin: 0.12in 0 0.22in;
+        padding: 0.12in 0.18in;
+        border-top: 2px solid var(--ink);
+        border-bottom: 2px solid var(--ink);
+        background: rgba(255, 255, 255, 0.34);
+        font-family: "Courier New", "VT323", monospace;
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }}
+    .stat-block h3 {{
+        margin: 0 0 0.06in;
+        font-size: 12pt;
+        text-transform: uppercase;
+    }}
+    .stat-block p {{
+        margin: 0 0 0.04in;
+        text-indent: 0;
+        font-size: 9.2pt;
+        line-height: 1.35;
+    }}
+    .image-placeholder {{
+        column-span: all;
+        margin: 0.16in 0 0.22in;
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }}
+    .image-placeholder div {{
+        min-height: 1.15in;
+        border: 1px dashed var(--muted);
+        background: rgba(0, 0, 0, 0.035);
+    }}
+    .image-placeholder figcaption {{
+        margin-top: 0.04in;
+        color: var(--muted);
+        font: 8.5pt "Courier New", monospace;
+        text-align: center;
     }}
     .toc .content {{
         column-count: 2;
@@ -466,10 +551,11 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     for page_idx, page in enumerate(reading_pages, 1):
         blocks = page["blocks"]
         layout = page.get("layout", "columns")
+        page_right_title = html.escape(page.get("running_header") or right_title)
         source_pages = _format_page_ranges([b["source_page"] for b in blocks])
         chunks.extend([
             f'<section class="sheet {html.escape(layout)}">',
-            f'<header class="running-head"><span>// {left_title} //</span><span>// {right_title} //</span></header>',
+            f'<header class="running-head"><span>// {left_title} //</span><span>// {page_right_title} //</span></header>',
             '<main class="content">',
         ])
         for block in blocks:

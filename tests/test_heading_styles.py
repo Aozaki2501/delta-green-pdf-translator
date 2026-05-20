@@ -113,6 +113,35 @@ def test_right_column_card_follows_left_column_body():
     assert text.index("Right column starts") < text.index("[CARD]")
 
 
+def test_stat_group_uses_stat_block_marker():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    stat = _block("STR 11 CON 10 DEX 9 INT 14 POW 16 CHA 13", 313, 542, 529, 554)
+
+    sections = extractor._interleaved_body_and_card_sections(
+        [],
+        [[stat]],
+        page_width=612,
+        page_height=792,
+    )
+
+    assert sections[0].startswith("[STAT_BLOCK]")
+
+
+def test_image_region_uses_image_marker():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    rect = extractor._rect_from_bbox((70, 120, 540, 260))
+
+    sections = extractor._interleaved_body_and_card_sections(
+        [],
+        [],
+        page_width=612,
+        page_height=792,
+        image_regions=[rect],
+    )
+
+    assert sections == ["[IMAGE]\nIllustration placeholder\n[/IMAGE]"]
+
+
 def test_disinformation_in_body_sentence_is_not_card_label():
     extractor = PDFExtractor.__new__(PDFExtractor)
 

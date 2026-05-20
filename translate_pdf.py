@@ -273,7 +273,12 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 docx_output = output_base + ".docx"
                 print(f"  生成 Word 文档: {docx_output}")
                 try:
-                    write_word_output(translated_pages_sorted, docx_output, Path(pdf_path).stem)
+                    write_word_output(
+                        translated_pages_sorted,
+                        docx_output,
+                        Path(pdf_path).stem,
+                        source_pages_text=pages_text,
+                    )
                     print("   ✓ Word 输出完成")
 
                 except Exception as e:

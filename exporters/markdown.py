@@ -12,6 +12,7 @@ from exporters._shared import (
     paginate_translated_blocks,
     _format_page_ranges,
     _is_plain_heading_line,
+    _looks_like_stat_block,
 )
 
 
@@ -22,6 +23,9 @@ from exporters._shared import (
 def _format_markdown_block(text: str) -> str:
     lines = []
     in_full_title = False
+    in_stat = False
+    stat_is_real = True
+    in_image = False
     for line in text.split("\n"):
         stripped = line.strip()
         if stripped == "[FULL_WIDTH_TITLE]":
@@ -29,10 +33,25 @@ def _format_markdown_block(text: str) -> str:
             lines.append("<div style=\"page-break-before: always;\"></div>")
         elif stripped == "[/FULL_WIDTH_TITLE]":
             in_full_title = False
+        elif stripped == "[STAT_BLOCK]":
+            in_stat = True
+            stat_is_real = _looks_like_stat_block(text)
+            lines.append("> **人物数据**" if stat_is_real else "[CARD]")
+        elif stripped == "[/STAT_BLOCK]":
+            if not stat_is_real:
+                lines.append("[/CARD]")
+            in_stat = False
+        elif stripped == "[IMAGE]":
+            in_image = True
+            lines.append("> [图片占位]")
+        elif stripped == "[/IMAGE]":
+            in_image = False
         elif stripped in ("[CARD]", "[/CARD]"):
             lines.append(stripped)
         elif in_full_title:
             lines.append(stripped)
+        elif in_stat or in_image:
+            lines.append("> " + stripped if stripped else ">")
         elif _is_plain_heading_line(stripped):
             lines.append(f"### {stripped}")
         else:

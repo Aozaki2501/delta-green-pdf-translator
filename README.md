@@ -257,6 +257,16 @@ python convert_glossary.py raw_glossary.txt -o glossary.tsv
 
 进度文件包含元数据指纹（PDF hash、术语表 hash、模型版本等）。当设置变更时会提示不一致，防止误用过期译文。
 
+### 离线重排
+
+如果已经翻译完成，只想用现有 `.progress.json` 重新生成 Word / HTML / Markdown，可以运行：
+
+```powershell
+python rerender_output.py --progress output\book_cn.progress.json --pdf "book.pdf" --format all
+```
+
+这不会调用翻译 API。注意：如果旧 progress 里的译文本身已经因为旧提取顺序而错序，重排只能套新版样式，不能自动修正译文顺序；这种页需要用新版提取器重新提取并重翻。
+
 ---
 
 ## 依赖

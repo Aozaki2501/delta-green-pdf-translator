@@ -13,6 +13,7 @@ from typing import Optional
 
 from exporters._shared import (
     _is_plain_heading_line,
+    _looks_like_stat_block,
     paginate_translated_blocks,
 )
 from core.utils import ensure_output_parent
@@ -26,6 +27,7 @@ try:
     from docx.shared import Pt, Inches, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.enum.section import WD_SECTION
+    from docx.enum.table import WD_ROW_HEIGHT_RULE, WD_TABLE_ALIGNMENT
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     HAS_DOCX = True
@@ -79,6 +81,24 @@ def remove_table_borders(table):
         element.set(qn("w:val"), "nil")
 
 
+def set_table_borders(table, color="B8B8B8", val="dashed", size="8"):
+    tbl_pr = table._tbl.tblPr
+    borders = tbl_pr.first_child_found_in("w:tblBorders")
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        tag = "w:" + edge
+        element = borders.find(qn(tag))
+        if element is None:
+            element = OxmlElement(tag)
+            borders.append(element)
+        element.set(qn("w:val"), val)
+        element.set(qn("w:sz"), size)
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), color)
+
+
 def set_section_page_layout(section, columns=1):
     section.page_width = Inches(8.5)
     section.page_height = Inches(11)
@@ -93,13 +113,13 @@ def set_section_page_layout(section, columns=1):
     set_section_columns(section, num=columns, space_twips=520)
 
 
-def _add_page_number(paragraph):
+def _add_word_field(paragraph, instruction: str):
     run = paragraph.add_run()
     fld_begin = OxmlElement("w:fldChar")
     fld_begin.set(qn("w:fldCharType"), "begin")
     instr = OxmlElement("w:instrText")
     instr.set(qn("xml:space"), "preserve")
-    instr.text = "PAGE"
+    instr.text = instruction
     fld_end = OxmlElement("w:fldChar")
     fld_end.set(qn("w:fldCharType"), "end")
     run._r.append(fld_begin)
@@ -108,6 +128,10 @@ def _add_page_number(paragraph):
     run.font.name = "宋体"
     run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
     run.font.size = Pt(9)
+
+
+def _add_page_number(paragraph):
+    _add_word_field(paragraph, "PAGE")
 
 
 def _header_title(title: str) -> str:
@@ -142,14 +166,26 @@ def set_running_header_footer(doc, title: str, header_left: str = "绿色三角�
         left_para = table.cell(0, 0).paragraphs[0]
         right_para = table.cell(0, 1).paragraphs[0]
         right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        for para, text in ((left_para, f"// {left_title} //"), (right_para, f"// {right_title} //")):
-            para.paragraph_format.space_before = Pt(0)
-            para.paragraph_format.space_after = Pt(0)
-            para.paragraph_format.line_spacing = 1.0
-            run = para.add_run(text)
+        left_para.paragraph_format.space_before = Pt(0)
+        left_para.paragraph_format.space_after = Pt(0)
+        left_para.paragraph_format.line_spacing = 1.0
+        run = left_para.add_run(f"// {left_title} //")
+        run.font.name = "宋体"
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        run.font.size = Pt(9)
+
+        right_para.paragraph_format.space_before = Pt(0)
+        right_para.paragraph_format.space_after = Pt(0)
+        right_para.paragraph_format.line_spacing = 1.0
+        if header_right:
+            run = right_para.add_run(f"// {right_title} //")
             run.font.name = "宋体"
             run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
             run.font.size = Pt(9)
+        else:
+            right_para.add_run("// ")
+            _add_word_field(right_para, 'STYLEREF "Heading 1" \\* MERGEFORMAT')
+            right_para.add_run(" //")
 
         clear_header_footer_part(section.footer)
         footer_para = section.footer.add_paragraph()
@@ -251,9 +287,13 @@ def _split_card_segments(text: str):
     segments = []
     normal_lines = []
     card_lines = []
+    stat_lines = []
+    image_lines = []
     full_title_lines = []
     table_lines = []
     in_card = False
+    in_stat = False
+    in_image = False
     in_full_title = False
 
     def flush_normal():
@@ -267,6 +307,18 @@ def _split_card_segments(text: str):
         if any(line.strip() for line in card_lines):
             segments.append(("card", "\n".join(card_lines).strip()))
         card_lines = []
+
+    def flush_stat():
+        nonlocal stat_lines
+        if any(line.strip() for line in stat_lines):
+            segments.append(("stat", "\n".join(stat_lines).strip()))
+        stat_lines = []
+
+    def flush_image():
+        nonlocal image_lines
+        if any(line.strip() for line in image_lines):
+            segments.append(("image", "\n".join(image_lines).strip()))
+        image_lines = []
 
     def flush_full_title():
         nonlocal full_title_lines
@@ -285,6 +337,9 @@ def _split_card_segments(text: str):
         if line == "[FULL_WIDTH_TITLE]":
             flush_normal()
             flush_table()
+            flush_card()
+            flush_stat()
+            flush_image()
             in_full_title = True
             continue
         if line == "[/FULL_WIDTH_TITLE]":
@@ -300,8 +355,32 @@ def _split_card_segments(text: str):
             flush_card()
             in_card = False
             continue
+        if line == "[STAT_BLOCK]":
+            flush_normal()
+            flush_table()
+            in_stat = True
+            continue
+        if line == "[/STAT_BLOCK]":
+            flush_stat()
+            in_stat = False
+            continue
+        if line == "[IMAGE]":
+            flush_normal()
+            flush_table()
+            in_image = True
+            continue
+        if line == "[/IMAGE]":
+            flush_image()
+            in_image = False
+            continue
         if in_card:
             card_lines.append(raw_line)
+            continue
+        if in_stat:
+            stat_lines.append(raw_line)
+            continue
+        if in_image:
+            image_lines.append(raw_line)
             continue
         if in_full_title:
             full_title_lines.append(raw_line)
@@ -321,6 +400,10 @@ def _split_card_segments(text: str):
         flush_full_title()
     elif in_card:
         flush_card()
+    elif in_stat:
+        flush_stat()
+    elif in_image:
+        flush_image()
     else:
         flush_table()
         flush_normal()
@@ -434,6 +517,7 @@ def _write_word_card(doc, text: str):
         clean_line = line.strip()
         if not clean_line:
             continue
+        clean_line = re.sub(r"^#{1,6}\s*", "", clean_line)
         clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", clean_line)
         clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
         p = doc.add_paragraph(clean_line)
@@ -446,6 +530,60 @@ def _write_word_card(doc, text: str):
         shading = OxmlElement("w:shd")
         shading.set(qn("w:fill"), "F4E17D")
         p_pr.append(shading)
+
+
+def _write_word_stat_block(doc, text: str):
+    if not _looks_like_stat_block(text):
+        _write_word_card(doc, text)
+        return
+    for idx, line in enumerate(text.split("\n")):
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+        clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", clean_line)
+        clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
+        p = doc.add_paragraph(clean_line)
+        p.paragraph_format.left_indent = Pt(10)
+        p.paragraph_format.right_indent = Pt(10)
+        p.paragraph_format.first_line_indent = Pt(0)
+        p.paragraph_format.space_before = Pt(5 if idx == 0 else 0)
+        p.paragraph_format.space_after = Pt(3)
+        for run in p.runs:
+            run.font.name = "Courier New"
+            run.font.size = Pt(9)
+            if idx == 0:
+                run.bold = True
+        p_pr = p._p.get_or_add_pPr()
+        borders = OxmlElement("w:pBdr")
+        top = OxmlElement("w:top")
+        top.set(qn("w:val"), "single")
+        top.set(qn("w:sz"), "8")
+        top.set(qn("w:space"), "2")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "8")
+        bottom.set(qn("w:space"), "2")
+        borders.append(top)
+        borders.append(bottom)
+        p_pr.append(borders)
+
+
+def _write_word_image_placeholder(doc, text: str):
+    table = doc.add_table(rows=1, cols=1)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    set_table_borders(table)
+    row = table.rows[0]
+    row.height = Inches(1.35)
+    row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+    cell = row.cells[0]
+    set_cell_width(cell, Inches(7.15))
+    para = cell.paragraphs[0]
+    para.paragraph_format.first_line_indent = Pt(0)
+    para.paragraph_format.space_before = Pt(0)
+    para.paragraph_format.space_after = Pt(0)
+    para.add_run(" ")
+    doc.add_paragraph()
 
 
 def _write_word_full_title(doc, text: str):
@@ -469,6 +607,21 @@ def _write_word_full_title(doc, text: str):
         subtitle.paragraph_format.space_after = Pt(18)
 
 
+def _with_missing_image_placeholders(translated_pages, source_pages_text=None):
+    if not source_pages_text:
+        return translated_pages
+    patched = []
+    placeholder = "[IMAGE]\nIllustration placeholder\n[/IMAGE]"
+    for page_num, text in translated_pages:
+        source_text = source_pages_text.get(page_num, "")
+        missing_count = source_text.count("[IMAGE]") - str(text).count("[IMAGE]")
+        if missing_count > 0:
+            extra = "\n\n".join(placeholder for _ in range(missing_count))
+            text = f"{text.rstrip()}\n\n{extra}"
+        patched.append((page_num, text))
+    return patched
+
+
 # ---------------------------------------------------------------------------
 # Main Word output function
 # ---------------------------------------------------------------------------
@@ -476,7 +629,7 @@ def _write_word_full_title(doc, text: str):
 def write_word_output(translated_pages, docx_output: str, title: str, subtitle: str = "中文翻译",
                       min_chars=1000, max_chars=1500, body_font_size=12.0,
                       line_spacing=1.5, columns=2, header_left="绿色三角洲",
-                      header_right=None, hard_page_breaks=False):
+                      header_right=None, hard_page_breaks=False, source_pages_text=None):
     """Write translated Markdown-like page content to a Word document."""
     if not HAS_DOCX:
         raise RuntimeError("Word output requires python-docx")
@@ -494,6 +647,7 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
     if not 0.8 <= line_spacing <= 3.0:
         raise ValueError("Word 行距超出支持范围")
     ensure_output_parent(docx_output)
+    translated_pages = _with_missing_image_placeholders(translated_pages, source_pages_text)
 
     doc = DocxDocument()
     set_document_base_layout(doc, columns=1, body_font_size=body_font_size, line_spacing=line_spacing)
@@ -525,6 +679,18 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                     card_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(card_section, columns=1)
                     _write_word_card(doc, content)
+                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(body_section, columns=columns)
+                elif kind == "stat":
+                    stat_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(stat_section, columns=1)
+                    _write_word_stat_block(doc, content)
+                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(body_section, columns=columns)
+                elif kind == "image":
+                    image_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    set_section_page_layout(image_section, columns=1)
+                    _write_word_image_placeholder(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(body_section, columns=columns)
                 elif kind == "full_title":

@@ -20,8 +20,12 @@ def _split_translation_chunks(text: str) -> list[str]:
     chunks = []
     normal_lines = []
     card_lines = []
+    stat_lines = []
+    image_lines = []
     full_title_lines = []
     in_card = False
+    in_stat = False
+    in_image = False
     in_full_title = False
 
     def flush_normal():
@@ -38,6 +42,20 @@ def _split_translation_chunks(text: str) -> list[str]:
             chunks.append(card_text)
         card_lines = []
 
+    def flush_stat():
+        nonlocal stat_lines
+        stat_text = "\n".join(stat_lines).strip()
+        if stat_text:
+            chunks.append(stat_text)
+        stat_lines = []
+
+    def flush_image():
+        nonlocal image_lines
+        image_text = "\n".join(image_lines).strip()
+        if image_text:
+            chunks.append(image_text)
+        image_lines = []
+
     def flush_full_title():
         nonlocal full_title_lines
         title_text = "\n".join(full_title_lines).strip()
@@ -50,6 +68,8 @@ def _split_translation_chunks(text: str) -> list[str]:
         if line == "[FULL_WIDTH_TITLE]":
             flush_normal()
             flush_card()
+            flush_stat()
+            flush_image()
             in_full_title = True
             full_title_lines = [raw_line]
             continue
@@ -68,11 +88,35 @@ def _split_translation_chunks(text: str) -> list[str]:
             flush_card()
             in_card = False
             continue
+        if line == "[STAT_BLOCK]":
+            flush_normal()
+            in_stat = True
+            stat_lines = [raw_line]
+            continue
+        if line == "[/STAT_BLOCK]":
+            stat_lines.append(raw_line)
+            flush_stat()
+            in_stat = False
+            continue
+        if line == "[IMAGE]":
+            flush_normal()
+            in_image = True
+            image_lines = [raw_line]
+            continue
+        if line == "[/IMAGE]":
+            image_lines.append(raw_line)
+            flush_image()
+            in_image = False
+            continue
         if in_full_title:
             full_title_lines.append(raw_line)
             continue
         if in_card:
             card_lines.append(raw_line)
+        elif in_stat:
+            stat_lines.append(raw_line)
+        elif in_image:
+            image_lines.append(raw_line)
         else:
             normal_lines.append(raw_line)
 
@@ -80,6 +124,10 @@ def _split_translation_chunks(text: str) -> list[str]:
         flush_full_title()
     elif in_card:
         flush_card()
+    elif in_stat:
+        flush_stat()
+    elif in_image:
+        flush_image()
     else:
         flush_normal()
     return chunks
@@ -107,6 +155,9 @@ def _clean_translated_block(text: str) -> str:
         line = _clean_decorative_slash_line(line)
         lines.append(line)
 
+    if lines and lines[0] in ("[STAT_BLOCK]", "[IMAGE]", "[FULL_WIDTH_TITLE]"):
+        return "\n".join(lines).strip()
+
     lines = _merge_soft_wrapped_lines(lines)
     text = "\n".join(lines)
     text = _dedupe_adjacent_repeated_units(text)
@@ -117,7 +168,13 @@ def _is_structural_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return True
-    if stripped in ("[CARD]", "[/CARD]", "[FULL_WIDTH_TITLE]", "[/FULL_WIDTH_TITLE]", "[[TOC]]"):
+    if stripped in (
+        "[CARD]", "[/CARD]",
+        "[STAT_BLOCK]", "[/STAT_BLOCK]",
+        "[IMAGE]", "[/IMAGE]",
+        "[FULL_WIDTH_TITLE]", "[/FULL_WIDTH_TITLE]",
+        "[[TOC]]",
+    ):
         return True
     if stripped.startswith(("#", "-", "\u2022", "|", ">", "```")):
         return True
@@ -194,6 +251,8 @@ def _dedupe_adjacent_repeated_units(text: str) -> str:
 def _visible_text_length(text: str) -> int:
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     text = re.sub(r"^\[/?CARD\]\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\[/?STAT_BLOCK\]\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\[/?IMAGE\]\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^\[/?FULL_WIDTH_TITLE\]\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
@@ -215,7 +274,12 @@ def _is_full_width_title_block(text: str) -> bool:
 def _is_plain_heading_line(text: str) -> bool:
     clean = re.sub(r"\*\*(.+?)\*\*", r"\1", text.strip())
     clean = re.sub(r"\*(.+?)\*", r"\1", clean)
-    if clean in ("[CARD]", "[/CARD]"):
+    if clean in (
+        "[CARD]", "[/CARD]",
+        "[STAT_BLOCK]", "[/STAT_BLOCK]",
+        "[IMAGE]", "[/IMAGE]",
+        "[FULL_WIDTH_TITLE]", "[/FULL_WIDTH_TITLE]",
+    ):
         return False
     if clean.startswith(("#", "-", "\u2022", "//", "——", "“", "\"")):
         return False
@@ -250,6 +314,45 @@ def _header_title(title: str) -> str:
     if " - " in clean:
         clean = clean.split(" - ", 1)[1].strip()
     return clean[:32]
+
+
+def _heading_text_from_block(text: str) -> Optional[str]:
+    stripped = text.strip()
+    if _is_full_width_title_block(stripped):
+        inner = re.sub(r"^\[FULL_WIDTH_TITLE\]\s*", "", stripped)
+        inner = re.sub(r"\s*\[/FULL_WIDTH_TITLE\]$", "", inner)
+        first_line = next((line.strip() for line in inner.splitlines() if line.strip()), "")
+        return re.sub(r"^#{1,6}\s*", "", first_line).strip() or None
+
+    first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
+    if re.match(r"^#{1,3}\s+", first_line):
+        return re.sub(r"^#{1,3}\s*", "", first_line).strip() or None
+    return None
+
+
+def _looks_like_stat_block(text: str) -> bool:
+    upper = text.upper()
+    attributes = ("STR", "CON", "DEX", "INT", "POW", "CHA")
+    attr_number_hits = sum(1 for attr in attributes if re.search(rf"\b{attr}\s*\d+", upper))
+    has_secondary_stats = bool(re.search(r"\b(?:HP|WP|SAN)\s*\d+", upper))
+    has_game_sections = bool(re.search(r"(?:SKILLS|ATTACKS|ARMOR|DISORDER|技能|攻击|护甲|障碍)\s*[：:]", text, re.IGNORECASE))
+    return (
+        attr_number_hits >= 4
+        or (attr_number_hits >= 2 and has_secondary_stats)
+        or (attr_number_hits >= 1 and has_game_sections)
+    )
+
+
+def attach_running_headers(reading_pages, fallback_title: str):
+    current = _header_title(fallback_title)
+    for page in reading_pages:
+        for block in page.get("blocks", []):
+            heading = _heading_text_from_block(block.get("text", ""))
+            if heading:
+                current = heading[:48]
+                break
+        page["running_header"] = current
+    return reading_pages
 
 
 def paginate_translated_blocks(translated_pages, min_chars=1000, max_chars=1500,

@@ -45,3 +45,58 @@ def test_word_segments_full_width_title():
 
     assert segments[0] == ("full_title", "# 香盖虫族")
     assert segments[1] == ("normal", "正文")
+
+
+def test_stat_and_image_blocks_stay_structural():
+    pages = paginate_translated_blocks([
+        (0, "[STAT_BLOCK]\nRobyn Bullock\nSTR 11 CON 10 DEX 9 INT 14 POW 16 CHA 13\n[/STAT_BLOCK]\n\n[IMAGE]\nIllustration placeholder\n[/IMAGE]"),
+    ], min_chars=1, max_chars=500)
+
+    texts = [block["text"] for block in pages[0]["blocks"]]
+    assert texts[0].startswith("[STAT_BLOCK]")
+    assert texts[1].startswith("[IMAGE]")
+
+
+def test_html_renders_stat_and_image_blocks():
+    html = _html_block(
+        "[STAT_BLOCK]\nRobyn Bullock\nSTR 11 CON 10 DEX 9 INT 14 POW 16 CHA 13\n[/STAT_BLOCK]\n"
+        "[IMAGE]\nIllustration placeholder\n[/IMAGE]"
+    )
+
+    assert 'class="stat-block"' in html
+    assert 'class="image-placeholder"' in html
+
+
+def test_word_segments_stat_and_image_blocks():
+    segments = _split_card_segments(
+        "[STAT_BLOCK]\nRobyn Bullock\nSTR 11 CON 10\n[/STAT_BLOCK]\n"
+        "[IMAGE]\nIllustration placeholder\n[/IMAGE]"
+    )
+
+    assert segments[0][0] == "stat"
+    assert segments[1] == ("image", "Illustration placeholder")
+
+
+def test_stat_block_line_breaks_are_preserved():
+    text = _clean_translated_block(
+        "[STAT_BLOCK]\n"
+        "罗宾·布洛克\n"
+        "STR 11 CON 10 DEX 9 INT 14 POW 16 CHA 13\n"
+        "HP 11 WP 17 SAN 65\n"
+        "[/STAT_BLOCK]"
+    )
+
+    assert "布洛克\nSTR 11" in text
+    assert "CHA 13\nHP 11" in text
+
+
+def test_non_stat_marker_can_fall_back_to_card_rendering():
+    html = _html_block(
+        "[STAT_BLOCK]\n"
+        "关于心灵仪式\n"
+        "这是一段很长的规则说明，提到了体质、敏捷、智力和魅力。\n"
+        "[/STAT_BLOCK]"
+    )
+
+    assert 'class="handout-card"' in html
+    assert 'class="stat-block"' not in html
