@@ -104,6 +104,8 @@ Translation rules:
 11. Preserve Markdown tables as Markdown tables. Translate cell text but keep the same columns.
 12. Preserve blockquotes starting with > for handouts/player aids.
 13. Preserve [CARD] and [/CARD] marker lines exactly. Text inside a card must stay inside the card and must not be merged into surrounding body text.
+14. Preserve [FULL_WIDTH_TITLE] and [/FULL_WIDTH_TITLE] marker lines exactly. Text inside marks a full-width section title; translate only the title text inside.
+15. Preserve [STAT_BLOCK], [/STAT_BLOCK], [IMAGE], and [/IMAGE] marker lines exactly. Translate stat-block labels only when they are prose; do not translate game abbreviations. Do not translate "Illustration placeholder" inside image markers.
 
 {glossary_section}"""
 
@@ -235,6 +237,8 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
         translation = translator.translate_chunk(text, page_num, prev_ctx, cache=tracker)
         if translation and not _is_failed_translation(translation):
             tracker.mark_completed(page_num, translation)
+        elif _is_failed_translation(translation):
+            tracker.mark_failed(page_num, translation)
         return page_num, translation
 
     group_size = max_workers
@@ -263,6 +267,7 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
                     page_num, translation = future.result()
                 except Exception as exc:
                     translation = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+                    tracker.mark_failed(page_num, translation)
                     print(f" p{page_num + 1} failed: {exc}", end="", flush=True)
                 results[page_num] = translation or ""
                 report(page_num, translation)

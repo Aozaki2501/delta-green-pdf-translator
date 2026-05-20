@@ -17,6 +17,7 @@ from core.constants import (
 from core.utils import (
     configure_console_output,
     ensure_output_parent,
+    output_base_in_own_dir,
     normalize_page_range,
     is_failed_translation,
     parse_page_selection,
@@ -36,6 +37,7 @@ from core.extractor import (
     PDFExtractor,
     ChapterDetector,
     HeadingInfo,
+    build_extraction_diagnostics_report,
 )
 
 # translator — depends on constants, glossary
@@ -61,6 +63,7 @@ __all__ = [
     # utils
     "configure_console_output",
     "ensure_output_parent",
+    "output_base_in_own_dir",
     "normalize_page_range",
     "is_failed_translation",
     "parse_page_selection",
@@ -74,6 +77,7 @@ __all__ = [
     "PDFExtractor",
     "ChapterDetector",
     "HeadingInfo",
+    "build_extraction_diagnostics_report",
     # translator
     "Translator",
     "TokenStats",

@@ -2,6 +2,8 @@
     "pdf": "THE MILLENNIUM.pdf",
     "api_key": "sk-在这里填入你的DeepSeek API Key",
     "glossary": "glossary.tsv",
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
     "format": "all",
     "workers": 4,

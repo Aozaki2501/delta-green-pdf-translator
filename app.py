@@ -14,12 +14,17 @@ from translate_pdf import (
     load_glossary, translate_batch_concurrent,
     write_markdown_output, write_html_output, write_word_output, HAS_DOCX,
     build_progress_metadata, parse_page_selection, write_glossary_report,
-    normalize_page_range, is_failed_translation
+    normalize_page_range, is_failed_translation, build_extraction_diagnostics_report
 )
 
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_GLOSSARY_PATH = APP_DIR / "glossary.tsv"
+OUTPUT_FORMAT_LABELS = {
+    "markdown": "纯文本稿",
+    "html": "网页排版",
+    "word": "文档排版",
+}
 
 
 def make_output_path(output_base, extension):
@@ -70,205 +75,515 @@ def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
 
 # === UI THEME ===
 st.set_page_config(
-    page_title="DG Translator Terminal",
+    page_title="三角洲翻译终端",
     page_icon="🖧",
     layout="wide",
 )
 
 st.markdown("""
 <style>
-    /* 引入复古等宽字体 */
-    @import url('https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=VT323&display=swap');
-
     :root {
-        --term-bg: #050505;
-        --term-panel: #0a0c0a;
-        --term-green: #33ff33;
-        --term-dark-green: #114411;
-        --term-text: #c8d6c8;
-        --term-border: #1f3b22;
-        --term-alert: #ff3333;
+        --bg: #030604;
+        --panel: rgba(5, 13, 8, 0.86);
+        --panel-strong: rgba(8, 22, 13, 0.94);
+        --line: rgba(69, 255, 129, 0.24);
+        --line-hot: rgba(81, 255, 137, 0.72);
+        --green: #52ff91;
+        --green-soft: #9dffc1;
+        --amber: #ffd166;
+        --red: #ff4d4d;
+        --text: #c8d8c9;
+        --muted: #7f9b85;
+        --shadow: rgba(82, 255, 145, 0.18);
     }
 
-    /* 强制覆盖全局背景和字体 */
     .stApp, .stAppHeader {
-        background-color: var(--term-bg) !important;
-        color: var(--term-text) !important;
-        font-family: "Courier Prime", "Courier New", monospace !important;
+        background:
+            linear-gradient(rgba(82, 255, 145, 0.035) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(82, 255, 145, 0.025) 1px, transparent 1px),
+            radial-gradient(circle at 12% 8%, rgba(82, 255, 145, 0.12), transparent 30%),
+            radial-gradient(circle at 88% 28%, rgba(255, 77, 77, 0.08), transparent 26%),
+            var(--bg) !important;
+        background-size: 28px 28px, 28px 28px, auto, auto, auto !important;
+        color: var(--text) !important;
+        font-family: "SimHei", "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
     }
 
-    /* 侧边栏样式 */
-    section[data-testid="stSidebar"] {
-        background-color: var(--term-panel) !important;
-        border-right: 2px solid var(--term-border) !important;
+    #MainMenu,
+    footer,
+    header[data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"],
+    .stDeployButton {
+        display: none !important;
+        visibility: hidden !important;
     }
-    
-    /* 标题样式：更具复古电子感 */
+
+    .stApp::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 9999;
+        background:
+            linear-gradient(rgba(255, 255, 255, 0.018) 50%, rgba(0, 0, 0, 0.12) 50%),
+            linear-gradient(90deg, rgba(255, 0, 0, 0.018), rgba(0, 255, 64, 0.012), rgba(0, 96, 255, 0.018));
+        background-size: 100% 4px, 6px 100%;
+        mix-blend-mode: screen;
+        opacity: 0.32;
+    }
+
+    .stApp::after {
+        content: "";
+        position: fixed;
+        left: 0;
+        right: 0;
+        top: -20%;
+        height: 18%;
+        pointer-events: none;
+        z-index: 9998;
+        background: linear-gradient(180deg, transparent, rgba(82, 255, 145, 0.12), transparent);
+        animation: dg-scan 6.5s linear infinite;
+    }
+
+    @keyframes dg-scan {
+        0% { transform: translateY(-10vh); }
+        100% { transform: translateY(130vh); }
+    }
+
+    @keyframes panel-in {
+        from { opacity: 0; transform: translateY(14px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulse-line {
+        0%, 100% { box-shadow: 0 0 0 rgba(82, 255, 145, 0); }
+        50% { box-shadow: 0 0 28px var(--shadow); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .stApp::after, .boot-screen, .classified-hero, .section-card, .intel-tile { animation: none !important; }
+    }
+
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, rgba(4, 12, 7, 0.98), rgba(2, 7, 4, 0.98)) !important;
+        border-right: 1px solid var(--line) !important;
+        box-shadow: 12px 0 36px rgba(0, 0, 0, 0.42);
+    }
+
     h1, h2, h3, .hero-title {
-        color: var(--term-green) !important;
-        font-family: "VT323", "Courier New", monospace !important;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        font-weight: normal;
+        color: var(--green) !important;
+        font-family: "SimHei", "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
+        letter-spacing: 0;
+        font-weight: 900;
     }
 
     p, label, .stMarkdown {
-        color: var(--term-text) !important;
+        color: var(--text) !important;
         font-size: 0.95rem;
     }
 
-    /* 顶层 Hero 面板 */
-    .hero {
-        background-color: transparent;
-        border: 1px solid var(--term-border);
-        border-left: 6px solid var(--term-green);
-        padding: 20px 24px;
-        margin-bottom: 30px;
+    .block-container {
+        max-width: 1220px;
+        padding-top: 1.5rem;
+        padding-bottom: 4rem;
+    }
+
+    .classified-hero {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line-hot);
+        background:
+            linear-gradient(135deg, rgba(82, 255, 145, 0.13), transparent 42%),
+            linear-gradient(180deg, rgba(7, 28, 14, 0.92), rgba(3, 8, 5, 0.86));
+        padding: 26px 28px;
+        margin-bottom: 18px;
+        animation: panel-in 420ms ease-out, pulse-line 5s ease-in-out infinite;
+    }
+
+    .classified-hero::before {
+        content: "绝密";
+        position: absolute;
+        right: -44px;
+        top: 28px;
+        transform: rotate(34deg);
+        color: rgba(255, 77, 77, 0.24);
+        border: 2px solid rgba(255, 77, 77, 0.24);
+        padding: 6px 44px;
+        font: 26px "SimHei", "Microsoft YaHei", sans-serif;
+        letter-spacing: 0;
     }
 
     .hero-title {
-        font-size: 2.2rem;
-        margin-bottom: 8px;
+        font-size: 3rem;
+        line-height: 0.9;
+        margin-bottom: 10px;
+        text-shadow: 0 0 18px rgba(82, 255, 145, 0.34);
     }
 
     .hero-subtitle {
-        color: var(--term-text);
-        opacity: 0.8;
+        color: var(--green-soft);
+        font-size: 0.96rem;
+        line-height: 1.65;
     }
 
-    /* 输入框与选择器样式 - 去除圆角，方正硬朗 */
+    .terminal-line {
+        color: var(--muted);
+        margin-top: 14px;
+        font-size: 0.86rem;
+    }
+
+    .terminal-cursor {
+        display: inline-block;
+        width: 9px;
+        height: 1.05em;
+        margin-left: 4px;
+        background: var(--green);
+        vertical-align: -0.15em;
+        animation: blink 1s steps(1) infinite;
+    }
+
+    @keyframes blink {
+        50% { opacity: 0; }
+    }
+
+    .intel-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 18px;
+    }
+
+    .intel-tile, .section-card {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+        animation: panel-in 520ms ease-out both;
+    }
+
+    .intel-tile {
+        padding: 12px 14px;
+    }
+
+    .intel-label {
+        color: var(--muted);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+    }
+
+    .intel-value {
+        color: var(--green-soft);
+        font: 1.5rem "SimHei", "Microsoft YaHei", sans-serif;
+        margin-top: 2px;
+    }
+
+    .section-card {
+        position: relative;
+        padding: 20px;
+        margin: 16px 0;
+    }
+
+    .section-card::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 4px;
+        height: 100%;
+        background: linear-gradient(var(--green), transparent);
+    }
+
+    div[data-testid="stFileUploader"] {
+        background: rgba(5, 18, 9, 0.7) !important;
+        border: 1px dashed var(--line-hot) !important;
+        border-radius: 0 !important;
+        padding: 16px;
+        transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+    }
+
+    div[data-testid="stFileUploader"]:hover {
+        border-color: var(--green) !important;
+        box-shadow: 0 0 28px rgba(82, 255, 145, 0.16);
+        transform: translateY(-1px);
+    }
+
     .stTextInput input,
     .stNumberInput input,
     .stSelectbox div[data-baseweb="select"],
     .stMultiSelect div[data-baseweb="select"] {
-        background-color: var(--term-panel) !important;
-        border: 1px solid var(--term-border) !important;
-        border-radius: 0px !important;
-        color: var(--term-green) !important;
+        background-color: rgba(3, 9, 5, 0.95) !important;
+        border: 1px solid var(--line) !important;
+        border-radius: 0 !important;
+        color: var(--green-soft) !important;
         font-family: "Courier Prime", monospace !important;
     }
 
-    /* 上传组件虚线框 */
-    div[data-testid="stFileUploader"] {
-        background-color: var(--term-panel) !important;
-        border: 1px dashed var(--term-border) !important;
-        border-radius: 0px !important;
-        padding: 16px;
+    div[data-testid="stFileUploader"] button {
+        font-size: 0 !important;
     }
 
-    /* 主按钮样式：终端高亮效果 */
+    div[data-testid="stFileUploader"] button::after {
+        content: "导入";
+        font-size: 0.95rem;
+    }
+
+    div[data-testid="stFileUploader"] small {
+        font-size: 0 !important;
+    }
+
+    .stTextInput input:focus,
+    .stNumberInput input:focus {
+        border-color: var(--green) !important;
+        box-shadow: 0 0 0 1px rgba(82, 255, 145, 0.35) !important;
+    }
+
     .stButton>button {
-        background-color: var(--term-bg) !important;
-        color: var(--term-green) !important;
-        border: 1px solid var(--term-green) !important;
-        border-radius: 0px !important;
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(90deg, rgba(82, 255, 145, 0.08), rgba(82, 255, 145, 0.02)) !important;
+        color: var(--green) !important;
+        border: 1px solid var(--line-hot) !important;
+        border-radius: 0 !important;
         height: 48px;
         font-weight: bold;
-        letter-spacing: 0.1em;
-        transition: all 0.2s ease;
+        letter-spacing: 0;
+        transition: all 0.18s ease;
         text-transform: uppercase;
     }
 
     .stButton>button:hover {
-        background-color: var(--term-green) !important;
-        color: var(--term-bg) !important;
+        background: var(--green) !important;
+        color: #031006 !important;
+        box-shadow: 0 0 26px rgba(82, 255, 145, 0.34);
     }
 
-    /* 进度条变绿 */
     .stProgress > div > div > div {
-        background-color: var(--term-green) !important;
+        background-color: var(--green) !important;
+        box-shadow: 0 0 16px rgba(82, 255, 145, 0.52);
     }
 
-    /* 状态信息卡片 */
     div[data-testid="stMetric"] {
-        background-color: var(--term-panel) !important;
-        border: 1px solid var(--term-border) !important;
-        border-radius: 0px !important;
+        background: var(--panel-strong) !important;
+        border: 1px solid var(--line) !important;
+        border-radius: 0 !important;
         padding: 15px;
     }
     
     div[data-testid="stMetricValue"] {
-        color: var(--term-green) !important;
+        color: var(--green) !important;
     }
 
-    /* 消除基础结构过大的留白 */
-    .block-container {
-        max-width: 1200px;
-        padding-top: 2rem;
+    [data-testid="stExpander"] {
+        background: rgba(4, 12, 7, 0.74) !important;
+        border: 1px solid var(--line) !important;
+        border-radius: 0 !important;
+    }
+
+    .stAlert {
+        border-radius: 0 !important;
+    }
+
+    textarea {
+        background: rgba(2, 8, 4, 0.95) !important;
+        color: var(--green-soft) !important;
+        border: 1px solid var(--line) !important;
+        font-family: "Courier Prime", monospace !important;
+    }
+
+    .boot-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 10000;
+        pointer-events: none;
+        display: grid;
+        place-items: center;
+        background:
+            linear-gradient(rgba(82, 255, 145, 0.05) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(82, 255, 145, 0.04) 1px, transparent 1px),
+            #020503;
+        background-size: 30px 30px;
+        animation: boot-hide 3.7s ease forwards;
+    }
+
+    .boot-panel {
+        width: min(680px, calc(100vw - 44px));
+        border: 1px solid var(--line-hot);
+        background: rgba(3, 12, 6, 0.92);
+        box-shadow: 0 0 52px rgba(82, 255, 145, 0.18);
+        padding: 28px;
+        font-family: "SimHei", "Microsoft YaHei", sans-serif;
+    }
+
+    .boot-title {
+        color: var(--green);
+        font-size: 2.2rem;
+        font-weight: 900;
+        letter-spacing: 0;
+        margin-bottom: 14px;
+    }
+
+    .boot-lines {
+        color: var(--green-soft);
+        font-family: "Courier New", monospace;
+        line-height: 1.8;
+        font-size: 0.95rem;
+    }
+
+    .boot-bar {
+        height: 8px;
+        margin-top: 22px;
+        border: 1px solid var(--line);
+        background: rgba(82, 255, 145, 0.06);
+        overflow: hidden;
+    }
+
+    .boot-bar::before {
+        content: "";
+        display: block;
+        height: 100%;
+        width: 0;
+        background: var(--green);
+        box-shadow: 0 0 18px rgba(82, 255, 145, 0.65);
+        animation: boot-load 2.45s steps(18) forwards;
+    }
+
+    .boot-stamp {
+        margin-top: 16px;
+        color: rgba(255, 77, 77, 0.82);
+        border: 1px solid rgba(255, 77, 77, 0.56);
+        display: inline-block;
+        padding: 4px 10px;
+        transform: rotate(-2deg);
+        font-weight: 900;
+    }
+
+    @keyframes boot-load {
+        to { width: 100%; }
+    }
+
+    @keyframes boot-hide {
+        0%, 72% { opacity: 1; visibility: visible; }
+        100% { opacity: 0; visibility: hidden; }
+    }
+
+    @media (max-width: 760px) {
+        .intel-grid {
+            grid-template-columns: 1fr;
+        }
+        .hero-title {
+            font-size: 2.2rem;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
 
 # === HEADER ===
 st.markdown("""
-<div class="hero">
-    <div class="hero-title">RESTRICTED // DG-TRANSLATOR-SYS</div>
-    <div class="hero-subtitle">
-        > INITIALIZING AUTOMATED TRANSLATION PROTOCOL...<br>
-        > PURPOSE: EXTRACT, TRANSLATE AND COMPILE ENCRYPTED PDF DATA.<br>
-        > STATUS: READY FOR OPERATOR INPUT.
+<div class="boot-screen">
+    <div class="boot-panel">
+        <div class="boot-title">绝密系统接入中</div>
+        <div class="boot-lines">
+            > 正在校验操作员密钥<br>
+            > 正在载入译文编译协议<br>
+            > 正在建立黑色档案通道
+        </div>
+        <div class="boot-bar"></div>
+        <div class="boot-stamp">TOP SECRET</div>
     </div>
 </div>
-""", unsafe_allow_html=True)
-st.markdown("""
-<div class="hero">
-    <div class="hero-title">Delta Green PDF Translator</div>
+<div class="classified-hero">
+    <div class="hero-title">三角洲翻译终端</div>
     <div class="hero-subtitle">
-        将英文 TRPG PDF 提取、翻译并输出为 Markdown、HTML 或 Word。
-        更适合先产出可校对译稿，再做人工排版。
+        > 访问等级：黑色绝密<br>
+        > 执行协议：文本提取 / 术语锁定 / 译文编译<br>
+        > 终端状态：等待导入档案
+    </div>
+    <div class="terminal-line">系统就绪<span class="terminal-cursor"></span></div>
+</div>
+<div class="intel-grid">
+    <div class="intel-tile">
+        <div class="intel-label">任务</div>
+        <div class="intel-value">翻译</div>
+    </div>
+    <div class="intel-tile">
+        <div class="intel-label">输出</div>
+        <div class="intel-value">网页 / 文档</div>
+    </div>
+    <div class="intel-tile">
+        <div class="intel-label">模式</div>
+        <div class="intel-value">私密校对</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 with st.sidebar:
-    st.header("翻译配置")
+    st.header("任务控制台")
 
-    api_key = st.text_input("API Key", type="password", placeholder="sk-...")
-    model = st.selectbox("模型", ["deepseek-v4-pro", "deepseek-v4-flash"])
-    workers = st.slider("并发线程", 1, 16, 4)
+    provider = "deepseek"
+    base_url = "https://api.deepseek.com"
+    model = "deepseek-v4-pro"
+    workers = 4
+    retranslate_pages_str = ""
+    retry_failed_pages = False
+    reuse_mismatched_progress = False
+    show_extraction_preview = False
+    preview_page = 1
+    word_body_font_size = 12.0
+    word_line_spacing = 1.5
+    word_columns = 2
+    word_min_chars = 1000
+    word_max_chars = 1500
+    word_hard_page_breaks = False
+    word_header_left = "绿色三角洲"
+    word_header_right = ""
+
+    st.caption("必要项")
+    api_key = st.text_input("接口密钥", type="password", placeholder="sk-...")
 
     formats = st.multiselect(
         "输出格式",
-        ["Markdown", "HTML", "Word"],
-        default=["HTML", "Word"],
+        ["markdown", "html", "word"],
+        default=["html", "word"],
+        format_func=lambda value: OUTPUT_FORMAT_LABELS[value],
     )
 
     display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
     end_page_str = st.text_input("结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
-    retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
-    reuse_mismatched_progress = st.checkbox(
-        "允许复用设置不匹配的旧进度",
-        value=False,
-        help="默认不复用不同 PDF、术语表、模型或提取器版本生成的旧译文。",
-    )
-    show_extraction_preview = st.checkbox("显示提取预览", value=False)
-    preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
-    open_output_when_done = st.checkbox("完成后打开 output 文件夹", value=False)
 
-    with st.expander("Word 版式", expanded=False):
-        word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
-        word_line_spacing = st.slider("正文行距", 1.0, 2.0, 1.5, 0.05)
-        word_columns = st.selectbox("正文分栏", [1, 2], index=1, format_func=lambda n: f"{n} 栏")
-        word_min_chars = st.number_input("阅读页最少字数", value=1000, min_value=300, max_value=3000, step=100)
-        word_max_chars = st.number_input("阅读页最多字数", value=1500, min_value=500, max_value=5000, step=100)
-        word_hard_page_breaks = st.checkbox(
-            "按阅读页强制分页",
-            value=False,
-            help="关闭时 Word 会自然续排，减少半页空白；开启时每个阅读页后插入分页符。",
-        )
-        word_header_left = st.text_input("页眉左侧", value="绿色三角洲")
-        word_header_right = st.text_input("页眉右侧", value="", placeholder="留空则使用文件名")
+    with st.expander("高级任务控制", expanded=False):
+        model = st.text_input("模型名称", value=model)
+        workers = st.slider("并发线程", 1, 16, 4)
+        retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
+        retry_failed_pages = st.checkbox("只重试失败页", value=False)
+        show_extraction_preview = st.checkbox("显示提取预览", value=False)
+        if show_extraction_preview:
+            preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
+
+    if "word" in formats:
+        with st.expander("文档档案输出", expanded=False):
+            word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
+            word_line_spacing = st.slider("正文行距", 1.0, 2.0, 1.5, 0.05)
+            word_columns = st.selectbox("正文分栏", [1, 2], index=1, format_func=lambda n: f"{n} 栏")
+            word_min_chars = st.number_input("阅读页最少字数", value=1000, min_value=300, max_value=3000, step=100)
+            word_max_chars = st.number_input("阅读页最多字数", value=1500, min_value=500, max_value=5000, step=100)
+            word_hard_page_breaks = st.checkbox(
+                "按阅读页强制分页",
+                value=False,
+                help="关闭时文档会自然续排，减少半页空白；开启时每个阅读页后插入分页符。",
+            )
+            word_header_left = st.text_input("页眉左侧", value="绿色三角洲")
+            word_header_right = st.text_input("页眉右侧", value="", placeholder="留空则使用文件名")
 
 # === MAIN ===
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
-st.subheader("输入文件")
-st.caption("上传原始 PDF。默认使用项目内 glossary.tsv；如需替换，可上传自定义 TSV / TXT / CSV。")
+st.subheader("导入机密档案")
+st.caption("上传原始 PDF。默认加载本地 glossary.tsv；只有需要替换术语时再上传自定义文件。")
 
 col1, col2 = st.columns([1.2, 1])
 with col1:
-    pdf_file = st.file_uploader("PDF 文件", type=["pdf"], label_visibility="collapsed")
+    pdf_file = st.file_uploader("PDF 档案", type=["pdf"], label_visibility="collapsed")
 with col2:
-    glossary_file = st.file_uploader("自定义术语表，可选", type=["tsv", "txt", "csv"], label_visibility="collapsed")
+    glossary_file = st.file_uploader("替换术语表，可选", type=["tsv", "txt", "csv"], label_visibility="collapsed")
     if glossary_file:
         st.caption(f"将使用上传术语表：{glossary_file.name}")
     elif DEFAULT_GLOSSARY_PATH.exists():
@@ -287,6 +602,7 @@ if pdf_file and show_extraction_preview:
         preview_index = min(max(int(preview_page) - 1, 0), total_preview_pages - 1)
         preview_text = preview_extractor.extract_page(preview_index)
         preview_notes = preview_extractor.get_layout_notes(preview_index)
+        preview_diag = preview_extractor.get_page_diagnostics(preview_index, preview_text)
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.subheader("提取预览 / 诊断")
@@ -296,6 +612,8 @@ if pdf_file and show_extraction_preview:
         )
         if preview_notes:
             st.caption("版面识别：" + "；".join(preview_notes))
+        if preview_diag["risks"]:
+            st.warning("风险提示：" + "；".join(preview_diag["risks"]))
         if preview_text.strip():
             st.text_area("提取文本", preview_text, height=420)
         else:
@@ -307,11 +625,15 @@ if pdf_file and show_extraction_preview:
         if preview_extractor:
             preview_extractor.close()
 
-if st.button("🔺 开始翻译", type="primary", use_container_width=True):
+if st.button("执行翻译任务", type="primary", use_container_width=True):
     if not pdf_file:
         st.error("✗ 请上传 PDF 文件")
     elif not api_key:
-        st.error("✗ 请输入 API Key")
+        st.error("✗ 请输入接口密钥")
+    elif not base_url.strip():
+        st.error("✗ 请输入接口地址")
+    elif not model.strip():
+        st.error("✗ 请输入模型名称")
     elif not formats:
         st.error("✗ 请至少选择一种输出格式")
     else:
@@ -342,7 +664,9 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         except ValueError:
             st.error("结束页必须是整数，或留空表示全部。")
             st.stop()
-        output_base = str(output_dir / f"{pdf_stem}_cn")
+        document_output_dir = output_dir / f"{pdf_stem}_cn"
+        ensure_dir(document_output_dir)
+        output_base = str(document_output_dir / f"{pdf_stem}_cn")
 
         # Init
         stats = TokenStats()
@@ -354,8 +678,8 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             st.error(str(e))
             extractor.close()
             st.stop()
-        if "Word" in formats and word_max_chars < word_min_chars:
-            st.error("Word 阅读页最多字数必须大于或等于最少字数。")
+        if "word" in formats and word_max_chars < word_min_chars:
+            st.error("文档排版的阅读页最多字数必须大于或等于最少字数。")
             extractor.close()
             st.stop()
 
@@ -365,7 +689,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             st.info(f"📚 术语表: {glossary_source} ({len(glossary)} 条)")
         else:
             st.warning("未使用术语表。")
-        translator = Translator(api_key=api_key, model=model, stats=stats)
+        translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
         translator.set_glossary(glossary)
 
         progress_file = output_base + ".progress.json"
@@ -373,6 +697,8 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             pdf_path=pdf_path,
             glossary_path=glossary_path,
             model=model,
+            provider=provider,
+            base_url=base_url,
             start_page=start_page,
             end_page=end_page,
         )
@@ -389,6 +715,16 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             if tracker.ignored_existing_progress:
                 st.info("已保留原 progress 文件，但本次不会复用其中的旧译文。")
 
+        failed_from_progress = {
+            p for p in tracker.get_failed_pages()
+            if start_page <= p < end_page
+        }
+        if failed_from_progress:
+            st.info(
+                "进度文件中记录的失败页："
+                + ", ".join(str(p + 1) for p in sorted(failed_from_progress)[:30])
+            )
+
         try:
             retranslate_pages = parse_page_selection(retranslate_pages_str, total)
         except ValueError as e:
@@ -400,16 +736,44 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
             cleared = tracker.clear_pages(retranslate_pages)
             display_pages = ", ".join(str(p + 1) for p in sorted(retranslate_pages))
             st.info(f"已标记重翻页：{display_pages}（清理 {cleared} 条旧进度）。")
+        if retry_failed_pages:
+            if failed_from_progress:
+                pages_filter = failed_from_progress
+                tracker.clear_failed_pages(pages_filter)
+                st.info(
+                    "本次只重试失败页："
+                    + ", ".join(str(p + 1) for p in sorted(pages_filter))
+                )
+            else:
+                pages_filter = set()
+                st.warning("没有可重试的失败页。")
+        else:
+            pages_filter = set(range(start_page, end_page))
 
         # Extract
         st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
         page_layouts = {}
+        page_diagnostics = []
+        image_assets = {}
+        asset_dir = str(document_output_dir / "assets")
         for pn in range(start_page, end_page):
             page_layouts[pn] = extractor.detect_page_layout(pn)
             pages_text[pn] = extractor.extract_page(pn)
+            page_diagnostics.append(extractor.get_page_diagnostics(pn, pages_text[pn]))
+            images = extractor.export_page_images(pn, asset_dir, pdf_stem)
+            if images:
+                image_assets[pn] = images
         extractor.finalize_chapters()
         toc = extractor.chapter_detector.get_toc_markdown()
+        risky_pages = [item for item in page_diagnostics if item.get("risks")]
+        if risky_pages:
+            st.warning(
+                "提取诊断发现风险页："
+                + ", ".join(str(item["page"] + 1) for item in risky_pages[:30])
+            )
+        if image_assets:
+            st.info(f"已裁出图片资源：{sum(len(v) for v in image_assets.values())} 张")
 
         # Translate
         st.subheader("翻译进度")
@@ -421,7 +785,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         eta_metric = metric_cols[2].empty()
         speed_metric = metric_cols[3].empty()
         cost_metric = metric_cols[4].empty()
-        pages_list = list(range(start_page, end_page))
+        pages_list = sorted(pages_filter)
         total_to_do = len(pages_list)
         pages_data = []
         prev_text = ""
@@ -484,15 +848,20 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         render_progress(total_to_do, total_to_do)
         status_text.text(f"✓ 翻译完成! 总用时 {format_duration(time.time() - translation_started_at)}")
         translated_pages_sorted = sorted(
-            [(pn, t) for pn, t in results.items() if t.strip()],
+            [
+                (pn, tracker.get_translation(pn))
+                for pn in range(start_page, end_page)
+                if tracker.get_translation(pn).strip()
+            ],
             key=lambda x: x[0],
         )
         failed_pages = [
-            pn + 1 for pn, text in translated_pages_sorted if is_failed_translation(text)
+            pn + 1 for pn in sorted(tracker.get_failed_pages())
+            if start_page <= pn < end_page
         ]
         if failed_pages:
             st.warning(
-                "以下页翻译失败，未写入进度缓存，修复网络/API 问题后可直接重跑："
+                "以下页翻译失败，已记录为失败页，修复网络/API 问题后可勾选“只重试失败页”："
                 + ", ".join(map(str, failed_pages[:20]))
             )
 
@@ -503,6 +872,17 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
         # Output & Download
+        diagnostics_path = make_output_path(output_base, "_extraction_report.md")
+        with open(diagnostics_path, "w", encoding="utf-8") as f:
+            f.write(build_extraction_diagnostics_report(page_diagnostics, pdf_stem))
+            f.write("\n")
+        with open(diagnostics_path, "rb") as f:
+            st.download_button(
+                "📥 下载提取诊断报告",
+                f,
+                file_name=Path(diagnostics_path).name,
+            )
+
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
             write_glossary_report(pages_text, glossary, report_path, pdf_stem)
@@ -513,7 +893,7 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     file_name=Path(report_path).name,
                 )
 
-        if "Markdown" in formats:
+        if "markdown" in formats:
             md_path = make_output_path(output_base, ".md")
             write_markdown_output(
                 translated_pages_sorted,
@@ -521,16 +901,17 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                 pdf_stem,
                 toc,
                 page_layouts=page_layouts,
+                image_assets=image_assets,
             )
 
             with open(md_path, "rb") as f:
                 st.download_button(
-                    "📥 下载 Markdown",
+                    "📥 下载纯文本稿",
                     f,
                     file_name=Path(md_path).name,
                 )
 
-        if "HTML" in formats:
+        if "html" in formats:
             html_path = make_output_path(output_base, ".html")
             try:
                 write_html_output(
@@ -538,20 +919,21 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     html_path,
                     pdf_stem,
                     page_layouts=page_layouts,
+                    image_assets=image_assets,
                 )
                 with open(html_path, "rb") as f:
                     st.download_button(
-                        "📥 下载 HTML",
+                        "📥 下载网页排版",
                         f,
                         file_name=Path(html_path).name,
                         mime="text/html",
                     )
             except Exception as e:
-                st.error(f"HTML 输出失败：{e}")
+                st.error(f"网页排版输出失败：{e}")
 
-        if "Word" in formats:
+        if "word" in formats:
             if not HAS_DOCX:
-                st.warning("Word 输出需要 python-docx，请运行：pip install python-docx")
+                st.warning("文档排版需要 python-docx，请运行：pip install python-docx")
             else:
                 docx_path = make_output_path(output_base, ".docx")
                 write_word_output(
@@ -566,21 +948,16 @@ if st.button("🔺 开始翻译", type="primary", use_container_width=True):
                     header_left=word_header_left,
                     header_right=word_header_right or None,
                     hard_page_breaks=bool(word_hard_page_breaks),
+                    source_pages_text=pages_text,
                     page_layouts=page_layouts,
+                    image_assets=image_assets,
                 )
 
                 with open(docx_path, "rb") as f:
                     st.download_button(
-                        "📥 下载 Word",
+                        "📥 下载文档排版",
                         f,
                         file_name=Path(docx_path).name,
                     )
-
-        if open_output_when_done:
-            try:
-                os.startfile(str(output_dir))
-                st.info(f"已打开输出文件夹：{output_dir}")
-            except Exception as e:
-                st.warning(f"无法自动打开输出文件夹：{e}")
 
         extractor.close()

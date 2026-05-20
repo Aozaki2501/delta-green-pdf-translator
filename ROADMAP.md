@@ -89,7 +89,7 @@ Implemented:
 
 ### 6. Failed Page Management
 
-Status: `[ ]`
+Status: `[x]`
 
 Goal:
 - Separate failed pages from completed pages.
@@ -98,6 +98,11 @@ Ideas:
 - Store `failed_pages` in progress.
 - Web button for retrying failed pages only.
 - Avoid writing API error text into final output as normal translation.
+
+Implemented:
+- Failed pages are saved under `failed_pages`.
+- Web and CLI can retry failed pages only.
+- Failed text is not stored as a completed translation.
 
 ### 7. Core Module Split
 
@@ -116,7 +121,7 @@ Ideas:
 
 ### 8. Minimal Regression Tests
 
-Status: `[ ]`
+Status: `[~]`
 
 Goal:
 - Protect the fragile PDF layout and glossary behavior.
@@ -127,6 +132,9 @@ Ideas:
 - Header/footer filtering.
 - Longest glossary match.
 - Word output smoke test.
+
+Implemented:
+- Added focused tests for failed-page tracking, extraction diagnostics, and image asset rendering.
 
 ### 9. Output History
 

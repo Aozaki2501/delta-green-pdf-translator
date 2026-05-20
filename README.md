@@ -1,201 +1,153 @@
 # Delta Green PDF Translator
 
-一个面向 Delta Green / TRPG 英文 PDF 的中文翻译工具。从 PDF 中提取文本，结合术语表调用 DeepSeek API 翻译，输出 HTML、Word 或 Markdown。
+这是一个面向 Delta Green / TRPG 英文 PDF 的中文翻译工具。
 
-适用于含文本层的英文 TRPG 规则书、模组、设定集。扫描版纯图片 PDF 需先 OCR。
+它会从带文本层的 PDF 中提取正文，调用 DeepSeek 或其他 OpenAI 兼容接口翻译，并生成 Markdown、HTML、Word 文档。它适合规则书、模组、设定集这类双栏排版的英文 TRPG PDF。
 
----
+注意：扫描版纯图片 PDF 需要先做 OCR。本项目不负责 OCR。
 
-## 项目架构
+## 主要功能
 
-```
+- Web 界面：上传 PDF、填写 API Key、选择模型和输出格式后直接翻译。
+- 命令行：适合长文档、批量处理和自动化。
+- 双栏 PDF 提取：尽量按正常阅读顺序合并双栏正文。
+- 标题识别：自动识别章节标题，并在 Markdown 中生成目录。
+- 卡片和属性块：保留 `[CARD]`、`[STAT_BLOCK]` 等结构标记，避免内容被揉成一段。
+- 表格保留：尽量把表格保留为 Markdown 表格。
+- 图片回填：提取正文图片到 `assets` 目录，并在 HTML、Word、Markdown 中放回。
+- 术语表：用 `glossary.tsv` 统一专名译法，只把当前页命中的术语发给模型。
+- 断点续跑：翻译进度保存到 `.progress.json`，中断后可继续。
+- 失败页重试：失败页会单独记录，可只重试失败页。
+- 诊断报告：每次输出提取诊断报告，提示空页、图片、表格、乱码等风险。
+- 离线重排：已有 `.progress.json` 时，可不调用 API，重新生成 HTML、Word、Markdown。
+- Token 统计：记录调用次数、token 用量和估算费用。
+
+## 目录说明
+
+```text
 DGtranslate/
-├── app.py                  # Streamlit Web 界面（主要使用入口）
-├── translate_pdf.py        # CLI 入口 + 兼容层（re-export shim）
-├── core/                   # 核心逻辑包
-│   ├── constants.py        #   版本号、格式集合、失败前缀等常量
-│   ├── utils.py            #   工具函数（页码解析、路径处理、SHA256）
-│   ├── extractor.py        #   PDF 提取（PDFExtractor、ChapterDetector）
-│   ├── translator.py       #   翻译引擎（Translator、TokenStats、并发翻译）
-│   ├── progress.py         #   进度追踪（断点续翻、线程安全、原子写入）
-│   └── glossary.py         #   术语表（加载、匹配、报告生成）
-├── exporters/              # 输出格式包
-│   ├── _shared.py          #   共享文本处理（分块、去重、分页）
-│   ├── html.py             #   HTML 双栏输出
-│   ├── word.py             #   Word 文档输出
-│   └── markdown.py         #   Markdown 输出
-├── tests/                  # 单元测试（pytest，80 个用例）
-├── convert_glossary.py     # 术语表格式转换工具
-├── test_setup.py           # 环境检测脚本
-├── glossary.tsv            # 默认术语表（~500 条 Delta Green 术语）
-├── config.example.json     # CLI 配置模板
-├── start_web.bat           # 一键启动器（Windows，自动建虚拟环境）
-├── start_web.ps1           # 启动器 PowerShell 实现
-├── requirements.txt        # Python 依赖锁定
-├── uploads/                # Web 上传文件暂存
-├── output/                 # 翻译输出目录
-├── DESIGN.md               # Web UI 设计规范
-├── GUIDE.md                # 面向新手的完整使用教程
-├── ROADMAP.md              # 开发路线图
-└── TASKS.md                # 当前开发任务
+├─ app.py                         Web 界面入口
+├─ translate_pdf.py               命令行入口
+├─ rerender_output.py             离线重新生成输出文件
+├─ glossary.tsv                   默认术语表
+├─ config.example.json            命令行配置模板
+├─ start_web.bat                  Windows 一键启动
+├─ start_web.ps1                  PowerShell 启动脚本
+├─ core/                          PDF 提取、翻译、进度、术语表等核心逻辑
+├─ exporters/                     Markdown、HTML、Word 输出逻辑
+├─ tests/                         自动测试
+├─ uploads/                       Web 上传临时目录
+└─ output/                        默认输出目录
 ```
-
-### 模块职责
-
-| 模块 | 职责 |
-| --- | --- |
-| `core/extractor.py` | PDF 打开、版面检测、双栏排序、页眉页脚过滤、章节检测、卡片区块识别 |
-| `core/translator.py` | 调用 DeepSeek API，携带上下文窗口，术语注入，重试逻辑，并发翻译调度 |
-| `core/progress.py` | 断点续跑，进度元数据指纹校验，线程安全，原子写入 |
-| `core/glossary.py` | 术语表加载、最长匹配、术语命中报告生成 |
-| `core/constants.py` | 全局常量（prompt 版本、extractor 版本、格式集合） |
-| `core/utils.py` | 页码解析、路径处理、文件哈希、失败检测 |
-| `exporters/html.py` | 双栏 HTML 阅读版输出 |
-| `exporters/word.py` | 可配置版式的 Word 文档输出 |
-| `exporters/markdown.py` | Markdown 分页输出 |
-| `exporters/_shared.py` | 文本分块、清洗、去重、分页（多格式共用） |
-| `translate_pdf.py` | CLI 参数解析、翻译调度、向后兼容 re-export |
-
-> **向后兼容**：`app.py` 的 `from translate_pdf import ...` 无需修改，所有公开符号通过 re-export 层保持可用。
-
----
-
-## 核心数据流
-
-```
-PDF 文件
-  │
-  ▼
-PDFExtractor（PyMuPDF）
-  ├─ 版面检测（双栏 / 单栏 / 手册页 / 目录页）
-  ├─ 文本块按阅读顺序排序
-  ├─ 卡片区块（玩家资料、档案）独立提取
-  ├─ 页眉页脚过滤
-  └─ 章节标题检测
-  │
-  ▼
-每页文本 + 术语表匹配
-  ├─ load_glossary() 加载 TSV
-  └─ find_relevant_glossary_terms() 最长匹配，只注入当页命中术语
-  │
-  ▼
-Translator（DeepSeek API）
-  ├─ 系统提示词：TRPG 翻译规则（保留骰子记法、属性缩写、卡片标记等）
-  ├─ 上一页译文尾部 300 字作为上下文
-  ├─ 3 次重试 + 指数退避
-  └─ TokenStats 实时统计
-  │
-  ▼
-ProgressTracker
-  ├─ 每页完成即写入 progress.json
-  ├─ 元数据指纹（PDF hash / 术语表 hash / 模型 / prompt 版本）
-  └─ 中断后自动跳过已完成页
-  │
-  ▼
-输出生成
-  ├─ HTML：双栏阅读版，卡片独立排版，可打印
-  ├─ Word：双栏正文，页眉页脚，可配置字号/行距/分栏
-  ├─ Markdown：分页阅读，含 TOC
-  └─ 术语命中报告：逐页命中 + 疑似未收录专名
-```
-
----
-
-## 功能一览
-
-| 功能 | 说明 |
-| --- | --- |
-| PDF 文本提取 | PyMuPDF 读取含文本层 PDF |
-| 双栏排版处理 | 识别 TRPG 书籍双栏布局，按阅读顺序合并 |
-| 卡片区块检测 | 玩家资料卡、档案等独立提取和排版 |
-| 页眉页脚过滤 | 过滤页码、running title 等边缘文字 |
-| DeepSeek 翻译 | 通过 OpenAI SDK 兼容接口调用 |
-| 术语表强制统一 | TSV 格式，最长匹配，只注入当页相关术语 |
-| 并发翻译 | 最多 16 线程 |
-| 断点续跑 | progress.json 自动保存，中断后继续 |
-| 进度指纹校验 | PDF/术语表/模型变更时警告，防止复用过期译文 |
-| 选择性重翻 | 指定页码重新翻译，无需删除进度文件 |
-| 提取预览 | Web 端可预览任意页提取结果 |
-| 多格式输出 | HTML / Word / Markdown / 术语报告 |
-| Token 统计 | 实时显示 API 调用数、token 用量、费用 |
-| 一键启动 | `start_web.bat` 自动建环境、装依赖、启动 Web |
-
----
 
 ## 环境要求
 
-- Python 3.9+
-- DeepSeek API Key（[申请地址](https://platform.deepseek.com/)）
-- 含文本层的英文 PDF
+- Python 3.9 或更高版本
+- DeepSeek API Key，或其他 OpenAI 兼容接口的 API Key
+- 带文本层的英文 PDF
 
----
+依赖见 `requirements.txt`：
+
+```text
+pymupdf
+openai
+python-docx
+streamlit
+```
 
 ## 快速开始
 
-### 方式一：一键启动（推荐）
+### 方法一：一键启动 Web
 
-双击 `start_web.bat`，脚本会自动：
-1. 创建 `.venv` 虚拟环境
-2. 安装所有依赖
-3. 启动 Streamlit Web 界面（http://localhost:8501）
+在 Windows 上双击：
 
-### 方式二：手动安装
+```text
+start_web.bat
+```
+
+脚本会自动创建虚拟环境、安装依赖，并启动 Web 界面。
+
+启动后浏览器打开：
+
+```text
+http://localhost:8501
+```
+
+### 方法二：手动启动 Web
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-```
-
-启动 Web：
-
-```powershell
 python -m streamlit run app.py
 ```
 
-### 方式三：命令行
+### 方法三：命令行翻译
+
+先复制配置文件：
 
 ```powershell
-# 使用配置文件
 copy config.example.json config.json
-# 编辑 config.json 填入 API Key 和 PDF 路径
-python translate_pdf.py --config config.json
+```
 
-# 或直接传参
+编辑 `config.json`，填入 PDF 路径和 API Key，然后运行：
+
+```powershell
+python translate_pdf.py --config config.json
+```
+
+也可以直接传参数：
+
+```powershell
 python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 4
 ```
 
----
+## Web 使用流程
 
-## Web 界面用法
+1. 启动 Web 页面。
+2. 上传 PDF。
+3. 填入 API Key。
+4. 选择服务、接口地址、模型、并发数和输出格式。
+5. 可选：上传自己的术语表，或指定页码范围。
+6. 先用提取预览检查 PDF 是否被正确读取。
+7. 点击开始翻译。
+8. 完成后在页面下载输出文件。
 
-启动后在浏览器中操作：
+Web 界面支持选择性重翻。页码可以写成：
 
-1. 上传 PDF 文件
-2. 在侧边栏输入 API Key
-3. 选择模型（`deepseek-v4-pro` 质量优先 / `deepseek-v4-flash` 速度优先）
-4. 设置并发线程数（推荐 4）和输出格式
-5. 可选：上传自定义术语表，设置页码范围
-6. 点击「开始翻译」，实时查看进度
-7. 完成后下载输出文件
+```text
+8, 12-15
+```
 
-Web 界面额外支持：
-- 提取预览（翻译前检查 PDF 提取质量）
-- 选择性重翻（输入页码如 `8, 12-15`）
-- Word 版式调整（字号、行距、分栏、页眉）
-- 完成后自动打开输出文件夹
+## 命令行参数
 
----
+常用参数：
 
-## 命令行用法
+| 参数 | 说明 |
+| --- | --- |
+| `pdf` | 输入 PDF 路径 |
+| `--config` | JSON 配置文件 |
+| `--api-key` | API Key |
+| `--output` | 输出路径，不需要写扩展名 |
+| `--glossary` | 术语表路径 |
+| `--provider` | 服务名，只用于记录进度指纹 |
+| `--base-url` | OpenAI 兼容接口地址 |
+| `--model` | 模型名，默认 `deepseek-v4-pro` |
+| `--format` | 输出格式：`markdown`、`html`、`word`、`both`、`all` |
+| `--workers` | 并发数，范围 1 到 16 |
+| `--start` | 起始页，从 0 开始 |
+| `--end` | 结束页，不包含这一页 |
+| `--retry-failed` | 只重试进度文件里记录的失败页 |
 
-### 配置文件
+配置文件示例：
 
 ```json
 {
   "pdf": "THE MILLENNIUM.pdf",
-  "api_key": "sk-你的Key",
+  "api_key": "sk-在这里填入你的DeepSeek API Key",
   "glossary": "glossary.tsv",
+  "provider": "deepseek",
+  "base_url": "https://api.deepseek.com",
   "model": "deepseek-v4-pro",
   "format": "all",
   "workers": 4,
@@ -204,138 +156,159 @@ Web 界面额外支持：
 }
 ```
 
-### 参数说明
-
-| 参数 | 说明 | 默认值 |
-| --- | --- | --- |
-| `pdf` | PDF 文件路径 | 必填 |
-| `api_key` | DeepSeek API Key | 必填 |
-| `glossary` | 术语表路径 | 无 |
-| `model` | 模型名称 | `deepseek-v4-pro` |
-| `format` | 输出格式：`markdown` / `html` / `word` / `both` / `all` | `markdown` |
-| `workers` | 并发线程数（1-16） | 1 |
-| `start` | 起始页码（从 0 开始） | 0 |
-| `end` | 结束页码（不含），`null` 表示全部 | `null` |
-
 命令行参数会覆盖配置文件中的同名字段。
 
----
+## 输出文件
+
+默认输出在 `output` 目录下。每个任务会按文件名创建独立目录，避免多个任务互相混在一起。
+
+常见输出：
+
+```text
+output/book_cn/book_cn.md
+output/book_cn/book_cn.html
+output/book_cn/book_cn.docx
+output/book_cn/book_cn.progress.json
+output/book_cn/book_cn_extraction_report.md
+output/book_cn/book_cn_glossary_report.md
+output/book_cn/assets/
+```
+
+说明：
+
+- `.md` 是 Markdown 译文。
+- `.html` 是浏览器阅读版。
+- `.docx` 是 Word 文档。
+- `.progress.json` 是断点续跑文件。
+- `_extraction_report.md` 是 PDF 提取诊断报告。
+- `_glossary_report.md` 是术语命中报告。
+- `assets/` 保存从 PDF 裁出的正文图片。
 
 ## 术语表
 
-默认术语表 `glossary.tsv` 包含约 500 条 Delta Green 专有术语。
+术语表使用 TSV 格式，也就是用 Tab 分隔两列。
 
-格式（TSV，Tab 分隔）：
+格式：
 
-```
+```text
 中文译名	英文原名
 ```
 
 示例：
 
-```
+```text
 绿色三角洲	Delta Green
 旧日支配者	Great Old One
 阿撒托斯	Azathoth
 ```
 
-程序会在每页文本中查找命中的英文术语，只把相关术语加入当前翻译请求，减少 token 占用。
+程序会在每页英文原文中查找术语。只有当前页命中的术语会加入翻译请求，减少 token 占用。
 
-### 转换术语表
-
-如果你有从 PDF 复制出来的原始术语文本：
+如果有从 PDF 复制出来的原始术语文本，可以用转换脚本：
 
 ```powershell
 python convert_glossary.py raw_glossary.txt -o glossary.tsv
 ```
 
----
+## 断点续跑和失败页
 
-## 断点续跑
+翻译进度保存在：
 
-翻译进度保存在 `{输出文件名}.progress.json`。中断后重新运行同样任务会自动跳过已完成页。
+```text
+输出文件名.progress.json
+```
 
-进度文件包含元数据指纹（PDF hash、术语表 hash、模型版本等）。当设置变更时会提示不一致，防止误用过期译文。
+同一个 PDF、同一个术语表、同一个模型和同一段页码再次运行时，程序会跳过已经完成的页。
 
----
+如果某些页调用 API 失败，会写入 `failed_pages`，不会当作正常译文混进最终结果。
 
-## 依赖
+只重试失败页：
 
-| 包 | 版本 | 用途 |
-| --- | --- | --- |
-| pymupdf | 1.27.2.3 | PDF 文本提取 |
-| openai | 2.36.0 | DeepSeek API 调用（OpenAI 兼容接口） |
-| python-docx | 1.2.0 | Word 文档生成 |
-| streamlit | 1.57.0 | Web 界面 |
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --retry-failed
+```
 
----
+## 离线重新生成输出
+
+如果翻译已经完成，只想用现有进度文件重新生成 Word、HTML 或 Markdown，可以运行：
+
+```powershell
+python rerender_output.py --progress output\book_cn\book_cn.progress.json --pdf "book.pdf" --format all
+```
+
+这个命令不会调用翻译 API。
+
+注意：离线重排只能重新套用输出样式，不能修正旧译文本身的顺序错误。
 
 ## 环境检查
 
+检查依赖：
+
 ```powershell
 python test_setup.py
-python test_setup.py --pdf your_file.pdf    # 测试 PDF 提取
-python test_setup.py --api-key sk-xxx       # 测试 API 连通
 ```
 
----
+检查 PDF 提取：
+
+```powershell
+python test_setup.py --pdf "book.pdf"
+```
+
+检查 API 连通：
+
+```powershell
+python test_setup.py --api-key sk-xxx
+```
+
+## 测试
+
+运行全部测试：
+
+```powershell
+python -m pytest
+```
+
+当前测试覆盖导入兼容、页码解析、术语匹配、进度文件、输出清理、标题样式、离线重排等核心逻辑。
 
 ## 常见问题
 
-### 提示 `PyMuPDF not installed`
+### Web 怎么启动？
+
+使用：
 
 ```powershell
-pip install pymupdf
+python -m streamlit run app.py
 ```
 
-### PowerShell 不允许激活虚拟环境
+不要直接运行 `python app.py`。
+
+### PDF 没有文字怎么办？
+
+先用 OCR 工具把 PDF 转成带文本层的文件，再交给本项目处理。
+
+### 翻译中断怎么办？
+
+直接重新运行同一个任务。程序会读取 `.progress.json` 并跳过已完成页。
+
+### 想只翻译几页怎么办？
+
+命令行使用 `--start` 和 `--end`。注意页码从 0 开始。
+
+示例：只翻译第 1 到第 5 页：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --start 0 --end 5
+```
+
+### PowerShell 不能激活虚拟环境怎么办？
+
+当前窗口临时放开执行策略：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-### 怎么启动 Web？
-
-使用 `python -m streamlit run app.py`，不要用 `python app.py`。
-
-或者直接双击 `start_web.bat`。
-
-### 翻译中断了怎么办？
-
-直接重新运行同一命令，会自动从断点继续。
-
-### 想重翻某几页？
-
-Web 界面：在「重翻页码」输入框填入页码（如 `8, 12-15`）。
-
-CLI：删除 progress.json 中对应条目，或设置 `--start` / `--end` 到目标范围。
-
----
-
-## 开发与测试
-
-运行单元测试：
-
-```powershell
-pip install pytest
-python -m pytest tests/ -v
-```
-
-测试覆盖：导入兼容性、页码解析、术语匹配、进度文件读写等，共 80 个用例，无需 API Key 或 PDF 文件。
-
----
-
-## 开发状态
-
-已完成：进度指纹校验、选择性重翻、提取预览、术语命中报告、Word 版式控制、卡片区块检测、一键启动器、**核心模块拆分**。
-
-计划中：失败页管理、回归测试、输出历史。
-
-详见 [ROADMAP.md](ROADMAP.md)。
-
----
-
 ## 使用提醒
 
-本工具仅供个人学习、研究和私下校对使用。请尊重原作版权，不要公开分发或商业使用未经授权的译文。
+本工具只适合个人学习、研究和私下校对。请尊重原书版权，不要公开分发或商业使用未经授权的译文。
