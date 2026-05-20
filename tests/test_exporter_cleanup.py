@@ -1,4 +1,10 @@
-from exporters._shared import _clean_translated_block, paginate_translated_blocks
+from exporters._shared import (
+    _clean_translated_block,
+    _is_plain_heading_line,
+    _translation_blocks,
+    paginate_translated_blocks,
+)
+from exporters.markdown import _format_markdown_block
 from exporters.html import _html_block
 from exporters.word import _split_card_segments
 
@@ -67,6 +73,18 @@ def test_html_renders_stat_and_image_blocks():
     assert 'class="image-placeholder"' in html
 
 
+def test_html_uses_extracted_image_asset():
+    html = _html_block(
+        "[IMAGE]\nIllustration placeholder\n[/IMAGE]",
+        image_paths=["output/assets/page.png"],
+        image_cursor=[0],
+        html_output="output/book.html",
+    )
+
+    assert 'class="source-image"' in html
+    assert 'src="assets/page.png"' in html
+
+
 def test_word_segments_stat_and_image_blocks():
     segments = _split_card_segments(
         "[STAT_BLOCK]\nRobyn Bullock\nSTR 11 CON 10\n[/STAT_BLOCK]\n"
@@ -75,6 +93,55 @@ def test_word_segments_stat_and_image_blocks():
 
     assert segments[0][0] == "stat"
     assert segments[1] == ("image", "Illustration placeholder")
+
+
+def test_localized_card_markers_stay_structural():
+    text = "[卡片]\n姓名\n职位\n背景\n[/卡片]"
+
+    html = _html_block(text)
+    markdown = _format_markdown_block(text)
+    segments = _split_card_segments(text)
+
+    assert 'class="handout-card"' in html
+    assert "<h2>姓名</h2>" not in html
+    assert "[CARD]" in markdown
+    assert "[卡片]" not in markdown
+    assert segments == [("card", "姓名\n职位\n背景")]
+
+
+def test_short_chinese_fields_are_not_promoted_to_headings():
+    assert not _is_plain_heading_line("姓名")
+    assert not _is_plain_heading_line("达娜·加斯蒂诺")
+
+
+def test_card_list_lines_are_not_collapsed():
+    text = _clean_translated_block(
+        "[CARD]\n"
+        "生态乌托邦员工\n"
+        "姓名\n"
+        "职位\n"
+        "背景\n"
+        "基斯·巴斯\n"
+        "特约编辑\n"
+        "邋遢的社会主义者\n"
+        "[/CARD]"
+    )
+
+    assert "姓名\n职位\n背景" in text
+    assert "姓名职位背景" not in text
+
+
+def test_cross_page_sentence_continuation_moves_before_leading_card():
+    blocks = _translation_blocks([
+        (0, "菲奥娜愿意自我介绍。她并不"),
+        (1, "[CARD]\n>>生态乌托邦员工\n姓名\n职位\n背景\n[/CARD]\n\n她不会单独见他们，尤其当特工不止一名时更是如此。"),
+    ])
+
+    texts = [block["text"] for block in blocks]
+
+    assert texts[0] == "菲奥娜愿意自我介绍。"
+    assert texts[1].startswith("她并不会单独见他们")
+    assert texts[2].startswith("[CARD]")
 
 
 def test_stat_block_line_breaks_are_preserved():

@@ -7,6 +7,7 @@ text from dual-column TRPG PDFs with intelligent layout detection.
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -119,12 +120,60 @@ class PDFExtractor:
         self.chapter_detector = ChapterDetector()
         self._page_body_context: dict[int, str] = {}
         self._page_layout_notes: dict[int, list[str]] = {}
+        self._page_image_regions: dict[int, list] = {}
 
     def get_context_text(self, page_num: int) -> str:
         return self._page_body_context.get(page_num, "")
 
     def get_layout_notes(self, page_num: int) -> list[str]:
         return self._page_layout_notes.get(page_num, [])
+
+    def get_image_regions(self, page_num: int) -> list:
+        return list(self._page_image_regions.get(page_num, []))
+
+    def export_page_images(self, page_num: int, output_dir: str, stem: str,
+                           zoom: float = 2.0) -> list[str]:
+        regions = self.get_image_regions(page_num)
+        if not regions:
+            return []
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        page = self.doc[page_num]
+        paths = []
+        matrix = pymupdf.Matrix(float(zoom), float(zoom))
+        for idx, rect in enumerate(regions, start=1):
+            path = out_dir / f"{stem}_p{page_num + 1:04d}_img{idx}.png"
+            pix = page.get_pixmap(matrix=matrix, clip=rect, alpha=False)
+            pix.save(str(path))
+            paths.append(str(path))
+        return paths
+
+    def get_page_diagnostics(self, page_num: int, text: str = "") -> dict:
+        notes = self.get_layout_notes(page_num)
+        risks = []
+        if not text.strip():
+            risks.append("未提取到正文")
+        if any("image placeholder" in note for note in notes) and "[IMAGE]" not in text:
+            risks.append("检测到图片但文本缺少图片占位")
+        if text.count("[CARD]") != text.count("[/CARD]"):
+            risks.append("卡片标记不成对")
+        if text.count("[STAT_BLOCK]") != text.count("[/STAT_BLOCK]"):
+            risks.append("属性块标记不成对")
+        if text.count("|") >= 6 and "| ---" not in text and "|---" not in text:
+            risks.append("疑似表格未结构化")
+        if "\ufffd" in text or text.count("?") >= 20:
+            risks.append("疑似乱码或 OCR 损坏")
+        return {
+            "page": page_num,
+            "layout": next(
+                (note.split(":", 1)[1].strip() for note in notes if note.startswith("layout:")),
+                "unknown",
+            ),
+            "notes": notes,
+            "text_length": len(re.sub(r"\s+", "", text)),
+            "image_count": len(self.get_image_regions(page_num)),
+            "risks": risks,
+        }
 
     def __enter__(self):
         return self
@@ -336,10 +385,18 @@ class PDFExtractor:
 
     def _extract_monospace_lines(self, block):
         lines = []
+        seen = set()
         for line in block.get("lines", []):
             words = self._line_words(line)
             if not words:
                 continue
+            line_key = (
+                tuple(round(value, 1) for value in line.get("bbox", (0, 0, 0, 0))),
+                " ".join(word["text"] for word in words),
+            )
+            if line_key in seen:
+                continue
+            seen.add(line_key)
             words.sort(key=lambda word: word["x"])
             lines.append(words)
         return lines
@@ -348,58 +405,89 @@ class PDFExtractor:
         return self._blocks_to_markdown_table([block])
 
     def _blocks_to_markdown_table(self, blocks):
-        row_candidates = []
+        title = ""
+        spans = []
         for block in blocks:
-            block_words = []
             for words in self._extract_monospace_lines(block):
-                row_text = " ".join(word["text"] for word in words)
+                row_text = " ".join(word["text"] for word in words).strip()
                 if re.fullmatch(r"[_+\-\s|]+", row_text):
                     continue
-                block_words.extend(words)
-            if block_words:
-                row_candidates.append(sorted(block_words, key=lambda word: (word["y"], word["x"])))
+                if row_text.startswith(">>") and not title:
+                    title = row_text
+                    continue
+                for word in words:
+                    spans.append(word)
 
-        if len(row_candidates) < 2:
+        if len(spans) < 4:
             return None
 
-        header_words = row_candidates[0]
-        header = [re.sub(r"^[| ]+|[| ]+$", "", word["text"]).strip() for word in header_words]
-        header = [cell for cell in header if cell]
-        if len(header) < 2:
+        col_positions = []
+        for x in sorted(word["x"] for word in spans):
+            if not col_positions or abs(x - col_positions[-1]) > 34:
+                col_positions.append(x)
+            else:
+                col_positions[-1] = (col_positions[-1] + x) / 2
+        if len(col_positions) < 2:
             return None
 
-        col_count = len(header)
-        col_positions = sorted(word["x"] for word in header_words[:col_count])
-        table_rows = []
-        for words in row_candidates[1:]:
-            cells = ["" for _ in range(col_count)]
-            for word in words:
-                idx = min(range(col_count), key=lambda i: abs(word["x"] - col_positions[i]))
+        row_groups = []
+        for word in sorted(spans, key=lambda item: (item["y"], item["x"])):
+            for group in row_groups:
+                if abs(word["y"] - group["y"]) <= 14:
+                    group["words"].append(word)
+                    group["y"] = min(group["y"], word["y"])
+                    break
+            else:
+                row_groups.append({"y": word["y"], "words": [word]})
+
+        rows = []
+        for group in row_groups:
+            cells = ["" for _ in col_positions]
+            for word in sorted(group["words"], key=lambda item: item["x"]):
+                idx = min(range(len(col_positions)), key=lambda i: abs(word["x"] - col_positions[i]))
                 clean_word = re.sub(r"^[| ]+|[| ]+$", "", word["text"]).strip()
                 if clean_word:
                     cells[idx] = (cells[idx] + " " + clean_word).strip()
             if any(cells):
-                table_rows.append(cells)
+                rows.append(cells)
 
-        if not table_rows:
+        if len(rows) < 2:
             return None
 
+        header = rows[0]
         markdown = [
             "| " + " | ".join(header) + " |",
             "| " + " | ".join("---" for _ in header) + " |",
         ]
-        for cells in table_rows:
+        for cells in rows[1:]:
             markdown.append("| " + " | ".join(cells) + " |")
-        return "\n".join(markdown)
+        table = "\n".join(markdown)
+        return (title + "\n\n" + table) if title else table
+
+    def _monospace_column_count(self, block) -> int:
+        positions = []
+        for words in self._extract_monospace_lines(block):
+            for word in words:
+                x = word["x"]
+                if not any(abs(x - existing) <= 34 for existing in positions):
+                    positions.append(x)
+        return len(positions)
 
     def _is_table_block(self, block, page_width):
         if not self._is_monospace_block(block):
             return False
         x0, _, x1, _ = block["bbox"]
-        if x1 - x0 < page_width * 0.55:
+        if x1 - x0 < page_width * 0.30:
             return False
         text = self._extract_block_text(block)
-        return "|" in text or "CLUE" in text.upper() or re.search(r"_{8,}|\+[-_ ]+", text)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        separator_signal = bool(re.search(r"_{8,}|\+[-_ ]+|-{3,}\s+-{3,}", text))
+        pipe_signal = "|" in text
+        keyword_signal = bool(re.search(r"\b(CLUE|RESULT|ROLL|DAMAGE|SKILL|EFFECT)\b", text, re.IGNORECASE))
+        aligned_columns = sum(1 for line in lines if len(re.split(r"\s{2,}", line)) >= 3)
+        label_signal = bool(re.search(r"^>>|\b(Name|Position|Background|Shift|Administration)\b", text, re.IGNORECASE))
+        multi_column_signal = self._monospace_column_count(block) >= 2 and self._block_line_count(block) <= 8
+        return pipe_signal or separator_signal or (keyword_signal and aligned_columns >= 2) or label_signal or multi_column_signal
 
     def _is_contents_block(self, block):
         if not self._is_monospace_block(block):
@@ -548,6 +636,10 @@ class PDFExtractor:
             ]
             if not inside:
                 continue
+            table_lines = sum(
+                self._block_line_count(block) for block in inside
+                if self._is_table_block(block, page_width)
+            )
             has_card_text = any(
                 self._is_card_text_block(block, page_width, page_height, median_size)
                 for block in inside
@@ -556,6 +648,8 @@ class PDFExtractor:
                 self._block_line_count(block) for block in inside
                 if self._is_monospace_block(block)
             )
+            if table_lines and table_lines >= max(2, monospace_lines * 0.60):
+                continue
             # 降低等宽行数要求（从 4 到 2），并增加卡片标签检测
             has_card_label = any(
                 self._has_card_label(self._extract_block_text(block))
@@ -628,6 +722,7 @@ class PDFExtractor:
             non_body_blocks = [
                 block for block in content_blocks
                 if id(block) not in card_ids
+                and not self._is_table_block(block, page_width)
                 and self._is_non_body_font_block(block, body_fonts)
                 and self._block_line_count(block) >= 1
             ]
@@ -1325,36 +1420,47 @@ class PDFExtractor:
                         for b in table_blocks
                         if extract_text(b).strip()
                     )
-                processed_blocks.append({"text": table_text, "title_card": False})
+                processed_blocks.append({"text": table_text, "title_card": False, "kind": "table"})
                 continue
 
             if mark_handouts and self._is_handout_block(block):
                 text = extract_text(block).strip()
                 if text:
                     text = self._quote_card_text(text)
-                processed_blocks.append({"text": text, "title_card": False})
+                processed_blocks.append({"text": text, "title_card": False, "kind": "handout"})
                 idx += 1
                 continue
 
             processed_blocks.append({
                 "text": extract_text(block).strip(),
                 "title_card": bool(block.get("_dg_title_card")),
+                "kind": "normal",
             })
             idx += 1
 
         paragraphs = []
         current_para = ""
         current_is_title_card = False
+        current_kind = "normal"
 
         for item in processed_blocks:
             text = item["text"].strip()
             if not text:
                 continue
             is_title_card = item["title_card"]
+            kind = item.get("kind", "normal")
 
             if not current_para:
                 current_para = text
                 current_is_title_card = is_title_card
+                current_kind = kind
+                continue
+
+            if current_kind == "table" or kind == "table":
+                paragraphs.append(current_para)
+                current_para = text
+                current_is_title_card = is_title_card
+                current_kind = kind
                 continue
 
             if current_is_title_card and is_title_card:
@@ -1397,6 +1503,7 @@ class PDFExtractor:
                 paragraphs.append(current_para)
                 current_para = text
                 current_is_title_card = is_title_card
+                current_kind = kind
 
         if current_para:
             paragraphs.append(current_para)
@@ -1412,6 +1519,7 @@ class PDFExtractor:
         if not blocks:
             self._page_body_context[page_num] = ""
             self._page_layout_notes[page_num] = ["empty page"]
+            self._page_image_regions[page_num] = []
             return ""
         content_blocks = [
             b for b in blocks
@@ -1420,6 +1528,7 @@ class PDFExtractor:
         if not content_blocks:
             self._page_body_context[page_num] = ""
             self._page_layout_notes[page_num] = ["no content blocks"]
+            self._page_image_regions[page_num] = []
             return ""
         layout = self.detect_page_layout(page_num)
         self._page_layout_notes[page_num] = self._layout_notes_for_page(layout, content_blocks, page_width)
@@ -1436,6 +1545,7 @@ class PDFExtractor:
         image_regions = self._visual_image_regions(
             page, content_blocks, card_groups, page_width, page_height
         )
+        self._page_image_regions[page_num] = image_regions
         if image_regions:
             self._page_layout_notes[page_num].append(f"{len(image_regions)} image placeholder(s)")
 
@@ -1491,3 +1601,30 @@ class PDFExtractor:
         if self.doc is not None:
             self.doc.close()
             self.doc = None
+
+
+def build_extraction_diagnostics_report(diagnostics: list[dict], title: str = "") -> str:
+    lines = [
+        f"# {title} — 提取诊断报告" if title else "# 提取诊断报告",
+        "",
+        "本报告用于翻译前检查版面识别、图片占位、表格和明显提取风险。",
+        "",
+    ]
+    risky = [item for item in diagnostics if item.get("risks")]
+    lines.append(f"- 总页数：{len(diagnostics)}")
+    lines.append(f"- 有风险页：{len(risky)}")
+    lines.append("")
+    lines.append("## 逐页诊断")
+    lines.append("")
+    for item in diagnostics:
+        page = int(item.get("page", 0)) + 1
+        notes = "；".join(item.get("notes", [])) or "无"
+        risks = "；".join(item.get("risks", [])) or "无"
+        lines.append(f"### 第 {page} 页")
+        lines.append(f"- 版面：{item.get('layout', 'unknown')}")
+        lines.append(f"- 文本量：{item.get('text_length', 0)}")
+        lines.append(f"- 图片：{item.get('image_count', 0)}")
+        lines.append(f"- 说明：{notes}")
+        lines.append(f"- 风险：{risks}")
+        lines.append("")
+    return "\n".join(lines)

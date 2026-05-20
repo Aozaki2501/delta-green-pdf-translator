@@ -9,9 +9,16 @@ Covers:
 Requirements: 10.2, 10.3, 10.5
 """
 
+from pathlib import Path
+
 import pytest
 
-from core.utils import is_failed_translation, normalize_page_range, parse_page_selection
+from core.utils import (
+    is_failed_translation,
+    normalize_page_range,
+    output_base_in_own_dir,
+    parse_page_selection,
+)
 from core.constants import TRANSLATION_FAILURE_PREFIX
 
 
@@ -158,3 +165,11 @@ class TestIsFailedTranslation:
         """Prefix appearing in the middle (not at start) returns False."""
         text = f"Some text {TRANSLATION_FAILURE_PREFIX} error]"
         assert is_failed_translation(text) is False
+
+
+def test_output_base_uses_same_named_folder():
+    assert output_base_in_own_dir("output/book_cn.html") == str(Path("output") / "book_cn" / "book_cn")
+
+
+def test_output_base_does_not_double_nest_existing_folder():
+    assert output_base_in_own_dir(str(Path("output") / "book_cn" / "book_cn")) == str(Path("output") / "book_cn" / "book_cn")

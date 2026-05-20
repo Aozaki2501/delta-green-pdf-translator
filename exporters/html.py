@@ -7,6 +7,7 @@ Dependencies: exporters._shared (for pagination and text helpers)
 
 import html
 import re
+from pathlib import Path
 from typing import Optional
 
 from exporters._shared import (
@@ -18,6 +19,7 @@ from exporters._shared import (
     _looks_like_stat_block,
     _layout_uses_columns,
     _normalize_heading_markup,
+    _normalize_marker_line,
 )
 from core.utils import ensure_output_parent
 
@@ -64,12 +66,19 @@ def _html_table(lines: list[str]) -> str:
 
 
 def _html_handout_card(lines: list[str]) -> str:
-    parts = ['<div class="handout-card">']
-    for idx, line in enumerate(lines):
+    clean_lines = []
+    for line in lines:
         clean = line.strip()
         if not clean:
             continue
         clean = re.sub(r"^#{1,6}\s*", "", clean)
+        clean = re.sub(r"^>{2}\s*", "", clean)
+        clean_lines.append(clean)
+    card_class = "handout-card"
+    if len(clean_lines) >= 8:
+        card_class += " handout-card-long"
+    parts = [f'<div class="{card_class}">']
+    for idx, clean in enumerate(clean_lines):
         if idx == 0 and len(re.sub(r"\s+", "", clean)) <= 80:
             parts.append(f"<h3>{_html_inline(clean)}</h3>")
         else:
@@ -94,12 +103,27 @@ def _html_stat_block(lines: list[str]) -> str:
     return "".join(parts)
 
 
-def _html_image_placeholder(lines: list[str]) -> str:
+def _relative_asset_path(asset_path: str, output_path: str) -> str:
+    try:
+        return Path(asset_path).resolve().relative_to(Path(output_path).resolve().parent).as_posix()
+    except ValueError:
+        return Path(asset_path).as_posix()
+
+
+def _html_image_placeholder(lines: list[str], image_path: str = "", html_output: str = "") -> str:
     label = " ".join(line.strip() for line in lines if line.strip()) or "Illustration"
+    if image_path:
+        src = html.escape(_relative_asset_path(image_path, html_output))
+        return (
+            '<figure class="source-image">'
+            f'<img src="{src}" alt="{_html_inline(label)}">'
+            f'<figcaption>{_html_inline(label)}</figcaption>'
+            '</figure>'
+        )
     return f'<figure class="image-placeholder"><div></div><figcaption>{_html_inline(label)}</figcaption></figure>'
 
 
-def _html_block(text: str) -> str:
+def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str = "") -> str:
     parts = []
     lines = text.split("\n")
     idx = 0
@@ -110,16 +134,17 @@ def _html_block(text: str) -> str:
         if not clean_line or clean_line == "---" or clean_line.startswith("<!--"):
             continue
         clean_line = _normalize_heading_markup(clean_line)
+        clean_line = _normalize_marker_line(clean_line)
 
         if clean_line == "[[TOC]]":
             continue
 
         if clean_line == "[FULL_WIDTH_TITLE]":
             title_lines = []
-            while idx < len(lines) and lines[idx].strip() != "[/FULL_WIDTH_TITLE]":
+            while idx < len(lines) and _normalize_marker_line(lines[idx]) != "[/FULL_WIDTH_TITLE]":
                 title_lines.append(lines[idx].strip())
                 idx += 1
-            if idx < len(lines) and lines[idx].strip() == "[/FULL_WIDTH_TITLE]":
+            if idx < len(lines) and _normalize_marker_line(lines[idx]) == "[/FULL_WIDTH_TITLE]":
                 idx += 1
             clean_title_lines = [
                 re.sub(r"^#{1,6}\s*", "", line).strip()
@@ -140,32 +165,38 @@ def _html_block(text: str) -> str:
 
         if clean_line == "[CARD]":
             card_lines = []
-            while idx < len(lines) and lines[idx].strip() != "[/CARD]":
+            while idx < len(lines) and _normalize_marker_line(lines[idx]) != "[/CARD]":
                 card_lines.append(lines[idx].strip())
                 idx += 1
-            if idx < len(lines) and lines[idx].strip() == "[/CARD]":
+            if idx < len(lines) and _normalize_marker_line(lines[idx]) == "[/CARD]":
                 idx += 1
             parts.append(_html_handout_card(card_lines))
             continue
 
         if clean_line == "[STAT_BLOCK]":
             stat_lines = []
-            while idx < len(lines) and lines[idx].strip() != "[/STAT_BLOCK]":
+            while idx < len(lines) and _normalize_marker_line(lines[idx]) != "[/STAT_BLOCK]":
                 stat_lines.append(lines[idx].strip())
                 idx += 1
-            if idx < len(lines) and lines[idx].strip() == "[/STAT_BLOCK]":
+            if idx < len(lines) and _normalize_marker_line(lines[idx]) == "[/STAT_BLOCK]":
                 idx += 1
             parts.append(_html_stat_block(stat_lines))
             continue
 
         if clean_line == "[IMAGE]":
             image_lines = []
-            while idx < len(lines) and lines[idx].strip() != "[/IMAGE]":
+            while idx < len(lines) and _normalize_marker_line(lines[idx]) != "[/IMAGE]":
                 image_lines.append(lines[idx].strip())
                 idx += 1
-            if idx < len(lines) and lines[idx].strip() == "[/IMAGE]":
+            if idx < len(lines) and _normalize_marker_line(lines[idx]) == "[/IMAGE]":
                 idx += 1
-            parts.append(_html_image_placeholder(image_lines))
+            image_path = ""
+            if image_paths is not None and image_cursor is not None:
+                cursor = image_cursor[0]
+                if cursor < len(image_paths):
+                    image_path = image_paths[cursor]
+                image_cursor[0] = cursor + 1
+            parts.append(_html_image_placeholder(image_lines, image_path, html_output))
             continue
 
         if clean_line.startswith("```toc"):
@@ -218,7 +249,8 @@ def _html_block(text: str) -> str:
 def write_html_output(translated_pages, html_output: str, title: str, subtitle: str = "中文翻译",
                       min_chars=1200, max_chars=1800, columns=2,
                       header_left="绿色三角洲", header_right=None,
-                      page_layouts: Optional[dict] = None):
+                      page_layouts: Optional[dict] = None,
+                      image_assets: Optional[dict] = None):
     """Write translated content as a printable dual-column HTML document."""
     min_chars = int(min_chars)
     max_chars = int(max_chars)
@@ -400,27 +432,33 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     }}
     .handout-card {{
         column-span: all;
-        margin: 0.16in 0 0.26in;
-        padding: 0.16in 0.22in;
-        background: rgba(244, 225, 125, 0.62);
-        border: 1px solid rgba(145, 126, 55, 0.42);
-        box-shadow: 0 0.06in 0.12in rgba(0, 0, 0, 0.14);
-        font-family: "Courier New", "VT323", monospace;
-        break-inside: avoid;
-        page-break-inside: avoid;
+        margin: 0.12in 0 0.18in;
+        padding: 0.10in 0.16in 0.11in;
+        background: rgba(246, 224, 111, 0.24);
+        border-left: 4px solid rgba(176, 137, 28, 0.72);
+        border-top: 1px solid rgba(176, 137, 28, 0.22);
+        border-bottom: 1px solid rgba(176, 137, 28, 0.22);
+        font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
+        break-inside: auto;
+        page-break-inside: auto;
+    }}
+    .handout-card-long {{
+        background: rgba(246, 224, 111, 0.16);
+        padding-top: 0.08in;
+        padding-bottom: 0.08in;
     }}
     .handout-card h3 {{
-        margin: 0 0 0.08in;
+        margin: 0 0 0.06in;
         color: var(--ink);
-        font-family: "Courier New", "VT323", monospace;
-        font-size: 13pt;
-        text-transform: uppercase;
+        font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        font-size: 12pt;
+        font-weight: 700;
     }}
     .handout-card p {{
-        margin: 0 0 0.06in;
+        margin: 0 0 0.045in;
         text-indent: 0;
-        font-size: 10.5pt;
-        line-height: 1.5;
+        font-size: 10.4pt;
+        line-height: 1.48;
     }}
     .stat-block {{
         column-span: all;
@@ -456,6 +494,25 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         background: rgba(0, 0, 0, 0.035);
     }}
     .image-placeholder figcaption {{
+        margin-top: 0.04in;
+        color: var(--muted);
+        font: 8.5pt "Courier New", monospace;
+        text-align: center;
+    }}
+    .source-image {{
+        column-span: all;
+        margin: 0.16in 0 0.22in;
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }}
+    .source-image img {{
+        display: block;
+        max-width: 100%;
+        max-height: 3.8in;
+        margin: 0 auto;
+        object-fit: contain;
+    }}
+    .source-image figcaption {{
         margin-top: 0.04in;
         color: var(--muted);
         font: 8.5pt "Courier New", monospace;
@@ -611,6 +668,7 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         "</main>",
         "</section>",
     ]
+    image_cursors = {}
 
     for page_idx, page in enumerate(reading_pages, 1):
         blocks = page["blocks"]
@@ -624,7 +682,10 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
             '<main class="content">',
         ])
         for block in blocks:
-            chunks.append(_html_block(block["text"]))
+            source_page = block.get("source_page")
+            image_paths = (image_assets or {}).get(source_page, [])
+            cursor = image_cursors.setdefault(source_page, [0])
+            chunks.append(_html_block(block["text"], image_paths, cursor, html_output))
         chunks.append(f'<div class="source-pages{source_class}">Reading Page {page_idx}; Source PDF Pages: {html.escape(source_pages)}</div>')
         chunks.extend(["</main>", "</section>"])
 

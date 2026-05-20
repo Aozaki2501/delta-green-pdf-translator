@@ -32,7 +32,14 @@ def test_load_progress_translations_rejects_empty(tmp_path):
 def test_infer_output_base_strips_progress_suffix(tmp_path):
     progress = tmp_path / "book_cn.progress.json"
 
-    assert infer_output_base(str(progress), None) == str(tmp_path / "book_cn")
+    assert infer_output_base(str(progress), None) == str(tmp_path / "book_cn" / "book_cn")
+
+
+def test_infer_output_base_does_not_double_nest(tmp_path):
+    folder = tmp_path / "book_cn"
+    progress = folder / "book_cn.progress.json"
+
+    assert infer_output_base(str(progress), None) == str(folder / "book_cn")
 
 
 def test_rerender_outputs_markdown(tmp_path):
@@ -52,5 +59,6 @@ def test_rerender_outputs_markdown(tmp_path):
         title="book",
     )
 
-    assert written == [str(tmp_path / "book_cn.md")]
-    assert "正文" in (tmp_path / "book_cn.md").read_text(encoding="utf-8")
+    out = tmp_path / "book_cn" / "book_cn.md"
+    assert written == [str(out)]
+    assert "正文" in out.read_text(encoding="utf-8")

@@ -29,6 +29,16 @@ def ensure_output_parent(path: str):
     parent.mkdir(parents=True, exist_ok=True)
 
 
+def output_base_in_own_dir(output_path: str) -> str:
+    """Return an output stem placed inside a same-named folder."""
+    path = Path(output_path).expanduser()
+    if path.suffix.lower() in {".md", ".html", ".docx", ".pdf"}:
+        path = path.with_suffix("")
+    if path.parent.name == path.name:
+        return str(path)
+    return str(path.parent / path.name / path.name)
+
+
 def normalize_page_range(start_page, end_page, total_pages: int) -> tuple[int, int]:
     try:
         start = int(start_page or 0)

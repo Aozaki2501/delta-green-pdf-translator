@@ -9,6 +9,7 @@ Dependencies: python-docx (optional), exporters._shared
 """
 
 import re
+import os
 from typing import Optional
 
 from exporters._shared import (
@@ -17,6 +18,7 @@ from exporters._shared import (
     paginate_translated_blocks,
     _layout_uses_columns,
     _normalize_heading_markup,
+    _normalize_marker_line,
 )
 from core.utils import ensure_output_parent
 
@@ -183,15 +185,10 @@ def set_running_header_footer(doc, title: str, header_left: str = "绿色三角�
         right_para.paragraph_format.space_before = Pt(0)
         right_para.paragraph_format.space_after = Pt(0)
         right_para.paragraph_format.line_spacing = 1.0
-        if header_right:
-            run = right_para.add_run(f"// {right_title} //")
-            run.font.name = "宋体"
-            run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-            run.font.size = Pt(9)
-        else:
-            right_para.add_run("// ")
-            _add_word_field(right_para, 'STYLEREF "Heading 1" \\* MERGEFORMAT')
-            right_para.add_run(" //")
+        run = right_para.add_run(f"// {right_title} //")
+        run.font.name = "宋体"
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        run.font.size = Pt(9)
 
         clear_header_footer_part(section.footer)
         footer_para = section.footer.add_paragraph()
@@ -339,7 +336,7 @@ def _split_card_segments(text: str):
         table_lines = []
 
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        line = _normalize_marker_line(raw_line)
         if line == "[FULL_WIDTH_TITLE]":
             flush_normal()
             flush_table()
@@ -431,6 +428,7 @@ def _write_word_block(doc, text: str, layout: str = "columns"):
         if not line or line == "---" or line.startswith("<!--"):
             continue
         line = _normalize_heading_markup(line)
+        line = _normalize_marker_line(line)
 
         clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
         clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
@@ -459,10 +457,8 @@ def _write_word_block(doc, text: str, layout: str = "columns"):
             p.paragraph_format.left_indent = Pt(14)
             p.paragraph_format.right_indent = Pt(8)
             p.paragraph_format.first_line_indent = Pt(0)
-            p_pr = p._p.get_or_add_pPr()
-            shading = OxmlElement("w:shd")
-            shading.set(qn("w:fill"), "F4E17D")
-            p_pr.append(shading)
+            _set_paragraph_left_rule(p)
+            _set_paragraph_shading(p)
             tune_paragraph(p)
         elif _is_plain_heading_line(clean_line):
             p = doc.add_heading(clean_line, level=2)
@@ -536,6 +532,31 @@ def _write_word_table(doc, text: str):
     doc.add_paragraph()
 
 
+def _set_paragraph_left_rule(paragraph, color="B0891C"):
+    p_pr = paragraph._p.get_or_add_pPr()
+    borders = p_pr.find(qn("w:pBdr"))
+    if borders is None:
+        borders = OxmlElement("w:pBdr")
+        p_pr.append(borders)
+    left = borders.find(qn("w:left"))
+    if left is None:
+        left = OxmlElement("w:left")
+        borders.append(left)
+    left.set(qn("w:val"), "single")
+    left.set(qn("w:sz"), "14")
+    left.set(qn("w:space"), "6")
+    left.set(qn("w:color"), color)
+
+
+def _set_paragraph_shading(paragraph, fill="FFF7D6"):
+    p_pr = paragraph._p.get_or_add_pPr()
+    shading = p_pr.find(qn("w:shd"))
+    if shading is None:
+        shading = OxmlElement("w:shd")
+        p_pr.append(shading)
+    shading.set(qn("w:fill"), fill)
+
+
 def _write_word_card(doc, text: str):
     for idx, line in enumerate(text.split("\n")):
         clean_line = line.strip()
@@ -549,11 +570,15 @@ def _write_word_card(doc, text: str):
         p.paragraph_format.right_indent = Pt(12)
         p.paragraph_format.first_line_indent = Pt(0)
         p.paragraph_format.space_before = Pt(6 if idx == 0 else 0)
-        p.paragraph_format.space_after = Pt(4)
-        p_pr = p._p.get_or_add_pPr()
-        shading = OxmlElement("w:shd")
-        shading.set(qn("w:fill"), "F4E17D")
-        p_pr.append(shading)
+        p.paragraph_format.space_after = Pt(3)
+        _set_paragraph_left_rule(p)
+        _set_paragraph_shading(p)
+        for run in p.runs:
+            run.font.name = "宋体"
+            run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+            run.font.size = Pt(10.5)
+            if idx == 0:
+                run.bold = True
 
 
 def _write_word_stat_block(doc, text: str):
@@ -592,7 +617,15 @@ def _write_word_stat_block(doc, text: str):
         p_pr.append(borders)
 
 
-def _write_word_image_placeholder(doc, text: str):
+def _write_word_image_placeholder(doc, text: str, image_path: str = ""):
+    if image_path:
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"图片资源不存在：{image_path}")
+        p = doc.add_paragraph()
+        p.paragraph_format.first_line_indent = Pt(0)
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.add_run().add_picture(image_path, width=Inches(6.6))
+        return
     table = doc.add_table(rows=1, cols=1)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
@@ -654,7 +687,8 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                       min_chars=1000, max_chars=1500, body_font_size=12.0,
                       line_spacing=1.5, columns=2, header_left="绿色三角洲",
                       header_right=None, hard_page_breaks=False,
-                      source_pages_text=None, page_layouts=None):
+                      source_pages_text=None, page_layouts=None,
+                      image_assets: Optional[dict] = None):
     """Write translated Markdown-like page content to a Word document."""
     if not HAS_DOCX:
         raise RuntimeError("Word output requires python-docx")
@@ -701,6 +735,7 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
         split_on_layout=True,
     )
     current_page_columns = columns
+    image_cursors = {}
     for page_idx, page in enumerate(reading_pages):
         blocks = page["blocks"]
         layout = page.get("layout", "columns")
@@ -730,7 +765,12 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                 elif kind == "image":
                     image_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(image_section, columns=1)
-                    _write_word_image_placeholder(doc, content)
+                    source_page = block.get("source_page")
+                    image_paths = (image_assets or {}).get(source_page, [])
+                    cursor = image_cursors.setdefault(source_page, 0)
+                    image_path = image_paths[cursor] if cursor < len(image_paths) else ""
+                    image_cursors[source_page] = cursor + 1
+                    _write_word_image_placeholder(doc, content, image_path)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "full_title":

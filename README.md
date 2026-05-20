@@ -115,8 +115,11 @@ ProgressTracker
 | 断点续跑 | progress.json 自动保存，中断后继续 |
 | 进度指纹校验 | PDF/术语表/模型变更时警告，防止复用过期译文 |
 | 选择性重翻 | 指定页码重新翻译，无需删除进度文件 |
+| 失败页管理 | 失败页单独记录，可只重试失败页 |
 | 提取预览 | Web 端可预览任意页提取结果 |
+| 提取诊断报告 | 输出每页版面、图片、表格和风险提示 |
 | 多格式输出 | HTML / Word / Markdown / 术语报告 |
+| 图片回填 | 可裁出正文插图并回填到 HTML / Word / Markdown |
 | Token 统计 | 实时显示 API 调用数、token 用量、费用 |
 | 一键启动 | `start_web.bat` 自动建环境、装依赖、启动 Web |
 
@@ -196,6 +199,8 @@ Web 界面额外支持：
   "pdf": "THE MILLENNIUM.pdf",
   "api_key": "sk-你的Key",
   "glossary": "glossary.tsv",
+  "provider": "deepseek",
+  "base_url": "https://api.deepseek.com",
   "model": "deepseek-v4-pro",
   "format": "all",
   "workers": 4,
@@ -211,6 +216,8 @@ Web 界面额外支持：
 | `pdf` | PDF 文件路径 | 必填 |
 | `api_key` | DeepSeek API Key | 必填 |
 | `glossary` | 术语表路径 | 无 |
+| `provider` | 服务名称，用于进度指纹 | `deepseek` |
+| `base_url` | OpenAI 兼容接口地址 | `https://api.deepseek.com` |
 | `model` | 模型名称 | `deepseek-v4-pro` |
 | `format` | 输出格式：`markdown` / `html` / `word` / `both` / `all` | `markdown` |
 | `workers` | 并发线程数（1-16） | 1 |
@@ -266,6 +273,16 @@ python rerender_output.py --progress output\book_cn.progress.json --pdf "book.pd
 ```
 
 这不会调用翻译 API。注意：如果旧 progress 里的译文本身已经因为旧提取顺序而错序，重排只能套新版样式，不能自动修正译文顺序；这种页需要用新版提取器重新提取并重翻。
+
+### 失败页与诊断
+
+翻译失败的页会写入 progress.json 的 `failed_pages`，不会当作完成页混入最终译文。Web 端可勾选「只重试失败页」，CLI 可使用：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --retry-failed
+```
+
+每次输出会同时生成 `_extraction_report.md`，用于检查每页版面、图片、表格和明显提取风险。
 
 ---
 

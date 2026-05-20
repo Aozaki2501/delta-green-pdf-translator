@@ -20,13 +20,17 @@ from core.utils import file_sha256
 
 
 def build_progress_metadata(pdf_path: str, glossary_path: Optional[str], model: str,
-                            start_page: int, end_page: int | None) -> dict:
+                            start_page: int, end_page: int | None,
+                            provider: str = "deepseek",
+                            base_url: str = "https://api.deepseek.com") -> dict:
     """Build a metadata fingerprint dict for a translation session."""
     return {
         "schema": 1,
         "pdf_sha256": file_sha256(pdf_path),
         "glossary_sha256": file_sha256(glossary_path) if glossary_path else "",
         "model": model,
+        "provider": provider,
+        "base_url": base_url,
         "prompt_version": PROMPT_VERSION,
         "extractor_version": EXTRACTOR_VERSION,
         "start_page": start_page,
@@ -61,6 +65,7 @@ class ProgressTracker:
         self.metadata_mismatches: list[str] = []
         self.ignored_existing_progress = False
         self.completed_pages = set()
+        self.failed_pages = {}
         self.translations = {}
         self.translation_cache = {}
         self._lock = threading.Lock()
@@ -81,6 +86,7 @@ class ProgressTracker:
                 if self.metadata_mismatches and not self.reuse_mismatched:
                     self.ignored_existing_progress = True
                     self.completed_pages = set()
+                    self.failed_pages = {}
                     self.translations = {}
                     self.translation_cache = {}
                     self.metadata = dict(self.expected_metadata)
@@ -97,9 +103,14 @@ class ProgressTracker:
                 self.translations = (
                     loaded_translations if isinstance(loaded_translations, dict) else {}
                 )
+                loaded_failed = data.get("failed_pages", {})
+                self.failed_pages = loaded_failed if isinstance(loaded_failed, dict) else {}
                 loaded_cache = data.get("translation_cache", {})
                 self.translation_cache = loaded_cache if isinstance(loaded_cache, dict) else {}
-                print(f"Loaded progress: {len(self.completed_pages)} pages done")
+                print(
+                    f"Loaded progress: {len(self.completed_pages)} pages done, "
+                    f"{len(self.failed_pages)} failed"
+                )
             except (json.JSONDecodeError, IOError, ValueError, TypeError):
                 print("Progress file corrupted, starting fresh")
 
@@ -110,6 +121,7 @@ class ProgressTracker:
                 "metadata": self.metadata,
                 "completed_pages": sorted(self.completed_pages),
                 "translations": self.translations,
+                "failed_pages": self.failed_pages,
                 "translation_cache": self.translation_cache,
             }
             progress_path = Path(self.progress_file)
@@ -137,7 +149,39 @@ class ProgressTracker:
         with self._lock:
             self.completed_pages.add(page_num)
             self.translations[str(page_num)] = translation
+            self.failed_pages.pop(str(page_num), None)
         self.save()
+
+    def mark_failed(self, page_num: int, message: str):
+        """Record a failed page without treating it as completed."""
+        with self._lock:
+            self.completed_pages.discard(page_num)
+            self.translations.pop(str(page_num), None)
+            self.failed_pages[str(page_num)] = str(message or "translation failed")
+        self.save()
+
+    def get_failed_pages(self) -> set[int]:
+        """Return failed page numbers as zero-based indexes."""
+        with self._lock:
+            return {
+                int(page_num)
+                for page_num in self.failed_pages
+                if str(page_num).isdigit()
+            }
+
+    def clear_failed_pages(self, page_nums=None) -> int:
+        """Clear failed-page markers. Returns count cleared."""
+        cleared = 0
+        page_filter = None if page_nums is None else {str(p) for p in page_nums}
+        with self._lock:
+            for page_num in list(self.failed_pages):
+                if page_filter is not None and page_num not in page_filter:
+                    continue
+                self.failed_pages.pop(page_num, None)
+                cleared += 1
+        if cleared:
+            self.save()
+        return cleared
 
     def clear_pages(self, page_nums) -> int:
         """Remove specified pages from completed state. Returns count cleared."""
@@ -150,6 +194,9 @@ class ProgressTracker:
                     page_cleared = True
                 if str(page_num) in self.translations:
                     self.translations.pop(str(page_num), None)
+                    page_cleared = True
+                if str(page_num) in self.failed_pages:
+                    self.failed_pages.pop(str(page_num), None)
                     page_cleared = True
                 if page_cleared:
                     cleared += 1

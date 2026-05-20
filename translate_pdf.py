@@ -43,6 +43,7 @@ from core import (
     # utils
     configure_console_output,
     ensure_output_parent,
+    output_base_in_own_dir,
     normalize_page_range,
     is_failed_translation,
     parse_page_selection,
@@ -51,6 +52,7 @@ from core import (
     PDFExtractor,
     ChapterDetector,
     HeadingInfo,
+    build_extraction_diagnostics_report,
     # translator
     Translator,
     TokenStats,
@@ -85,7 +87,9 @@ configure_console_output()
 
 def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                   model="deepseek-v4-pro", start_page=0, end_page=None,
-                  output_format="markdown", max_workers=1):
+                  output_format="markdown", max_workers=1,
+                  provider="deepseek", base_url="https://api.deepseek.com",
+                  retry_failed=False):
     print("=" * 60)
     print("  DG TRPG PDF Translator v2.0")
     print("=" * 60)
@@ -97,8 +101,18 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         raise FileNotFoundError(f"PDF 文件不存在：{pdf_path}")
     if glossary_path and not os.path.exists(glossary_path):
         raise FileNotFoundError(f"术语表文件不存在：{glossary_path}")
+    if not base_url or not str(base_url).strip():
+        raise ValueError("Base URL 不能为空")
+    if not provider or not str(provider).strip():
+        raise ValueError("服务名称不能为空")
     max_workers = max(1, min(16, int(max_workers or 1)))
-    ensure_output_parent(output_path)
+    output_base = output_path
+    for ext in (".md", ".pdf", ".docx", ".html"):
+        if output_base.endswith(ext):
+            output_base = output_base[:-len(ext)]
+            break
+    output_base = output_base_in_own_dir(output_base)
+    ensure_output_parent(output_base + ".tmp")
 
     stats = TokenStats()
 
@@ -121,16 +135,18 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             print(f"   Loaded {len(glossary)} terms")
             print()
 
-        print(f"Engine: DeepSeek V4 ({model})")
-        translator = Translator(api_key=api_key, model=model, stats=stats)
+        print(f"Engine: {provider} ({model})")
+        translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
         translator.set_glossary(glossary)
         print()
 
-        progress_file = output_path + ".progress.json"
+        progress_file = output_base + ".progress.json"
         progress_metadata = build_progress_metadata(
             pdf_path=pdf_path,
             glossary_path=glossary_path,
             model=model,
+            provider=provider,
+            base_url=base_url,
             start_page=start_page,
             end_page=end_page,
         )
@@ -141,15 +157,38 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 print(f"   - {mismatch}")
             if tracker.ignored_existing_progress:
                 print("   已保留文件但本次不复用旧译文。")
+        if retry_failed:
+            failed_retry_pages = {
+                p for p in tracker.get_failed_pages()
+                if start_page <= p < end_page
+            }
+            if failed_retry_pages:
+                print(
+                    "   只重试失败页: "
+                    + ", ".join(str(p + 1) for p in sorted(failed_retry_pages))
+                )
+                start_end_pages = sorted(failed_retry_pages)
+            else:
+                print("   没有可重试的失败页。")
+                start_end_pages = []
+        else:
+            start_end_pages = list(range(start_page, end_page))
         print()
 
         print("Extracting text and analyzing chapters...")
         pages_text = {}
         page_layouts = {}
+        page_diagnostics = []
+        image_assets = {}
+        asset_dir = str(Path(output_base).parent / "assets")
         for page_num in range(start_page, end_page):
             page_layouts[page_num] = extractor.detect_page_layout(page_num)
             text = extractor.extract_page(page_num)
             pages_text[page_num] = text
+            page_diagnostics.append(extractor.get_page_diagnostics(page_num, text))
+            images = extractor.export_page_images(page_num, asset_dir, Path(output_base).stem)
+            if images:
+                image_assets[page_num] = images
 
         extractor.finalize_chapters()
         toc = extractor.chapter_detector.get_toc_markdown()
@@ -157,6 +196,14 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             print(f"   Detected {len(extractor.chapter_detector.headings)} headings")
         else:
             print("   No clear chapter structure detected")
+        risky_pages = [item for item in page_diagnostics if item.get("risks")]
+        if risky_pages:
+            print(
+                "   Extraction warnings: "
+                + ", ".join(str(item["page"] + 1) for item in risky_pages[:20])
+            )
+        if image_assets:
+            print(f"   Extracted images: {sum(len(v) for v in image_assets.values())}")
         print()
 
         print("Translating...")
@@ -167,7 +214,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             print(f"   Concurrent mode: {max_workers} workers")
             pages_data = []
             prev_text = ""
-            for page_num in range(start_page, end_page):
+            for page_num in start_end_pages:
                 text = pages_text.get(page_num, "")
                 context = prev_text[-900:] if prev_text else ""
                 pages_data.append((page_num, text, context))
@@ -179,7 +226,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         else:
             translated_pages = []
             prev_translation_tail = ""
-            pages_to_process = list(range(start_page, end_page))
+            pages_to_process = list(start_end_pages)
             total_to_do = len(pages_to_process)
             done_count = 0
 
@@ -216,6 +263,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     print(f" done (Y{stats.cost_yuan:.3f})")
                 elif is_failed_translation(translation):
                     translated_pages.append((page_num, translation))
+                    tracker.mark_failed(page_num, translation)
                     print(" failed; not cached")
                 else:
                     print(f" empty result")
@@ -226,21 +274,27 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         print("-" * 40)
         print()
 
-        translated_pages_sorted = sorted(translated_pages, key=lambda x: x[0])
+        translated_pages_sorted = sorted(
+            [
+                (page_num, tracker.get_translation(page_num))
+                for page_num in range(start_page, end_page)
+                if tracker.get_translation(page_num).strip()
+            ],
+            key=lambda x: x[0],
+        )
         failed_pages = [
-            page_num + 1
-            for page_num, translation in translated_pages_sorted
-            if is_failed_translation(translation)
+            page_num + 1 for page_num in sorted(tracker.get_failed_pages())
+            if start_page <= page_num < end_page
         ]
         if failed_pages:
             print("⚠️  以下页翻译失败且未写入进度缓存: " + ", ".join(map(str, failed_pages[:20])))
 
-        # Determine output base name (without extension)
-        output_base = output_path
-        for ext in (".md", ".pdf", ".docx"):
-            if output_base.endswith(ext):
-                output_base = output_base[:-len(ext)]
-                break
+        diagnostics_output = output_base + "_extraction_report.md"
+        print(f"  生成提取诊断报告: {diagnostics_output}")
+        with open(diagnostics_output, "w", encoding="utf-8") as f:
+            f.write(build_extraction_diagnostics_report(page_diagnostics, Path(pdf_path).stem))
+            f.write("\n")
+        print("   ✓ 提取诊断输出完成")
 
         if glossary:
             report_output = output_base + "_glossary_report.md"
@@ -258,6 +312,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     html_output,
                     Path(pdf_path).stem,
                     page_layouts=page_layouts,
+                    image_assets=image_assets,
                 )
                 print("   ✅ HTML 输出完成")
             except Exception as e:
@@ -273,6 +328,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 Path(pdf_path).stem,
                 toc,
                 page_layouts=page_layouts,
+                image_assets=image_assets,
             )
             print("   ✅ Markdown 输出完成")
 
@@ -290,6 +346,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                         Path(pdf_path).stem,
                         source_pages_text=pages_text,
                         page_layouts=page_layouts,
+                        image_assets=image_assets,
                     )
                     print("   ✓ Word 输出完成")
 
@@ -305,7 +362,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         print(stats.summary())
         print()
         print(f"Progress file: {progress_file}")
-        print(f"Output: {output_path}")
+        print(f"Output folder: {Path(output_base).parent}")
 
     finally:
         extractor.close()
@@ -360,12 +417,15 @@ def main():
     parser.add_argument("--output", "-o", default=None, help="输出文件路径（不含扩展名）")
     parser.add_argument("--glossary", "-g", default=None, help="术语表文件路径（TSV 格式）")
     parser.add_argument("--model", default=None, help="模型名称（默认: deepseek-v4-pro）")
+    parser.add_argument("--provider", default=None, help="服务名称，只用于记录进度指纹（默认: deepseek）")
+    parser.add_argument("--base-url", default=None, help="OpenAI 兼容接口 Base URL")
     parser.add_argument("--format", "-f", choices=["markdown", "html", "word", "both", "all"],
                         default=None, help="输出格式: markdown/html/word/both/all（默认: markdown）")
     parser.add_argument("--workers", "-w", type=int, default=None,
                         help="并发线程数（默认: 1，推荐: 4）")
     parser.add_argument("--start", type=int, default=None, help="起始页码（从0开始）")
     parser.add_argument("--end", type=int, default=None, help="结束页码（不含）")
+    parser.add_argument("--retry-failed", action="store_true", help="只重试 progress.json 里记录的失败页")
 
     args = parser.parse_args()
 
@@ -380,6 +440,8 @@ def main():
     output_path = args.output or config.get("output")
     glossary_path = args.glossary or config.get("glossary")
     model = args.model or config.get("model", "deepseek-v4-pro")
+    provider = args.provider or config.get("provider", "deepseek")
+    base_url = args.base_url or config.get("base_url", "https://api.deepseek.com")
     output_format = args.format or config.get("format", "markdown")
     workers = args.workers if args.workers is not None else config.get("workers", 1)
     start_page = args.start if args.start is not None else config.get("start", 0)
@@ -400,7 +462,7 @@ def main():
     # Default output path
     if output_path is None:
         pdf_stem = Path(pdf_path).stem
-        output_path = f"{pdf_stem}_cn.md"
+        output_path = str(Path("output") / f"{pdf_stem}_cn.md")
 
     # Validate
     if not os.path.exists(pdf_path):
@@ -431,10 +493,13 @@ def main():
         api_key=api_key,
         glossary_path=glossary_path,
         model=model,
+        provider=provider,
+        base_url=base_url,
         start_page=start_page,
         end_page=end_page,
         output_format=output_format,
         max_workers=workers,
+        retry_failed=bool(args.retry_failed or config.get("retry_failed", False)),
     )
 
 

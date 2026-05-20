@@ -75,6 +75,29 @@ class TestSaveLoadRoundTrip:
 
         assert data["completed_pages"] == [2, 5, 10]
 
+    def test_failed_pages_are_saved_separately(self, tmp_path):
+        progress_file = str(tmp_path / "failed.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.mark_failed(4, "API timeout")
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.get_failed_pages() == {4}
+        assert tracker2.is_completed(4) is False
+        assert tracker2.get_translation(4) == ""
+
+    def test_completed_page_clears_failed_marker(self, tmp_path):
+        progress_file = str(tmp_path / "failed_then_done.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.mark_failed(2, "failed")
+        tracker.mark_completed(2, "done")
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.get_failed_pages() == set()
+        assert tracker2.is_completed(2) is True
+        assert tracker2.get_translation(2) == "done"
+
 
 class TestMetadataMismatch:
     """Test metadata mismatch detection and discard behavior."""

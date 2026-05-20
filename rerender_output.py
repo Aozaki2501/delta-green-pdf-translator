@@ -12,7 +12,7 @@ from pathlib import Path
 
 from core.constants import SUPPORTED_OUTPUT_FORMATS
 from core.extractor import PDFExtractor
-from core.utils import ensure_output_parent
+from core.utils import ensure_output_parent, output_base_in_own_dir
 from exporters.html import write_html_output
 from exporters.markdown import write_markdown_output
 from exporters.word import HAS_DOCX, write_word_output
@@ -42,27 +42,34 @@ def load_progress_translations(progress_path: str) -> list[tuple[int, str]]:
 
 def infer_output_base(progress_path: str, output_base: str | None) -> str:
     if output_base:
-        return output_base
+        return output_base_in_own_dir(output_base)
     progress = Path(progress_path)
     name = progress.name
     if name.endswith(".progress.json"):
-        return str(progress.with_name(name[:-len(".progress.json")]))
-    return str(progress.with_suffix(""))
+        return output_base_in_own_dir(str(progress.with_name(name[:-len(".progress.json")])))
+    return output_base_in_own_dir(str(progress.with_suffix("")))
 
 
-def detect_pdf_page_context(pdf_path: str | None, translated_pages: list[tuple[int, str]]) -> tuple[dict[int, str], dict[int, str]]:
+def detect_pdf_page_context(pdf_path: str | None, translated_pages: list[tuple[int, str]],
+                            asset_dir: str | None = None,
+                            asset_stem: str = "assets") -> tuple[dict[int, str], dict[int, str], dict[int, list[str]]]:
     if not pdf_path:
-        return {}, {}
+        return {}, {}, {}
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF 文件不存在：{pdf_path}")
     layouts = {}
     pages_text = {}
+    image_assets = {}
     with PDFExtractor(pdf_path) as extractor:
         for page_num, _ in translated_pages:
             if 0 <= page_num < extractor.total_pages:
                 layouts[page_num] = extractor.detect_page_layout(page_num)
                 pages_text[page_num] = extractor.extract_page(page_num)
-    return layouts, pages_text
+                if asset_dir:
+                    images = extractor.export_page_images(page_num, asset_dir, asset_stem)
+                    if images:
+                        image_assets[page_num] = images
+    return layouts, pages_text, image_assets
 
 
 def rerender_outputs(progress_path: str, output_base: str | None = None,
@@ -79,7 +86,12 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
     base = infer_output_base(progress_path, output_base)
     ensure_output_parent(base + ".tmp")
     doc_title = title or Path(base).stem
-    page_layouts, pages_text = detect_pdf_page_context(pdf_path, translated_pages)
+    page_layouts, pages_text, image_assets = detect_pdf_page_context(
+        pdf_path,
+        translated_pages,
+        asset_dir=str(Path(base).parent / "assets") if pdf_path else None,
+        asset_stem=Path(base).stem,
+    )
 
     written = []
     if output_format in ("html", "both", "all"):
@@ -92,6 +104,7 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
             max_chars=html_max_chars,
             columns=columns,
             page_layouts=page_layouts,
+            image_assets=image_assets,
         )
         written.append(html_path)
 
@@ -103,6 +116,8 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
             doc_title,
             min_chars=markdown_min_chars,
             max_chars=markdown_max_chars,
+            page_layouts=page_layouts,
+            image_assets=image_assets,
         )
         written.append(md_path)
 
@@ -119,6 +134,8 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
             columns=columns,
             hard_page_breaks=word_hard_page_breaks,
             source_pages_text=pages_text,
+            page_layouts=page_layouts,
+            image_assets=image_assets,
         )
         written.append(docx_path)
 

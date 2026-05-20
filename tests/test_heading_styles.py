@@ -1,4 +1,4 @@
-from core.extractor import PDFExtractor
+from core.extractor import PDFExtractor, build_extraction_diagnostics_report
 from exporters.html import _html_block
 
 
@@ -142,6 +142,22 @@ def test_image_region_uses_image_marker():
     assert sections == ["[IMAGE]\nIllustration placeholder\n[/IMAGE]"]
 
 
+def test_extraction_diagnostics_report_lists_risks():
+    report = build_extraction_diagnostics_report([
+        {
+            "page": 0,
+            "layout": "columns",
+            "notes": ["layout: columns"],
+            "text_length": 0,
+            "image_count": 0,
+            "risks": ["未提取到正文"],
+        }
+    ], "book")
+
+    assert "提取诊断报告" in report
+    assert "未提取到正文" in report
+
+
 def test_disinformation_in_body_sentence_is_not_card_label():
     extractor = PDFExtractor.__new__(PDFExtractor)
 
@@ -262,3 +278,72 @@ def test_adjacent_same_level_heading_lines_are_merged():
     text = extractor._merge_adjacent_heading_paragraphs("# Haley Production Company\n\n# and Arthur Tallent")
 
     assert text == "# Haley Production Company and Arthur Tallent"
+
+
+def _mono_line(cells, xs, y):
+    spans = []
+    x1 = xs[0]
+    for text, x in zip(cells, xs):
+        width = max(len(text) * 5, 12)
+        spans.append({
+            "text": text,
+            "size": 10,
+            "flags": 0,
+            "color": 0,
+            "font": "Courier",
+            "bbox": (x, y, x + width, y + 12),
+        })
+        x1 = max(x1, x + width)
+    return {
+        "bbox": (xs[0], y, x1, y + 12),
+        "spans": spans,
+    }
+
+
+def _mono_table_block():
+    return {
+        "bbox": (40, 80, 560, 140),
+        "type": 0,
+        "lines": [
+            _mono_line(["Name", "Position", "Background"], [40, 190, 330], 80),
+            _mono_line(["Keith Bass", "Editor", "Scruffy socialist"], [40, 190, 330], 98),
+        ],
+    }
+
+
+def test_non_body_font_table_is_not_grouped_as_card():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    body = _block("Body text.", 40, 180, 260, 240, font="Sabon")
+    body["lines"] = [
+        _line("Body text line one.", 10, 180, font="Sabon"),
+        _line("Body text line two.", 10, 194, font="Sabon"),
+        _line("Body text line three.", 10, 208, font="Sabon"),
+    ]
+    table = _mono_table_block()
+
+    body_blocks, card_groups, _ = extractor._split_card_blocks(
+        _FakePage(),
+        [table, body],
+        page_width=612,
+        page_height=792,
+    )
+
+    assert table in body_blocks
+    assert card_groups == []
+
+
+def test_markdown_table_does_not_merge_with_following_body():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    table = _mono_table_block()
+    body = _block("meet them alone, especially if there is more than one Agent.", 40, 160, 300, 190)
+
+    text = extractor._blocks_to_extracted_text(
+        [table, body],
+        page_width=612,
+        page_height=792,
+        layout_aware=False,
+    )
+
+    assert "| Keith Bass | Editor | Scruffy socialist |" in text
+    assert "| Keith Bass | Editor | Scruffy socialist | meet them alone" not in text
+    assert "\n\nmeet them alone" in text

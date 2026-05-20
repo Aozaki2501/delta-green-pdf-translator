@@ -237,6 +237,8 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
         translation = translator.translate_chunk(text, page_num, prev_ctx, cache=tracker)
         if translation and not _is_failed_translation(translation):
             tracker.mark_completed(page_num, translation)
+        elif _is_failed_translation(translation):
+            tracker.mark_failed(page_num, translation)
         return page_num, translation
 
     group_size = max_workers
@@ -265,6 +267,7 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
                     page_num, translation = future.result()
                 except Exception as exc:
                     translation = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+                    tracker.mark_failed(page_num, translation)
                     print(f" p{page_num + 1} failed: {exc}", end="", flush=True)
                 results[page_num] = translation or ""
                 report(page_num, translation)

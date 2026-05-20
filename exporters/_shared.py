@@ -21,6 +21,17 @@ SINGLE_COLUMN_LAYOUTS = {
     "art",
 }
 
+MARKER_ALIASES = {
+    "[卡片]": "[CARD]",
+    "[/卡片]": "[/CARD]",
+    "[属性块]": "[STAT_BLOCK]",
+    "[/属性块]": "[/STAT_BLOCK]",
+    "[图片]": "[IMAGE]",
+    "[/图片]": "[/IMAGE]",
+    "[整页标题]": "[FULL_WIDTH_TITLE]",
+    "[/整页标题]": "[/FULL_WIDTH_TITLE]",
+}
+
 
 # ---------------------------------------------------------------------------
 # Block splitting and cleaning
@@ -41,6 +52,11 @@ def _normalize_heading_markup(line: str) -> str:
     title = re.sub(r"\*(.+?)\*", r"\1", title)
     title = re.sub(r"\s+", " ", title).strip()
     return f"{prefix} {title}" if title else stripped
+
+
+def _normalize_marker_line(line: str) -> str:
+    stripped = line.strip()
+    return MARKER_ALIASES.get(stripped, stripped)
 
 def _split_translation_chunks(text: str) -> list[str]:
     chunks = []
@@ -90,7 +106,8 @@ def _split_translation_chunks(text: str) -> list[str]:
         full_title_lines = []
 
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        line = _normalize_marker_line(raw_line)
+        raw_line = line if line != raw_line.strip() else raw_line
         if line == "[FULL_WIDTH_TITLE]":
             flush_normal()
             flush_card()
@@ -161,7 +178,7 @@ def _split_translation_chunks(text: str) -> list[str]:
 
 def _translation_blocks(translated_pages):
     blocks = []
-    for page_num, translation in translated_pages:
+    for page_num, translation in _stitch_translated_page_continuations(translated_pages):
         if not translation.strip():
             continue
         for chunk in _split_translation_chunks(translation):
@@ -172,16 +189,141 @@ def _translation_blocks(translated_pages):
     return blocks
 
 
+def _text_ends_sentence(text: str) -> bool:
+    return bool(re.search(r"[。！？!?；;：:」』”）)\]]\s*$", text.strip()))
+
+
+def _trailing_incomplete_fragment(text: str) -> Optional[str]:
+    stripped = text.rstrip()
+    if not stripped:
+        return None
+    parts = [part.strip() for part in re.split(r"\n\s*\n", stripped) if part.strip()]
+    if not parts:
+        return None
+    tail = parts[-1]
+    normalized_tail = _normalize_marker_line(tail)
+    sentence_marks = list(re.finditer(r"[。！？!?；;：:」』”）)\]]", normalized_tail))
+    if sentence_marks and sentence_marks[-1].end() < len(normalized_tail):
+        tail = tail[sentence_marks[-1].end():].strip()
+        normalized_tail = _normalize_marker_line(tail)
+    visible = re.sub(r"\s+", "", normalized_tail)
+    if not re.search(r"[\u4e00-\u9fff]", normalized_tail):
+        return None
+    if _text_ends_sentence(normalized_tail):
+        return None
+    if _is_structural_line(normalized_tail):
+        return None
+    if not (2 <= len(visible) <= 24):
+        return None
+    return tail
+
+
+def _remove_trailing_fragment(text: str, fragment: str) -> str:
+    pattern = re.escape(fragment) + r"\s*$"
+    return re.sub(pattern, "", text.rstrip()).rstrip()
+
+
+def _is_structural_chunk(text: str) -> bool:
+    stripped = _normalize_marker_line(text.strip())
+    return (
+        stripped.startswith(("[CARD]", "[STAT_BLOCK]", "[IMAGE]", "[FULL_WIDTH_TITLE]", "[[TOC]]", "|"))
+        or _is_markdown_heading(stripped)
+    )
+
+
+def _merge_page_sentence_fragment(left: str, right: str) -> str:
+    left = left.strip()
+    right = right.lstrip()
+    for pronoun in ("他们", "她们", "它们", "他", "她", "它"):
+        if left.endswith(("并不", "并未", "并没有")) and right.startswith(pronoun + "不"):
+            return left + right[len(pronoun) + 1:]
+        if left.endswith(("并不", "并未", "并没有")) and right.startswith(pronoun):
+            return left + right[len(pronoun):]
+    return _join_wrapped_text(left, right)
+
+
+def _prepend_fragment_to_chunk(fragment: str, chunk: str) -> str:
+    parts = re.split(r"\n\s*\n", chunk.strip(), maxsplit=1)
+    first = _merge_page_sentence_fragment(fragment, parts[0])
+    if len(parts) == 1:
+        return first
+    return first + "\n\n" + parts[1].strip()
+
+
+def _apply_pending_continuation(fragment: str, text: str) -> str:
+    chunks = _split_translation_chunks(text)
+    if not chunks:
+        return fragment + "\n\n" + text
+    target_idx = next(
+        (idx for idx, chunk in enumerate(chunks) if not _is_structural_chunk(chunk)),
+        None,
+    )
+    if target_idx is None:
+        return fragment + "\n\n" + text
+    chunks[target_idx] = _prepend_fragment_to_chunk(fragment, chunks[target_idx])
+    if target_idx > 0:
+        target = chunks.pop(target_idx)
+        chunks.insert(0, target)
+    return "\n\n".join(chunk.strip() for chunk in chunks if chunk.strip())
+
+
+def _stitch_translated_page_continuations(translated_pages):
+    stitched = []
+    pending = None
+    for page_num, translation in translated_pages:
+        text = str(translation)
+        if pending:
+            text = _apply_pending_continuation(pending, text)
+            pending = None
+        tail = _trailing_incomplete_fragment(text)
+        if tail:
+            text = _remove_trailing_fragment(text, tail)
+            pending = tail
+        stitched.append((page_num, text))
+    if pending and stitched:
+        last_page, last_text = stitched[-1]
+        stitched[-1] = (last_page, (last_text.rstrip() + "\n\n" + pending).strip())
+    return stitched
+
+
+def _card_content_looks_like_list(lines: list[str]) -> bool:
+    content = [line for line in lines if line.strip()]
+    if len(content) >= 3 and content[0].lstrip().startswith(">>"):
+        return True
+    if len(content) < 5:
+        return False
+    short_lines = [
+        line for line in content
+        if len(re.sub(r"\s+", "", line)) <= 24 and not _text_ends_sentence(line)
+    ]
+    return len(short_lines) >= len(content) * 0.65
+
+
 def _clean_translated_block(text: str) -> str:
     lines = []
     for raw_line in text.split("\n"):
-        line = raw_line.strip()
+        line = _normalize_marker_line(raw_line)
         if not line:
             continue
         line = _clean_decorative_slash_line(line)
         lines.append(line)
 
     if lines and lines[0] in ("[STAT_BLOCK]", "[IMAGE]", "[FULL_WIDTH_TITLE]"):
+        return "\n".join(lines).strip()
+
+    if lines and lines[0] == "[CARD]":
+        end_marker = "[/CARD]" if lines[-1] == "[/CARD]" else ""
+        content = lines[1:-1] if end_marker else lines[1:]
+        if content:
+            if _card_content_looks_like_list(content):
+                merged_content = content
+            else:
+                merged_content = [content[0]]
+                merged_content.extend(_merge_soft_wrapped_lines(content[1:]))
+            result = ["[CARD]"] + merged_content
+            if end_marker:
+                result.append(end_marker)
+            return "\n".join(result).strip()
         return "\n".join(lines).strip()
 
     lines = _merge_soft_wrapped_lines(lines)
@@ -191,7 +333,7 @@ def _clean_translated_block(text: str) -> str:
 
 
 def _is_structural_line(line: str) -> bool:
-    stripped = line.strip()
+    stripped = _normalize_marker_line(line)
     if not stripped:
         return True
     if stripped in (
@@ -300,6 +442,7 @@ def _is_full_width_title_block(text: str) -> bool:
 def _is_plain_heading_line(text: str) -> bool:
     clean = re.sub(r"\*\*(.+?)\*\*", r"\1", text.strip())
     clean = re.sub(r"\*(.+?)\*", r"\1", clean)
+    clean = _normalize_marker_line(clean)
     if clean in (
         "[CARD]", "[/CARD]",
         "[STAT_BLOCK]", "[/STAT_BLOCK]",
@@ -310,7 +453,9 @@ def _is_plain_heading_line(text: str) -> bool:
     if clean.startswith(("#", "-", "\u2022", "//", "——", "“", "\"")):
         return False
     visible = re.sub(r"\s+", "", clean)
-    if not (2 <= len(visible) <= 18):
+    if not (4 <= len(visible) <= 18):
+        return False
+    if re.search(r"[\u4e00-\u9fff]", clean):
         return False
     if re.search(r"[。！？!?；;：:，,、（）()《》\"“”]", clean):
         return False
