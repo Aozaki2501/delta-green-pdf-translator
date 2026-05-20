@@ -169,7 +169,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             prev_text = ""
             for page_num in range(start_page, end_page):
                 text = pages_text.get(page_num, "")
-                context = prev_text[-300:] if prev_text else ""
+                context = prev_text[-900:] if prev_text else ""
                 pages_data.append((page_num, text, context))
                 context_text = extractor.get_context_text(page_num)
                 if context_text.strip():
@@ -202,7 +202,12 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     continue
 
                 print(f"  [{progress_pct:.0f}%] Page {page_num + 1}/{total}", end="", flush=True)
-                translation = translator.translate_chunk(text, page_num, prev_context=prev_translation_tail)
+                translation = translator.translate_chunk(
+                    text,
+                    page_num,
+                    prev_context=prev_translation_tail,
+                    cache=tracker,
+                )
 
                 if translation and not is_failed_translation(translation):
                     translated_pages.append((page_num, translation))
@@ -262,7 +267,13 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         if output_format in ("markdown", "both", "all"):
             md_output = output_base + ".md"
             print(f"  生成 Markdown: {md_output}")
-            write_markdown_output(translated_pages_sorted, md_output, Path(pdf_path).stem, toc)
+            write_markdown_output(
+                translated_pages_sorted,
+                md_output,
+                Path(pdf_path).stem,
+                toc,
+                page_layouts=page_layouts,
+            )
             print("   ✅ Markdown 输出完成")
 
         # Word output
@@ -278,6 +289,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                         docx_output,
                         Path(pdf_path).stem,
                         source_pages_text=pages_text,
+                        page_layouts=page_layouts,
                     )
                     print("   ✓ Word 输出完成")
 

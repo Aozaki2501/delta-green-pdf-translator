@@ -62,6 +62,7 @@ class ProgressTracker:
         self.ignored_existing_progress = False
         self.completed_pages = set()
         self.translations = {}
+        self.translation_cache = {}
         self._lock = threading.Lock()
         self._load()
 
@@ -81,6 +82,7 @@ class ProgressTracker:
                     self.ignored_existing_progress = True
                     self.completed_pages = set()
                     self.translations = {}
+                    self.translation_cache = {}
                     self.metadata = dict(self.expected_metadata)
                     print("Progress metadata mismatch, ignoring cached translations")
                     return
@@ -95,6 +97,8 @@ class ProgressTracker:
                 self.translations = (
                     loaded_translations if isinstance(loaded_translations, dict) else {}
                 )
+                loaded_cache = data.get("translation_cache", {})
+                self.translation_cache = loaded_cache if isinstance(loaded_cache, dict) else {}
                 print(f"Loaded progress: {len(self.completed_pages)} pages done")
             except (json.JSONDecodeError, IOError, ValueError, TypeError):
                 print("Progress file corrupted, starting fresh")
@@ -106,6 +110,7 @@ class ProgressTracker:
                 "metadata": self.metadata,
                 "completed_pages": sorted(self.completed_pages),
                 "translations": self.translations,
+                "translation_cache": self.translation_cache,
             }
             progress_path = Path(self.progress_file)
             progress_path.parent.mkdir(parents=True, exist_ok=True)
@@ -155,3 +160,18 @@ class ProgressTracker:
     def get_translation(self, page_num: int) -> str:
         """Retrieve the cached translation for a page, or empty string."""
         return self.translations.get(str(page_num), "")
+
+    def get_cached_prompt_translation(self, cache_key: str) -> str:
+        """Retrieve a cached translation for an exact prompt key."""
+        if not cache_key:
+            return ""
+        with self._lock:
+            return self.translation_cache.get(cache_key, "")
+
+    def mark_cached_prompt_translation(self, cache_key: str, translation: str):
+        """Persist a translation for an exact prompt key."""
+        if not cache_key or not translation:
+            return
+        with self._lock:
+            self.translation_cache[cache_key] = translation
+        self.save()

@@ -6,6 +6,6 @@ from other project modules.
 """
 
 PROMPT_VERSION = "2026-05-16-preserve-heading-levels-v6"
-EXTRACTOR_VERSION = "2026-05-16-image-top-column-order-v5"
+EXTRACTOR_VERSION = "2026-05-18-kult-layout-adapters-v6"
 SUPPORTED_OUTPUT_FORMATS = {"markdown", "html", "word", "both", "all"}
 TRANSLATION_FAILURE_PREFIX = "[Translation failed:"

@@ -405,8 +405,9 @@ class PDFExtractor:
         if not self._is_monospace_block(block):
             return False
         text = self._extract_block_text(block)
+        leader_hits = re.findall(r"\.{4,}\s*\d{1,3}", text)
         return bool(re.search(r"\bContents\b", text, re.IGNORECASE)) or (
-            text.count(".") >= 20 and bool(re.search(r"\.{4,}\s*\d{1,3}", text))
+            text.count(".") >= 20 and len(leader_hits) >= 3
         )
 
     def _is_handout_block(self, block):
@@ -802,6 +803,8 @@ class PDFExtractor:
             return 3
         if ratio >= 1.22 and (bold or is_all_caps):
             return 4
+        if is_all_caps and ratio >= 1.08:
+            return 4
         return None
 
     def _format_heading_line(self, text: str, level: int) -> str:
@@ -947,19 +950,91 @@ class PDFExtractor:
             if b.get("type") == 0 and not self._is_header_footer(b, page_height)
         ]
         if not content_blocks:
+            if len(page.get_drawings()) >= 8 or len(page.get_images(full=True)) >= 4:
+                return "art"
             return "columns"
 
-        if any(self._is_contents_block(block) for block in content_blocks):
+        top_blocks = sorted(content_blocks, key=lambda block: (block["bbox"][1], block["bbox"][0]))
+        top_text = self._extract_block_text(top_blocks[0]) if top_blocks else ""
+        contents_blocks = [block for block in content_blocks if self._is_contents_block(block)]
+        if contents_blocks and re.match(r"\s*Contents\b", top_text, re.IGNORECASE):
             return "toc"
 
         handout_blocks = [
             block for block in content_blocks
             if self._is_handout_block(block)
         ]
-        top_blocks = sorted(content_blocks, key=lambda block: (block["bbox"][1], block["bbox"][0]))
-        top_text = self._extract_block_text(top_blocks[0]) if top_blocks else ""
         if len(handout_blocks) >= 3 or re.match(r"\s*Player Aid\b", top_text, re.IGNORECASE):
             return "handout"
+
+        text_lengths = []
+        for block in content_blocks:
+            text = self._extract_block_text(block).strip()
+            if text:
+                text_lengths.append(len(text))
+        page_text_len = sum(text_lengths)
+        single_line_blocks = sum(1 for b in content_blocks if self._block_line_count(b) == 1)
+        short_blocks = sum(1 for n in text_lengths if n <= 60)
+        drawing_count = len(page.get_drawings())
+        image_count = len(page.get_images(full=True))
+        short_block_ratio = short_blocks / max(len(text_lengths), 1)
+        single_line_ratio = single_line_blocks / max(len(content_blocks), 1)
+        left_count = 0
+        right_count = 0
+        full_width_height = 0
+        total_height = 0
+
+        for block in content_blocks:
+            x0, y0, x1, y1 = block["bbox"]
+            width = x1 - x0
+            height = max(0, y1 - y0)
+            center = (x0 + x1) / 2
+            total_height += height
+
+            spans_most_page = (
+                width >= page_width * 0.72
+                and x0 <= page_width * 0.20
+                and x1 >= page_width * 0.80
+            )
+            if spans_most_page:
+                full_width_height += height
+                continue
+
+            if width <= page_width * 0.62:
+                if center < page_width / 2:
+                    left_count += 1
+                else:
+                    right_count += 1
+
+        has_two_column_signal = left_count >= 1 and right_count >= 1
+        full_width_ratio = full_width_height / max(total_height, 1)
+        if page_text_len <= 500 and (image_count >= 4 or drawing_count >= 8 or len(content_blocks) <= 4):
+            return "art"
+        if (
+            page_text_len >= 700
+            and page_text_len <= 2600
+            and single_line_ratio >= 0.50
+            and short_block_ratio >= 0.85
+            and drawing_count <= 10
+        ):
+            return "credits"
+        if (
+            page_text_len >= 900
+            and page_text_len <= 2400
+            and len(content_blocks) <= 28
+            and drawing_count >= 12
+            and image_count >= 4
+        ):
+            return "document"
+        if (
+            page_text_len >= 1200
+            and drawing_count >= 8
+            and single_line_ratio >= 0.45
+            and short_block_ratio >= 0.35
+        ):
+            return "character"
+        if has_two_column_signal and full_width_ratio < 0.45:
+            return "columns"
 
         # 检测整页都是非正文字体的情况（如整页卡片/情报页）
         # 如果页面没有任何衬线体正文块，说明整页都是特殊排版，用单栏
@@ -993,35 +1068,6 @@ class PDFExtractor:
         if not has_serif and has_body_text_blocks and len(content_blocks) >= 3:
             return "single"
 
-        left_count = 0
-        right_count = 0
-        full_width_height = 0
-        total_height = 0
-
-        for block in content_blocks:
-            x0, y0, x1, y1 = block["bbox"]
-            width = x1 - x0
-            height = max(0, y1 - y0)
-            center = (x0 + x1) / 2
-            total_height += height
-
-            spans_most_page = (
-                width >= page_width * 0.72
-                and x0 <= page_width * 0.20
-                and x1 >= page_width * 0.80
-            )
-            if spans_most_page:
-                full_width_height += height
-                continue
-
-            if width <= page_width * 0.62:
-                if center < page_width / 2:
-                    left_count += 1
-                else:
-                    right_count += 1
-
-        has_two_column_signal = left_count >= 1 and right_count >= 1
-        full_width_ratio = full_width_height / max(total_height, 1)
         if full_width_ratio >= 0.45:
             return "single"
         if has_two_column_signal:
@@ -1047,6 +1093,14 @@ class PDFExtractor:
             notes.append(f"{table_count} table-like block(s)")
         if handout_count:
             notes.append(f"{handout_count} handout block(s)")
+        if layout == "character":
+            notes.append("character/reference page detected")
+        elif layout == "document":
+            notes.append("single-page embedded document detected")
+        elif layout == "credits":
+            notes.append("short-line credits/list page detected")
+        elif layout == "art":
+            notes.append("art-divider page detected")
         return notes
 
     def _context_from_extracted_text(self, text: str, layout: str) -> str:

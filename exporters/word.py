@@ -15,6 +15,8 @@ from exporters._shared import (
     _is_plain_heading_line,
     _looks_like_stat_block,
     paginate_translated_blocks,
+    _layout_uses_columns,
+    _normalize_heading_markup,
 )
 from core.utils import ensure_output_parent
 
@@ -111,6 +113,10 @@ def set_section_page_layout(section, columns=1):
     section.footer_distance = Inches(0.25)
 
     set_section_columns(section, num=columns, space_twips=520)
+
+
+def _columns_for_layout(layout: str, default_columns: int) -> int:
+    return int(default_columns) if _layout_uses_columns(layout) else 1
 
 
 def _add_word_field(paragraph, instruction: str):
@@ -410,11 +416,21 @@ def _split_card_segments(text: str):
     return segments
 
 
-def _write_word_block(doc, text: str):
+def _write_word_block(doc, text: str, layout: str = "columns"):
+    plain_indent = layout == "columns"
+    centered = layout in {"credits", "art"}
+
+    def tune_paragraph(paragraph):
+        if not plain_indent:
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+        if centered:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
     for line in text.split("\n"):
         line = line.strip()
         if not line or line == "---" or line.startswith("<!--"):
             continue
+        line = _normalize_heading_markup(line)
 
         clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
         clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
@@ -422,15 +438,19 @@ def _write_word_block(doc, text: str):
         if clean_line.startswith("#### "):
             p = doc.add_heading(clean_line[5:], level=4)
             p.paragraph_format.first_line_indent = Pt(0)
+            tune_paragraph(p)
         elif clean_line.startswith("### "):
             p = doc.add_heading(clean_line[4:], level=3)
             p.paragraph_format.first_line_indent = Pt(0)
+            tune_paragraph(p)
         elif clean_line.startswith("## "):
             p = doc.add_heading(clean_line[3:], level=2)
             p.paragraph_format.first_line_indent = Pt(0)
+            tune_paragraph(p)
         elif clean_line.startswith("# "):
             p = doc.add_heading(clean_line[2:], level=1)
             p.paragraph_format.first_line_indent = Pt(0)
+            tune_paragraph(p)
         elif clean_line.startswith(">"):
             card_text = clean_line.lstrip(">").strip()
             if not card_text:
@@ -443,14 +463,18 @@ def _write_word_block(doc, text: str):
             shading = OxmlElement("w:shd")
             shading.set(qn("w:fill"), "F4E17D")
             p_pr.append(shading)
+            tune_paragraph(p)
         elif _is_plain_heading_line(clean_line):
             p = doc.add_heading(clean_line, level=2)
             p.paragraph_format.first_line_indent = Pt(0)
+            tune_paragraph(p)
         elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
             p = doc.add_paragraph(clean_line[2:], style="List Bullet")
             p.paragraph_format.first_line_indent = Pt(-8)
+            tune_paragraph(p)
         else:
-            doc.add_paragraph(clean_line)
+            p = doc.add_paragraph(clean_line)
+            tune_paragraph(p)
 
 
 def _write_word_table(doc, text: str):
@@ -629,7 +653,8 @@ def _with_missing_image_placeholders(translated_pages, source_pages_text=None):
 def write_word_output(translated_pages, docx_output: str, title: str, subtitle: str = "中文翻译",
                       min_chars=1000, max_chars=1500, body_font_size=12.0,
                       line_spacing=1.5, columns=2, header_left="绿色三角洲",
-                      header_right=None, hard_page_breaks=False, source_pages_text=None):
+                      header_right=None, hard_page_breaks=False,
+                      source_pages_text=None, page_layouts=None):
     """Write translated Markdown-like page content to a Word document."""
     if not HAS_DOCX:
         raise RuntimeError("Word output requires python-docx")
@@ -668,11 +693,26 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
     set_section_page_layout(body_section, columns=columns)
     set_running_header_footer(doc, title, header_left=header_left, header_right=header_right)
 
-    reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
+    reading_pages = paginate_translated_blocks(
+        translated_pages,
+        min_chars,
+        max_chars,
+        page_layouts=page_layouts,
+        split_on_layout=True,
+    )
+    current_page_columns = columns
     for page_idx, page in enumerate(reading_pages):
         blocks = page["blocks"]
+        layout = page.get("layout", "columns")
+        page_columns = _columns_for_layout(layout, columns)
         if hard_page_breaks and page_idx > 0:
             doc.add_page_break()
+        if page_idx == 0:
+            set_section_page_layout(body_section, columns=page_columns)
+        elif page_columns != current_page_columns:
+            body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+            set_section_page_layout(body_section, columns=page_columns)
+        current_page_columns = page_columns
         for block in blocks:
             for kind, content in _split_card_segments(block["text"]):
                 if kind == "card":
@@ -680,33 +720,33 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                     set_section_page_layout(card_section, columns=1)
                     _write_word_card(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=columns)
+                    set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "stat":
                     stat_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(stat_section, columns=1)
                     _write_word_stat_block(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=columns)
+                    set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "image":
                     image_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(image_section, columns=1)
                     _write_word_image_placeholder(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=columns)
+                    set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "full_title":
                     doc.add_page_break()
                     title_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(title_section, columns=1)
                     _write_word_full_title(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=columns)
+                    set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "table":
                     table_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(table_section, columns=1)
                     _write_word_table(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=columns)
+                    set_section_page_layout(body_section, columns=page_columns)
                 else:
-                    _write_word_block(doc, content)
+                    _write_word_block(doc, content, layout=layout)
 
     doc.save(docx_output)

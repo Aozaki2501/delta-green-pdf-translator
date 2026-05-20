@@ -13,6 +13,7 @@ from exporters._shared import (
     _format_page_ranges,
     _is_plain_heading_line,
     _looks_like_stat_block,
+    _normalize_heading_markup,
 )
 
 
@@ -27,6 +28,7 @@ def _format_markdown_block(text: str) -> str:
     stat_is_real = True
     in_image = False
     for line in text.split("\n"):
+        line = _normalize_heading_markup(line)
         stripped = line.strip()
         if stripped == "[FULL_WIDTH_TITLE]":
             in_full_title = True
@@ -64,9 +66,15 @@ def _format_markdown_block(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def write_markdown_output(translated_pages, md_output: str, title: str, toc: str = "",
-                          min_chars=1000, max_chars=1500):
+                          min_chars=1000, max_chars=1500, page_layouts=None):
     ensure_output_parent(md_output)
-    reading_pages = paginate_translated_blocks(translated_pages, min_chars, max_chars)
+    reading_pages = paginate_translated_blocks(
+        translated_pages,
+        min_chars,
+        max_chars,
+        page_layouts=page_layouts,
+        split_on_layout=True,
+    )
     with open(md_output, "w", encoding="utf-8") as f:
         f.write(f"# {title} — 中文翻译\n\n---\n\n")
 
@@ -76,8 +84,9 @@ def write_markdown_output(translated_pages, md_output: str, title: str, toc: str
 
         for page_idx, page in enumerate(reading_pages, 1):
             blocks = page["blocks"]
+            layout = page.get("layout", "columns")
             source_pages = _format_page_ranges([b["source_page"] for b in blocks])
-            f.write(f"<!-- Reading Page {page_idx}; Source PDF Pages: {source_pages} -->\n\n")
+            f.write(f"<!-- Reading Page {page_idx}; Layout: {layout}; Source PDF Pages: {source_pages} -->\n\n")
             for block in blocks:
                 f.write(_format_markdown_block(block["text"]))
                 f.write("\n\n")

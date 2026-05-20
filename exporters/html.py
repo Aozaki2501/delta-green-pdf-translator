@@ -16,6 +16,8 @@ from exporters._shared import (
     _header_title,
     attach_running_headers,
     _looks_like_stat_block,
+    _layout_uses_columns,
+    _normalize_heading_markup,
 )
 from core.utils import ensure_output_parent
 
@@ -107,6 +109,7 @@ def _html_block(text: str) -> str:
         idx += 1
         if not clean_line or clean_line == "---" or clean_line.startswith("<!--"):
             continue
+        clean_line = _normalize_heading_markup(clean_line)
 
         if clean_line == "[[TOC]]":
             continue
@@ -489,7 +492,11 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     .cover .content {{
         column-count: 1;
     }}
-    .sheet.single .content {{
+    .sheet.single .content,
+    .sheet.character .content,
+    .sheet.document .content,
+    .sheet.credits .content,
+    .sheet.art .content {{
         column-count: 1;
         max-width: 7.25in;
         margin: 0 auto;
@@ -501,7 +508,64 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         padding-bottom: 0.05in;
         border-bottom: 1px solid var(--rule);
     }}
+    .sheet.character .content {{
+        max-width: 7.35in;
+        font-size: 11pt;
+        line-height: 1.62;
+    }}
+    .sheet.character p,
+    .sheet.document p,
+    .sheet.credits p,
+    .sheet.art p {{
+        text-indent: 0;
+    }}
+    .sheet.character h2,
+    .sheet.document h2 {{
+        margin-top: 0.08in;
+        padding-bottom: 0.05in;
+        border-bottom: 1px solid var(--rule);
+    }}
+    .sheet.document .content {{
+        max-width: 6.55in;
+        font-size: 11.2pt;
+        line-height: 1.58;
+    }}
+    .sheet.document p {{
+        font-family: "Courier New", "VT323", monospace;
+    }}
+    .sheet.credits .content {{
+        max-width: 6.2in;
+        font-size: 10.8pt;
+        line-height: 1.46;
+    }}
+    .sheet.credits h1,
+    .sheet.credits h2,
+    .sheet.credits h3,
+    .sheet.credits h4,
+    .sheet.credits p {{
+        text-align: center;
+    }}
+    .sheet.art .content {{
+        max-width: 5.9in;
+        margin-top: 1.55in;
+        text-align: center;
+    }}
+    .sheet.art h1,
+    .sheet.art h2,
+    .sheet.art h3,
+    .sheet.art h4 {{
+        text-align: center;
+        border: 0;
+        padding-bottom: 0;
+    }}
+    .sheet.art p {{
+        text-align: center;
+        color: var(--muted);
+    }}
     .sheet.single .source-pages {{
+        column-span: none;
+    }}
+    .source-pages.no-span {{
         column-span: none;
     }}
     .cover-title {{
@@ -553,6 +617,7 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         layout = page.get("layout", "columns")
         page_right_title = html.escape(page.get("running_header") or right_title)
         source_pages = _format_page_ranges([b["source_page"] for b in blocks])
+        source_class = "" if _layout_uses_columns(layout) else " no-span"
         chunks.extend([
             f'<section class="sheet {html.escape(layout)}">',
             f'<header class="running-head"><span>// {left_title} //</span><span>// {page_right_title} //</span></header>',
@@ -560,7 +625,7 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         ])
         for block in blocks:
             chunks.append(_html_block(block["text"]))
-        chunks.append(f'<div class="source-pages">Reading Page {page_idx}; Source PDF Pages: {html.escape(source_pages)}</div>')
+        chunks.append(f'<div class="source-pages{source_class}">Reading Page {page_idx}; Source PDF Pages: {html.escape(source_pages)}</div>')
         chunks.extend(["</main>", "</section>"])
 
     chunks.extend(["</body>", "</html>", ""])
