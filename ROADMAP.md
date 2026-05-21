@@ -106,7 +106,7 @@ Implemented:
 
 ### 7. Core Module Split
 
-Status: `[ ]`
+Status: `[x]`
 
 Goal:
 - Reduce the size and coupling of `translate_pdf.py`.
@@ -118,6 +118,11 @@ Ideas:
 - `exporters/word.py`
 - `exporters/markdown.py`
 - `exporters/pdf_overlay.py`
+
+Implemented:
+- `translate_pdf.py` now acts as the CLI/orchestrator and compatibility re-export layer.
+- Core logic is split into `core/`.
+- Markdown, HTML, and Word output are split into `exporters/`.
 
 ### 8. Minimal Regression Tests
 
@@ -138,7 +143,7 @@ Implemented:
 
 ### 9. Output History
 
-Status: `[ ]`
+Status: `[x]`
 
 Goal:
 - Make Web UI feel like a local translation workstation.
@@ -147,3 +152,35 @@ Ideas:
 - List recent files in `output/`.
 - Show generated time, size, and format.
 - Provide download buttons for previous outputs.
+
+Implemented:
+- Web UI lists recent output folders.
+- Each history item shows generated time, total size, available formats, image count, completed pages, and failed pages.
+- Previous Markdown, HTML, Word, progress, extraction report, and glossary report files can be downloaded again.
+
+### 10. Classified Workstation Polish
+
+Status: `[x]`
+
+Goal:
+- Make the Web UI feel like a real classified local workstation, not just a themed upload form.
+
+Priority:
+- Task dossier ID.
+- Task status flow.
+- Audit summary in current task and output history.
+- Animated system log.
+- File scan line when a PDF is loaded.
+- Completion stamp.
+- Download authorization feedback.
+
+Decision:
+- Split Web UI helpers into `webui/` modules so `app.py` does not keep growing.
+
+Implemented:
+- Added `webui/` modules for history scanning, audit helpers, visual effects, and reusable Streamlit components.
+- Uploading a PDF shows a dossier ID, file digest, glossary source, scan animation, status flow, and system log.
+- Translation runs write an `_audit.json` record with dossier ID, source file, model, page range, formats, completed pages, failed pages, and output files.
+- Output history reads audit records and shows the dossier ID plus audit summary.
+- Completion shows an archive stamp, and download buttons have authorization feedback.
+- Added second-pass motion polish: status signal sweep, alert ping, metric sweep, history drawer animation, staggered log lines, and a low-motion mode.

@@ -16,6 +16,17 @@ from translate_pdf import (
     build_progress_metadata, parse_page_selection, write_glossary_report,
     normalize_page_range, is_failed_translation, build_extraction_diagnostics_report
 )
+from webui.components import (
+    make_dossier_id,
+    render_audit_grid,
+    render_completion_stamp,
+    render_dossier_card,
+    render_output_history,
+    render_status_flow,
+    render_system_log,
+)
+from webui.history import write_audit_record
+from webui.theme import render_workstation_effects
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -476,6 +487,71 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+reduce_motion = bool(st.session_state.get("reduce_motion", False))
+try:
+    render_workstation_effects(reduced_motion=reduce_motion)
+except TypeError:
+    render_workstation_effects()
+    if reduce_motion:
+        st.markdown(
+            """
+<style>
+    .stApp::after,
+    .boot-screen,
+    .classified-hero,
+    .section-card,
+    .intel-tile,
+    .dossier-card.loaded::after,
+    .status-flow::before,
+    .status-step.active,
+    .system-log-line,
+    .archive-stamp,
+    div[data-testid="stMetric"]::after,
+    div[data-testid="stAlert"]::before,
+    div[data-testid="stExpander"] details[open] > div,
+    .stDownloadButton > button::before {
+        animation: none !important;
+    }
+</style>
+            """,
+            unsafe_allow_html=True,
+        )
+st.markdown(
+    """
+<style>
+    div[data-testid="stAlert"] {
+        border-radius: 0 !important;
+        border: 1px solid var(--line) !important;
+        background: rgba(4, 12, 7, 0.92) !important;
+        box-shadow: none !important;
+        position: relative;
+        overflow: hidden;
+    }
+    div[data-testid="stAlert"] > div {
+        background: transparent !important;
+        color: var(--text) !important;
+    }
+    div[data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+    div[data-testid="stAlert"] [data-testid="stMarkdownContainer"] p {
+        color: var(--text) !important;
+    }
+    div[data-testid="stAlert"] * {
+        border-radius: 0 !important;
+    }
+    div[data-testid="stAlert"]::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        pointer-events: none;
+        background: var(--green);
+    }
+</style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # === HEADER ===
 st.markdown("""
@@ -536,6 +612,8 @@ with st.sidebar:
     word_header_left = "绿色三角洲"
     word_header_right = ""
 
+    st.checkbox("低动效模式", value=False, key="reduce_motion")
+
     st.caption("必要项")
     api_key = st.text_input("接口密钥", type="password", placeholder="sk-...")
 
@@ -593,6 +671,26 @@ with col2:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
+if pdf_file:
+    current_digest = uploaded_file_digest(pdf_file)
+    current_dossier_id = make_dossier_id(pdf_file.name, current_digest)
+    glossary_name = glossary_file.name if glossary_file else "glossary.tsv"
+    render_dossier_card(
+        current_dossier_id,
+        pdf_file.name,
+        current_digest,
+        glossary_name=glossary_name,
+        loaded=True,
+    )
+    render_status_flow(active_index=0)
+    render_system_log([
+        ("info", "档案接收完成"),
+        ("info", f"档案号 {current_dossier_id} 已生成"),
+        ("info", "等待执行翻译任务"),
+    ])
+
+render_output_history(APP_DIR / "output")
+
 if pdf_file and show_extraction_preview:
     preview_path = save_uploaded_pdf_for_preview(pdf_file)
     preview_extractor = None
@@ -637,6 +735,23 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
     elif not formats:
         st.error("✗ 请至少选择一种输出格式")
     else:
+        run_started_at = time.time()
+        source_digest = uploaded_file_digest(pdf_file)
+        dossier_id = make_dossier_id(pdf_file.name, source_digest, created_at=run_started_at)
+        render_dossier_card(
+            dossier_id,
+            pdf_file.name,
+            source_digest,
+            glossary_name=glossary_file.name if glossary_file else "glossary.tsv",
+            loaded=True,
+        )
+        render_status_flow(active_index=1)
+        render_system_log([
+            ("info", "接收档案完成"),
+            ("info", f"档案号 {dossier_id}"),
+            ("info", "准备提取文本"),
+        ])
+
         # Create organized directories
         upload_dir = APP_DIR / "uploads"
         output_dir = APP_DIR / "output"
@@ -667,6 +782,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         document_output_dir = output_dir / f"{pdf_stem}_cn"
         ensure_dir(document_output_dir)
         output_base = str(document_output_dir / f"{pdf_stem}_cn")
+        generated_files = []
 
         # Init
         stats = TokenStats()
@@ -751,6 +867,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             pages_filter = set(range(start_page, end_page))
 
         # Extract
+        render_status_flow(active_index=1)
         st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
         page_layouts = {}
@@ -772,10 +889,21 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 "提取诊断发现风险页："
                 + ", ".join(str(item["page"] + 1) for item in risky_pages[:30])
             )
+        extracted_image_count = sum(len(v) for v in image_assets.values())
         if image_assets:
-            st.info(f"已裁出图片资源：{sum(len(v) for v in image_assets.values())} 张")
+            st.info(f"已裁出图片资源：{extracted_image_count} 张")
+        extraction_log = [
+            ("info", f"检测到 {total} 页"),
+            ("info", f"本次处理第 {start_page + 1}-{end_page} 页"),
+        ]
+        if risky_pages:
+            extraction_log.append(("warn", f"风险页 {len(risky_pages)} 个"))
+        if extracted_image_count:
+            extraction_log.append(("info", f"图片资源 {extracted_image_count} 张"))
+        render_system_log(extraction_log)
 
         # Translate
+        render_status_flow(active_index=3)
         st.subheader("翻译进度")
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -860,6 +988,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             if start_page <= pn < end_page
         ]
         if failed_pages:
+            render_status_flow(active_index=3, failed=True)
             st.warning(
                 "以下页翻译失败，已记录为失败页，修复网络/API 问题后可勾选“只重试失败页”："
                 + ", ".join(map(str, failed_pages[:20]))
@@ -872,10 +1001,12 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
         # Output & Download
+        render_status_flow(active_index=4)
         diagnostics_path = make_output_path(output_base, "_extraction_report.md")
         with open(diagnostics_path, "w", encoding="utf-8") as f:
             f.write(build_extraction_diagnostics_report(page_diagnostics, pdf_stem))
             f.write("\n")
+        generated_files.append(diagnostics_path)
         with open(diagnostics_path, "rb") as f:
             st.download_button(
                 "📥 下载提取诊断报告",
@@ -886,6 +1017,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
             write_glossary_report(pages_text, glossary, report_path, pdf_stem)
+            generated_files.append(report_path)
             with open(report_path, "rb") as f:
                 st.download_button(
                     "📥 下载术语命中报告",
@@ -903,6 +1035,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 page_layouts=page_layouts,
                 image_assets=image_assets,
             )
+            generated_files.append(md_path)
 
             with open(md_path, "rb") as f:
                 st.download_button(
@@ -921,6 +1054,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     page_layouts=page_layouts,
                     image_assets=image_assets,
                 )
+                generated_files.append(html_path)
                 with open(html_path, "rb") as f:
                     st.download_button(
                         "📥 下载网页排版",
@@ -952,6 +1086,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     page_layouts=page_layouts,
                     image_assets=image_assets,
                 )
+                generated_files.append(docx_path)
 
                 with open(docx_path, "rb") as f:
                     st.download_button(
@@ -960,4 +1095,38 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                         file_name=Path(docx_path).name,
                     )
 
+        audit_path = Path(make_output_path(output_base, "_audit.json"))
+        audit_record = {
+            "dossier_id": dossier_id,
+            "source_file": pdf_file.name,
+            "source_sha256": source_digest,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "provider": provider,
+            "model": model,
+            "page_range": f"{start_page + 1}-{end_page}",
+            "formats": formats,
+            "completed_pages": len(translated_pages_sorted),
+            "failed_pages": failed_pages,
+            "glossary": Path(glossary_path).name if glossary_path else "",
+            "outputs": [Path(path).name for path in generated_files],
+        }
+        write_audit_record(audit_path, audit_record)
+        generated_files.append(str(audit_path))
+        render_status_flow(active_index=5, failed=bool(failed_pages))
+        render_completion_stamp("待校对" if failed_pages else "已归档")
+        final_audit_items = {
+            "档案号": dossier_id,
+            "完成页": len(translated_pages_sorted),
+            "输出数": len(generated_files),
+        }
+        if failed_pages:
+            final_audit_items["失败页"] = ", ".join(map(str, failed_pages[:12]))
+        render_audit_grid(final_audit_items)
+        with open(audit_path, "rb") as f:
+            st.download_button(
+                "📥 下载审计记录",
+                f,
+                file_name=audit_path.name,
+            )
         extractor.close()
