@@ -4,6 +4,7 @@ Delta Green PDF Translator — Web UI (Streamlit)
 """
 import streamlit as st
 import hashlib
+import json
 import os
 import re
 import time
@@ -14,7 +15,13 @@ from translate_pdf import (
     load_glossary, translate_batch_concurrent,
     write_markdown_output, write_html_output, write_word_output, HAS_DOCX,
     build_progress_metadata, parse_page_selection, write_glossary_report,
-    normalize_page_range, is_failed_translation, build_extraction_diagnostics_report
+    normalize_page_range, is_failed_translation, build_extraction_diagnostics_report,
+    find_relevant_glossary_terms,
+)
+from core.glossary_editor import (
+    glossary_rows_to_tsv,
+    parse_glossary_editor_text,
+    read_glossary_editor_text,
 )
 
 
@@ -25,6 +32,7 @@ OUTPUT_FORMAT_LABELS = {
     "html": "网页排版",
     "word": "文档排版",
 }
+HISTORY_SCHEMA = 1
 
 
 def make_output_path(output_base, extension):
@@ -48,6 +56,15 @@ def format_duration(seconds):
     return f"{sec}s"
 
 
+def format_file_size(size_bytes):
+    size = max(0, int(size_bytes or 0))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{size} B"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
 def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
@@ -58,8 +75,333 @@ def safe_filename_stem(filename: str, default: str = "document") -> str:
     return stem or default
 
 
+def history_file_for_progress(progress_path: Path) -> Path:
+    if progress_path.name.endswith(".progress.json"):
+        return progress_path.with_name(
+            progress_path.name[:-len(".progress.json")] + ".history.json"
+        )
+    return progress_path.with_suffix(".history.json")
+
+
+def list_task_output_files(task_dir: Path) -> list[dict]:
+    if not task_dir.exists():
+        return []
+    files = []
+    allowed_suffixes = {".docx", ".html", ".md"}
+    for path in sorted(task_dir.iterdir(), key=lambda p: p.name.lower()):
+        if not path.is_file():
+            continue
+        if path.name.endswith((".progress.json", ".history.json")):
+            continue
+        if path.suffix.lower() not in allowed_suffixes:
+            continue
+        files.append({
+            "path": str(path),
+            "name": path.name,
+            "size": path.stat().st_size,
+        })
+    return files
+
+
+def load_progress_history_record(progress_path: Path) -> dict:
+    task_dir = progress_path.parent
+    record = {
+        "title": task_dir.name,
+        "progress_path": str(progress_path),
+        "updated_at": progress_path.stat().st_mtime,
+        "status": "可继续",
+        "error": "",
+        "model": "",
+        "provider": "",
+        "page_range": "",
+        "completed_pages": 0,
+        "failed_pages": 0,
+        "cost_yuan": None,
+        "total_tokens": None,
+        "workers": None,
+        "files": list_task_output_files(task_dir),
+    }
+    try:
+        with open(progress_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("progress root must be an object")
+        metadata = data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        completed_pages = data.get("completed_pages", [])
+        failed_pages = data.get("failed_pages", {})
+        record["model"] = str(metadata.get("model", ""))
+        record["provider"] = str(metadata.get("provider", ""))
+        start_page = metadata.get("start_page")
+        end_page = metadata.get("end_page")
+        if isinstance(start_page, int) and isinstance(end_page, int):
+            record["page_range"] = f"{start_page + 1}-{end_page}"
+        record["completed_pages"] = len(completed_pages) if isinstance(completed_pages, list) else 0
+        record["failed_pages"] = len(failed_pages) if isinstance(failed_pages, dict) else 0
+        if record["failed_pages"]:
+            record["status"] = "有失败页"
+        elif record["completed_pages"]:
+            record["status"] = "已有译文"
+    except json.JSONDecodeError as exc:
+        record["status"] = "进度文件损坏"
+        record["error"] = f"{exc.msg}，第 {exc.lineno} 行"
+    except (OSError, ValueError, TypeError) as exc:
+        record["status"] = "进度文件异常"
+        record["error"] = str(exc)
+
+    history_path = history_file_for_progress(progress_path)
+    if history_path.exists():
+        try:
+            with open(history_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            if not isinstance(manifest, dict):
+                raise ValueError("history root must be an object")
+            record["title"] = str(manifest.get("title") or record["title"])
+            record["cost_yuan"] = manifest.get("cost_yuan")
+            record["total_tokens"] = manifest.get("total_tokens")
+            record["workers"] = manifest.get("workers")
+            record["updated_at"] = max(record["updated_at"], history_path.stat().st_mtime)
+        except (json.JSONDecodeError, OSError, ValueError, TypeError) as exc:
+            record["status"] = "历史清单异常"
+            record["error"] = str(exc)
+    return record
+
+
+def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict]:
+    if not output_dir.exists():
+        return []
+    records = [
+        load_progress_history_record(path)
+        for path in output_dir.rglob("*.progress.json")
+        if path.is_file()
+    ]
+    records.sort(key=lambda item: item["updated_at"], reverse=True)
+    return records[:limit]
+
+
+def remember_generated_file(files: list[dict], path: str, label: str):
+    file_path = Path(path)
+    files.append({
+        "label": label,
+        "path": str(file_path),
+        "name": file_path.name,
+        "size": file_path.stat().st_size if file_path.exists() else 0,
+    })
+
+
+def write_history_manifest(output_base: str, title: str, progress_file: str, formats: list[str],
+                           generated_files: list[dict], stats: TokenStats, workers: int,
+                           model: str, provider: str, completed_pages: int,
+                           failed_pages: list[int]):
+    history_path = history_file_for_progress(Path(progress_file))
+    manifest = {
+        "schema": HISTORY_SCHEMA,
+        "title": title,
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "output_base": output_base,
+        "progress_file": progress_file,
+        "formats": list(formats),
+        "files": generated_files,
+        "model": model,
+        "provider": provider,
+        "workers": int(workers),
+        "completed_pages": int(completed_pages),
+        "failed_pages": list(failed_pages),
+        "cost_yuan": round(float(stats.cost_yuan), 6),
+        "total_tokens": int(stats.total_tokens),
+    }
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def render_output_history(output_dir: Path):
+    with st.expander("输出历史", expanded=False):
+        records = collect_output_history(output_dir)
+        if not records:
+            st.caption("还没有历史输出。完成一次翻译后，这里会显示最近任务。")
+            return
+        for index, record in enumerate(records):
+            updated = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(record["updated_at"]),
+            )
+            st.markdown(f"**{record['title']}**")
+            facts = [
+                f"状态：{record['status']}",
+                f"更新时间：{updated}",
+                f"页数：{record['completed_pages']}",
+            ]
+            if record["failed_pages"]:
+                facts.append(f"失败页：{record['failed_pages']}")
+            if record["page_range"]:
+                facts.append(f"范围：{record['page_range']}")
+            if record["model"]:
+                facts.append(f"模型：{record['model']}")
+            if record["workers"]:
+                facts.append(f"并发：{record['workers']}")
+            if record["cost_yuan"] is not None:
+                facts.append(f"费用：¥{float(record['cost_yuan']):.3f}")
+            else:
+                facts.append("费用：未记录")
+            st.caption(" | ".join(facts))
+            if record["error"]:
+                st.error(record["error"])
+            files = record["files"]
+            if files:
+                cols = st.columns(min(4, len(files)))
+                for file_index, file_info in enumerate(files):
+                    path = Path(file_info["path"])
+                    if not path.exists():
+                        continue
+                    label = f"{path.name} ({format_file_size(path.stat().st_size)})"
+                    with open(path, "rb") as f:
+                        cols[file_index % len(cols)].download_button(
+                            label,
+                            f,
+                            file_name=path.name,
+                            key=f"history-download-{index}-{file_index}",
+                        )
+            st.code(record["progress_path"], language="text")
+
+
+def render_glossary_manager(glossary_path: Path):
+    with st.expander("术语表管理", expanded=False):
+        st.caption(f"当前管理文件：{glossary_path.name}")
+        if st.button("重新载入术语表", key="reload-glossary"):
+            st.session_state["glossary_editor_text"] = read_glossary_editor_text(glossary_path)
+        if "glossary_editor_text" not in st.session_state:
+            st.session_state["glossary_editor_text"] = read_glossary_editor_text(glossary_path)
+
+        rows, errors, warnings = parse_glossary_editor_text(st.session_state["glossary_editor_text"])
+        search_text = st.text_input("搜索术语", value="", key="glossary-search")
+        if search_text.strip():
+            keyword = search_text.strip().lower()
+            matches = [
+                row for row in rows
+                if keyword in row["english"].lower() or keyword in row["chinese"].lower()
+            ][:30]
+            if matches:
+                st.table([
+                    {"行": row["line"], "中文译名": row["chinese"], "英文原名": row["english"]}
+                    for row in matches
+                ])
+            else:
+                st.caption("没有匹配项。")
+
+        col_a, col_b = st.columns(2)
+        new_chinese = col_a.text_input("新增中文译名", key="glossary-new-chinese")
+        new_english = col_b.text_input("新增英文原名", key="glossary-new-english")
+        if st.button("加入编辑区", key="append-glossary-term"):
+            if not new_chinese.strip() or not new_english.strip():
+                st.error("新增术语必须同时填写中文译名和英文原名。")
+            else:
+                current = st.session_state["glossary_editor_text"].rstrip()
+                appended = f"{new_chinese.strip()}\t{new_english.strip()}"
+                st.session_state["glossary_editor_text"] = (current + "\n" + appended + "\n").lstrip("\n")
+                st.rerun()
+
+        st.text_area(
+            "TSV 编辑区",
+            key="glossary_editor_text",
+            height=320,
+            help="每行一条：中文译名、Tab、英文原名。",
+        )
+        rows, errors, warnings = parse_glossary_editor_text(st.session_state["glossary_editor_text"])
+        st.caption(f"有效术语：{len(rows)} 条")
+        for warning in warnings[:8]:
+            st.warning(warning)
+        for error in errors[:8]:
+            st.error(error)
+        if len(errors) > 8:
+            st.error(f"还有 {len(errors) - 8} 个错误未显示。")
+
+        if st.button("保存术语表", key="save-glossary", type="primary"):
+            if errors:
+                st.error("术语表仍有错误，未保存。")
+            else:
+                normalized = glossary_rows_to_tsv(rows)
+                with open(glossary_path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(normalized)
+                st.success(f"已保存 {len(rows)} 条术语。")
+
+
+def page_numbers_to_selection(page_numbers) -> str:
+    return ", ".join(str(page) for page in sorted({int(page) for page in page_numbers}))
+
+
+def render_recovery_action_panel(failed_pages: list[int], risky_pages: list[int], empty_pages: list[int]):
+    all_targets = sorted(set(failed_pages) | set(risky_pages) | set(empty_pages))
+    if not all_targets:
+        return
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("失败页和风险页")
+    cols = st.columns(4)
+    cols[0].metric("失败页", f"{len(failed_pages)}")
+    cols[1].metric("风险页", f"{len(risky_pages)}")
+    cols[2].metric("空页", f"{len(empty_pages)}")
+    cols[3].metric("可处理页", f"{len(all_targets)}")
+    if failed_pages:
+        st.warning("失败页：" + page_numbers_to_selection(failed_pages))
+    if risky_pages:
+        st.warning("风险页：" + page_numbers_to_selection(risky_pages))
+    if empty_pages:
+        st.warning("空页：" + page_numbers_to_selection(empty_pages))
+
+    target_text = page_numbers_to_selection(all_targets)
+    st.text_area("可直接重翻的页码", value=target_text, height=90, disabled=True)
+    if st.button("填入重翻页码", key="use-recovery-pages"):
+        st.session_state["pending_retranslate_pages_text"] = target_text
+        st.session_state.pop("preflight_report", None)
+        st.info("已填入重翻页码。重新预检后即可执行重翻。")
+        st.rerun()
+    if failed_pages and st.button("下次只重试失败页", key="retry-failed-next"):
+        st.session_state["pending_retry_failed_pages"] = True
+        st.session_state.pop("preflight_report", None)
+        st.info("已勾选只重试失败页。重新预检后即可执行。")
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def uploaded_file_digest(uploaded_file) -> str:
     return hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+
+
+def local_file_digest(path: Path) -> str:
+    if not path.exists():
+        return ""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_current_task_signature(pdf_file, glossary_file, start_page, end_page_text,
+                                 formats, model, provider, base_url, workers,
+                                 retry_failed_pages, retranslate_pages_text):
+    if not pdf_file:
+        return ""
+    glossary_sha = (
+        uploaded_file_digest(glossary_file)
+        if glossary_file else local_file_digest(DEFAULT_GLOSSARY_PATH)
+    )
+    payload = {
+        "pdf_sha256": uploaded_file_digest(pdf_file),
+        "glossary_sha256": glossary_sha,
+        "start_page": int(start_page),
+        "end_page_text": str(end_page_text or ""),
+        "formats": sorted(formats),
+        "model": str(model),
+        "provider": str(provider),
+        "base_url": str(base_url),
+        "workers": int(workers),
+        "retry_failed_pages": bool(retry_failed_pages),
+        "retranslate_pages_text": str(retranslate_pages_text or ""),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
@@ -71,6 +413,110 @@ def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
         with open(target, "wb") as f:
             f.write(uploaded_file.getvalue())
     return target
+
+
+def save_uploaded_glossary_for_preflight(uploaded_file) -> Path:
+    upload_dir = APP_DIR / "uploads"
+    ensure_dir(upload_dir)
+    digest = uploaded_file_digest(uploaded_file)[:12]
+    suffix = Path(uploaded_file.name).suffix.lower() or ".tsv"
+    target = upload_dir / f"_preflight_{safe_filename_stem(uploaded_file.name, 'glossary')}_{digest}{suffix}"
+    if not target.exists():
+        with open(target, "wb") as f:
+            f.write(uploaded_file.getvalue())
+    return target
+
+
+def estimate_preflight_cost_yuan(source_chars: int, page_count: int) -> float:
+    input_tokens = max(1, source_chars // 4 + page_count * 450)
+    output_tokens = max(1, int(input_tokens * 0.9))
+    return (
+        input_tokens * TokenStats.PRICE_INPUT_PER_M / 1_000_000
+        + output_tokens * TokenStats.PRICE_OUTPUT_PER_M / 1_000_000
+    )
+
+
+def build_preflight_report(pdf_file, glossary_file, start_page_input, end_page_text,
+                           model: str, workers: int, signature: str) -> dict:
+    pdf_path = save_uploaded_pdf_for_preview(pdf_file)
+    glossary_path = (
+        save_uploaded_glossary_for_preflight(glossary_file)
+        if glossary_file else DEFAULT_GLOSSARY_PATH if DEFAULT_GLOSSARY_PATH.exists() else None
+    )
+    glossary = load_glossary(str(glossary_path)) if glossary_path else {}
+    extractor = PDFExtractor(str(pdf_path))
+    try:
+        total_pages = extractor.total_pages
+        start_page = int(start_page_input) - 1
+        end_page = int(end_page_text) if str(end_page_text or "").strip() else None
+        start_page, end_page = normalize_page_range(start_page, end_page, total_pages)
+
+        page_diagnostics = []
+        total_chars = 0
+        total_images = 0
+        total_glossary_hits = 0
+        risky_pages = []
+        empty_pages = []
+        for page_num in range(start_page, end_page):
+            extractor.detect_page_layout(page_num)
+            text = extractor.extract_page(page_num)
+            diagnostics = extractor.get_page_diagnostics(page_num, text)
+            page_diagnostics.append(diagnostics)
+            total_chars += diagnostics["text_length"]
+            total_images += diagnostics["image_count"]
+            hits = find_relevant_glossary_terms(text, glossary)
+            total_glossary_hits += len(hits)
+            if diagnostics["risks"]:
+                risky_pages.append(page_num + 1)
+            if not text.strip():
+                empty_pages.append(page_num + 1)
+
+        page_count = end_page - start_page
+        speed = max(1, min(int(workers or 1), page_count or 1))
+        estimated_seconds = max(1, int((page_count / speed) * 50))
+        return {
+            "signature": signature,
+            "pdf_name": pdf_file.name,
+            "model": model,
+            "workers": int(workers),
+            "total_pages": total_pages,
+            "start_page": start_page + 1,
+            "end_page": end_page,
+            "page_count": page_count,
+            "total_chars": total_chars,
+            "image_count": total_images,
+            "glossary_terms": len(glossary),
+            "glossary_hits": total_glossary_hits,
+            "risky_pages": risky_pages,
+            "empty_pages": empty_pages,
+            "estimated_cost_yuan": estimate_preflight_cost_yuan(total_chars, page_count),
+            "estimated_seconds": estimated_seconds,
+            "diagnostics": page_diagnostics,
+        }
+    finally:
+        extractor.close()
+
+
+def render_preflight_report(report: dict):
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("任务预检")
+    cols = st.columns(5)
+    cols[0].metric("页数", f"{report['page_count']}")
+    cols[1].metric("风险页", f"{len(report['risky_pages'])}")
+    cols[2].metric("空页", f"{len(report['empty_pages'])}")
+    cols[3].metric("图片", f"{report['image_count']}")
+    cols[4].metric("术语命中", f"{report['glossary_hits']}")
+    st.caption(
+        f"范围：第 {report['start_page']} 到 {report['end_page']} 页 | "
+        f"模型：{report['model']} | 并发：{report['workers']} | "
+        f"预计费用：¥{report['estimated_cost_yuan']:.3f} | "
+        f"预计耗时：{format_duration(report['estimated_seconds'])}"
+    )
+    if report["risky_pages"]:
+        st.warning("风险页：" + ", ".join(map(str, report["risky_pages"][:40])))
+    if report["empty_pages"]:
+        st.warning("空页：" + ", ".join(map(str, report["empty_pages"][:40])))
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # === UI THEME ===
@@ -515,6 +961,12 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+if "pending_retranslate_pages_text" in st.session_state:
+    st.session_state["retranslate_pages_text"] = st.session_state.pop("pending_retranslate_pages_text")
+if st.session_state.pop("pending_retry_failed_pages", False):
+    st.session_state["retry_failed_pages"] = True
+
 with st.sidebar:
     st.header("任务控制台")
 
@@ -552,8 +1004,15 @@ with st.sidebar:
     with st.expander("高级任务控制", expanded=False):
         model = st.text_input("模型名称", value=model)
         workers = st.slider("并发线程", 1, 64, 32)
-        retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
-        retry_failed_pages = st.checkbox("只重试失败页", value=False)
+        retranslate_pages_str = st.text_input(
+            "重翻页码",
+            placeholder="如：8, 12-15",
+            key="retranslate_pages_text",
+        )
+        retry_failed_pages = st.checkbox(
+            "只重试失败页",
+            key="retry_failed_pages",
+        )
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
@@ -593,6 +1052,58 @@ with col2:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
+render_output_history(APP_DIR / "output")
+render_glossary_manager(DEFAULT_GLOSSARY_PATH)
+
+current_task_signature = build_current_task_signature(
+    pdf_file,
+    glossary_file,
+    display_start_page,
+    end_page_str,
+    formats,
+    model,
+    provider,
+    base_url,
+    workers,
+    retry_failed_pages,
+    retranslate_pages_str,
+)
+preflight_report = st.session_state.get("preflight_report")
+preflight_ready = (
+    bool(pdf_file)
+    and isinstance(preflight_report, dict)
+    and preflight_report.get("signature") == current_task_signature
+)
+
+if pdf_file:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("翻译前预检")
+    st.caption("先扫描页数、风险、图片和术语命中；确认后再执行翻译。")
+    if st.button("生成任务预检", use_container_width=True):
+        try:
+            report = build_preflight_report(
+                pdf_file,
+                glossary_file,
+                display_start_page,
+                end_page_str,
+                model,
+                int(workers),
+                current_task_signature,
+            )
+            st.session_state["preflight_report"] = report
+            preflight_report = report
+            preflight_ready = True
+        except ValueError as e:
+            st.error(str(e))
+            st.session_state.pop("preflight_report", None)
+            preflight_ready = False
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if preflight_ready:
+        render_preflight_report(preflight_report)
+    else:
+        st.info("当前任务还没有完成预检，或预检结果已经过期。")
+
 if pdf_file and show_extraction_preview:
     preview_path = save_uploaded_pdf_for_preview(pdf_file)
     preview_extractor = None
@@ -625,7 +1136,7 @@ if pdf_file and show_extraction_preview:
         if preview_extractor:
             preview_extractor.close()
 
-if st.button("执行翻译任务", type="primary", use_container_width=True):
+if st.button("执行翻译任务", type="primary", use_container_width=True, disabled=not preflight_ready):
     if not pdf_file:
         st.error("✗ 请上传 PDF 文件")
     elif not api_key:
@@ -859,11 +1370,20 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             pn + 1 for pn in sorted(tracker.get_failed_pages())
             if start_page <= pn < end_page
         ]
+        risk_page_numbers = [
+            item["page"] + 1 for item in page_diagnostics
+            if item.get("risks")
+        ]
+        empty_page_numbers = [
+            item["page"] + 1 for item in page_diagnostics
+            if "未提取到正文" in item.get("risks", [])
+        ]
         if failed_pages:
             st.warning(
                 "以下页翻译失败，已记录为失败页，修复网络/API 问题后可勾选“只重试失败页”："
                 + ", ".join(map(str, failed_pages[:20]))
             )
+        render_recovery_action_panel(failed_pages, risk_page_numbers, empty_page_numbers)
 
         # Stats
         col_a, col_b, col_c = st.columns(3)
@@ -872,10 +1392,12 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
         # Output & Download
+        generated_files = []
         diagnostics_path = make_output_path(output_base, "_extraction_report.md")
         with open(diagnostics_path, "w", encoding="utf-8") as f:
             f.write(build_extraction_diagnostics_report(page_diagnostics, pdf_stem))
             f.write("\n")
+        remember_generated_file(generated_files, diagnostics_path, "提取诊断报告")
         with open(diagnostics_path, "rb") as f:
             st.download_button(
                 "📥 下载提取诊断报告",
@@ -886,6 +1408,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
             write_glossary_report(pages_text, glossary, report_path, pdf_stem)
+            remember_generated_file(generated_files, report_path, "术语命中报告")
             with open(report_path, "rb") as f:
                 st.download_button(
                     "📥 下载术语命中报告",
@@ -903,6 +1426,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 page_layouts=page_layouts,
                 image_assets=image_assets,
             )
+            remember_generated_file(generated_files, md_path, "纯文本稿")
 
             with open(md_path, "rb") as f:
                 st.download_button(
@@ -921,6 +1445,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     page_layouts=page_layouts,
                     image_assets=image_assets,
                 )
+                remember_generated_file(generated_files, html_path, "网页排版")
                 with open(html_path, "rb") as f:
                     st.download_button(
                         "📥 下载网页排版",
@@ -952,6 +1477,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     page_layouts=page_layouts,
                     image_assets=image_assets,
                 )
+                remember_generated_file(generated_files, docx_path, "文档排版")
 
                 with open(docx_path, "rb") as f:
                     st.download_button(
@@ -959,5 +1485,19 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                         f,
                         file_name=Path(docx_path).name,
                     )
+
+        write_history_manifest(
+            output_base,
+            pdf_stem,
+            progress_file,
+            formats,
+            generated_files,
+            stats,
+            int(workers),
+            model,
+            provider,
+            len(translated_pages_sorted),
+            failed_pages,
+        )
 
         extractor.close()
