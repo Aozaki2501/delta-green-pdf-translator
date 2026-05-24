@@ -10,6 +10,7 @@ Dependencies: python-docx (optional), exporters._shared
 
 import re
 import os
+import struct
 from typing import Optional
 
 from exporters._shared import (
@@ -617,24 +618,43 @@ def _write_word_stat_block(doc, text: str):
         p_pr.append(borders)
 
 
+def _png_dimensions(image_path: str) -> tuple[int, int]:
+    with open(image_path, "rb") as f:
+        header = f.read(24)
+    if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        raise ValueError(f"Word image placeholder only supports PNG assets: {image_path}")
+    width, height = struct.unpack(">II", header[16:24])
+    if width < 1 or height < 1:
+        raise ValueError(f"Invalid PNG dimensions: {image_path}")
+    return width, height
+
+
+def _word_placeholder_size_from_image(image_path: str = "", export_zoom: float = 2.0) -> tuple[float, float]:
+    if not image_path:
+        return 7.15, 1.35
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"图片资源不存在：{image_path}")
+    width_px, height_px = _png_dimensions(image_path)
+    width_in = width_px / float(export_zoom) / 72.0
+    height_in = height_px / float(export_zoom) / 72.0
+    if width_in > 7.15:
+        scale = 7.15 / width_in
+        width_in *= scale
+        height_in *= scale
+    return max(1.5, width_in), max(0.75, min(3.8, height_in))
+
+
 def _write_word_image_placeholder(doc, text: str, image_path: str = ""):
-    if image_path:
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"图片资源不存在：{image_path}")
-        p = doc.add_paragraph()
-        p.paragraph_format.first_line_indent = Pt(0)
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.add_run().add_picture(image_path, width=Inches(6.6))
-        return
+    placeholder_width, placeholder_height = _word_placeholder_size_from_image(image_path)
     table = doc.add_table(rows=1, cols=1)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     set_table_borders(table)
     row = table.rows[0]
-    row.height = Inches(1.35)
+    row.height = Inches(placeholder_height)
     row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
     cell = row.cells[0]
-    set_cell_width(cell, Inches(7.15))
+    set_cell_width(cell, Inches(placeholder_width))
     para = cell.paragraphs[0]
     para.paragraph_format.first_line_indent = Pt(0)
     para.paragraph_format.space_before = Pt(0)

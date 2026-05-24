@@ -6,7 +6,19 @@ from exporters._shared import (
 )
 from exporters.markdown import _format_markdown_block
 from exporters.html import _html_block
-from exporters.word import _split_card_segments
+import struct
+
+import pytest
+
+from exporters.word import (
+    HAS_DOCX,
+    _split_card_segments,
+    _word_placeholder_size_from_image,
+    _write_word_image_placeholder,
+)
+
+if HAS_DOCX:
+    from docx import Document as DocxDocument
 
 
 def test_soft_wrapped_chinese_lines_are_merged():
@@ -93,6 +105,33 @@ def test_word_segments_stat_and_image_blocks():
 
     assert segments[0][0] == "stat"
     assert segments[1] == ("image", "Illustration placeholder")
+
+
+def _write_minimal_png(path, width, height):
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", 13)
+        + b"IHDR"
+        + struct.pack(">II", width, height)
+        + b"\x08\x02\x00\x00\x00"
+    )
+
+
+def test_word_image_placeholder_uses_png_size_without_embedding(tmp_path):
+    if not HAS_DOCX:
+        pytest.skip("python-docx is not installed")
+    image_path = tmp_path / "asset.png"
+    _write_minimal_png(image_path, 288, 144)
+
+    width, height = _word_placeholder_size_from_image(str(image_path))
+    assert width == pytest.approx(2.0)
+    assert height == pytest.approx(1.0)
+
+    doc = DocxDocument()
+    _write_word_image_placeholder(doc, "Illustration placeholder", str(image_path))
+
+    assert len(doc.tables) == 1
+    assert len(doc.inline_shapes) == 0
 
 
 def test_localized_card_markers_stay_structural():
