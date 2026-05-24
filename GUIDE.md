@@ -130,7 +130,7 @@ delta-green-pdf-translator/
     "glossary": "glossary.tsv",
     "model": "deepseek-v4-pro",
     "format": "markdown",
-    "workers": 1,
+    "workers": 32,
     "start": 0,
     "end": 5
 }
@@ -235,7 +235,7 @@ Token Stats:
     "glossary": "glossary.tsv",
     "model": "deepseek-v4-pro",
     "format": "all",
-    "workers": 4,
+    "workers": 32,
     "start": 0,
     "end": null
 }
@@ -243,7 +243,7 @@ Token Stats:
 
 变化：
 - `"format": "all"` → 同时输出 Markdown + PDF + Word
-- `"workers": 4` → 4线程并发，约12分钟完成
+- `"workers": 32` → 32线程并发，速度更快
 - `"end": null` → 翻译到最后一页
 
 运行：

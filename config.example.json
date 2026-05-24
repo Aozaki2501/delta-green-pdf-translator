@@ -6,7 +6,7 @@
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
     "format": "all",
-    "workers": 4,
+    "workers": 32,
     "start": 0,
     "end": null
 }

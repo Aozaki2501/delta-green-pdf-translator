@@ -521,7 +521,7 @@ with st.sidebar:
     provider = "deepseek"
     base_url = "https://api.deepseek.com"
     model = "deepseek-v4-pro"
-    workers = 4
+    workers = 32
     retranslate_pages_str = ""
     retry_failed_pages = False
     reuse_mismatched_progress = False
@@ -551,7 +551,7 @@ with st.sidebar:
 
     with st.expander("高级任务控制", expanded=False):
         model = st.text_input("模型名称", value=model)
-        workers = st.slider("并发线程", 1, 16, 4)
+        workers = st.slider("并发线程", 1, 64, 32)
         retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
         retry_failed_pages = st.checkbox("只重试失败页", value=False)
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
