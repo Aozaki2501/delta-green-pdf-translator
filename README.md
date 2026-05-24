@@ -99,7 +99,7 @@ python translate_pdf.py --config config.json
 也可以直接传参数：
 
 ```powershell
-python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 4
+python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 32
 ```
 
 ### 开发中：原版坐标 PDF
@@ -185,7 +185,7 @@ Web 界面支持选择性重翻。页码可以写成：
 | `--base-url` | OpenAI 兼容接口地址 |
 | `--model` | 模型名，默认 `deepseek-v4-pro` |
 | `--format` | 输出格式：`markdown`、`html`、`word`、`both`、`all` |
-| `--workers` | 并发数，范围 1 到 16 |
+| `--workers` | 并发数，范围 1 到 64，默认 32 |
 | `--start` | 起始页，从 0 开始 |
 | `--end` | 结束页，不包含这一页 |
 | `--retry-failed` | 只重试进度文件里记录的失败页 |
@@ -201,7 +201,7 @@ Web 界面支持选择性重翻。页码可以写成：
   "base_url": "https://api.deepseek.com",
   "model": "deepseek-v4-pro",
   "format": "all",
-  "workers": 4,
+  "workers": 32,
   "start": 0,
   "end": null
 }

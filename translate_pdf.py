@@ -16,7 +16,7 @@ v2.0 Features:
 
 Usage:
     python translate_pdf.py input.pdf --api-key YOUR_KEY
-    python translate_pdf.py input.pdf --api-key YOUR_KEY --format html --workers 4
+    python translate_pdf.py input.pdf --api-key YOUR_KEY --format html --workers 32
 """
 
 import argparse
@@ -87,7 +87,7 @@ configure_console_output()
 
 def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                   model="deepseek-v4-pro", start_page=0, end_page=None,
-                  output_format="markdown", max_workers=1,
+                  output_format="markdown", max_workers=32,
                   provider="deepseek", base_url="https://api.deepseek.com",
                   retry_failed=False):
     print("=" * 60)
@@ -105,7 +105,8 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         raise ValueError("Base URL 不能为空")
     if not provider or not str(provider).strip():
         raise ValueError("服务名称不能为空")
-    max_workers = max(1, min(16, int(max_workers or 1)))
+    max_workers = 32 if max_workers is None else int(max_workers)
+    max_workers = max(1, min(64, max_workers))
     output_base = output_path
     for ext in (".md", ".pdf", ".docx", ".html"):
         if output_base.endswith(ext):
@@ -399,7 +400,7 @@ def main():
   python translate_pdf.py --config config.json
 
   # 命令行参数
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format html --workers 4
+  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format html --workers 32
 
   # 指定术语表和范围
   python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx \
@@ -422,7 +423,7 @@ def main():
     parser.add_argument("--format", "-f", choices=["markdown", "html", "word", "both", "all"],
                         default=None, help="输出格式: markdown/html/word/both/all（默认: markdown）")
     parser.add_argument("--workers", "-w", type=int, default=None,
-                        help="并发线程数（默认: 1，推荐: 4）")
+                        help="并发线程数（默认: 32，上限: 64）")
     parser.add_argument("--start", type=int, default=None, help="起始页码（从0开始）")
     parser.add_argument("--end", type=int, default=None, help="结束页码（不含）")
     parser.add_argument("--retry-failed", action="store_true", help="只重试 progress.json 里记录的失败页")
@@ -443,7 +444,7 @@ def main():
     provider = args.provider or config.get("provider", "deepseek")
     base_url = args.base_url or config.get("base_url", "https://api.deepseek.com")
     output_format = args.format or config.get("format", "markdown")
-    workers = args.workers if args.workers is not None else config.get("workers", 1)
+    workers = args.workers if args.workers is not None else config.get("workers", 32)
     start_page = args.start if args.start is not None else config.get("start", 0)
     end_page = args.end if args.end is not None else config.get("end")
 
@@ -482,9 +483,9 @@ def main():
 
     if workers < 1:
         workers = 1
-    elif workers > 16:
-        print("⚠️  并发数上限为 16，已自动调整")
-        workers = 16
+    elif workers > 64:
+        print("⚠️  并发数上限为 64，已自动调整")
+        workers = 64
 
     # Run
     translate_pdf(
