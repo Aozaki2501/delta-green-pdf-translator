@@ -17,6 +17,7 @@ from core.layout_translation import (
     apply_translation_map,
     block_source_text,
     export_translation_template,
+    fit_translated_font_size,
     translate_layout_blocks,
     translate_layout_to_template,
     write_overflow_report,
@@ -138,8 +139,51 @@ def test_render_layout_html_uses_translated_block_when_present(tmp_path):
 
     html = out.read_text(encoding="utf-8")
     assert 'class="replica-translation replica-translation-box"' in html
+    assert 'data-base-font-px="' in html
+    assert "replicaFitTranslations" in html
     assert "绿色三角洲" in html
     assert 'data-span-id="p0001_t0000_s0000"' not in html
+
+
+def test_overflow_check_shrinks_translation_before_reporting(tmp_path):
+    out = tmp_path / "overflow.md"
+    block = LayoutTextBlock(
+        id="p0001_t0000",
+        bbox=[72, 90, 292, 170],
+        spans=[
+            LayoutSpan(
+                id="p0001_t0000_s0000",
+                text="Delta Green",
+                bbox=[72, 90, 292, 110],
+                font="Times-Roman",
+                size=12,
+                color="#111111",
+                flags=0,
+            )
+        ],
+        translated_text="translated text " * 30,
+    )
+    layout = LayoutDocument(
+        schema_version=LAYOUT_SCHEMA_VERSION,
+        source_pdf="sample.pdf",
+        page_count=1,
+        pages=[
+            LayoutPage(
+                index=0,
+                width=612,
+                height=792,
+                text_blocks=[block],
+                image_blocks=[],
+            )
+        ],
+    )
+
+    font_size, fits = fit_translated_font_size(block)
+    issues = write_overflow_report(layout, str(out))
+
+    assert fits is True
+    assert font_size < 12
+    assert issues == []
 
 
 def test_overflow_report_detects_long_translation(tmp_path):

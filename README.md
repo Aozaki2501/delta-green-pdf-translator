@@ -151,7 +151,8 @@ python render_layout_html.py "output/book.translated.layout.json" -o "output/boo
 python export_replica_pdf.py "output/book.translated.layout.json" -o "output/book.replica.pdf"
 ```
 
-当前阶段支持坐标提取、自动翻译、译文回填、HTML 检查、溢出报告和 PDF 导出。
+当前阶段支持坐标提取、自动翻译、译文回填、HTML 检查、自动缩字、溢出报告和 PDF 导出。
+后续会改为“原页底图 + 中文文本层”的 HTML 中间排版稿，开发计划见 `REPLICA_PDF_LAYOUT_PLAN.md`。
 
 ## Web 使用流程
 

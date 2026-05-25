@@ -896,20 +896,20 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             generated_files.append(replica_html_path)
 
             if issues:
-                render_status_flow(active_index=4, failed=True)
+                render_status_flow(active_index=4)
                 st.warning(
-                    f"发现 {len(issues)} 个译文溢出文本块。已生成 HTML 和溢出报告，"
-                    "请先缩短译文或手动调整后再导出 PDF。"
+                    f"发现 {len(issues)} 个需要缩字检查的文本块。"
+                    "PDF 会继续导出，并在浏览器排版阶段自动缩小译文字号。"
                 )
             else:
                 render_status_flow(active_index=4)
-                export_layout_pdf(
-                    translated_layout,
-                    replica_pdf_path,
-                    html_output=replica_html_path,
-                    show_boxes=False,
-                )
-                generated_files.append(replica_pdf_path)
+            export_layout_pdf(
+                translated_layout,
+                replica_pdf_path,
+                html_output=replica_html_path,
+                show_boxes=False,
+            )
+            generated_files.append(replica_pdf_path)
 
             for path in generated_files:
                 file_path = Path(path)
@@ -939,8 +939,8 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             }
             write_audit_record(audit_path, audit_record)
             generated_files.append(str(audit_path))
-            render_status_flow(active_index=5, failed=bool(issues))
-            render_completion_stamp("待处理溢出" if issues else "已归档")
+            render_status_flow(active_index=5)
+            render_completion_stamp("已归档")
             render_audit_grid({
                 "档案号": dossier_id,
                 "坐标页": len(layout.pages),

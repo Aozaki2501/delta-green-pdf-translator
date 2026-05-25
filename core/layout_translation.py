@@ -41,6 +41,10 @@ class LayoutFitIssue:
     text_length: int
 
 
+MIN_REPLICA_FONT_SIZE_PT = 5.0
+FIT_SEARCH_STEPS = 16
+
+
 class LayoutTranslationProgress:
     """Progress file for block-level replica layout translation."""
 
@@ -440,22 +444,56 @@ def _story_html(text: str, font_size: float) -> str:
     )
 
 
+def _block_box_size(block: LayoutTextBlock) -> tuple[float, float]:
+    x0, y0, x1, y1 = block.bbox
+    width = max(0, x1 - x0)
+    height = max(0, y1 - y0)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"文本块坐标无效：{block.id}")
+    return width, height
+
+
+def _translation_fits_box(text: str, font_size: float, width: float, height: float) -> bool:
+    story = pymupdf.Story(_story_html(text, font_size))
+    more, filled = story.place(pymupdf.Rect(0, 0, width, height))
+    filled_width = max(0, float(filled[2]) - float(filled[0]))
+    filled_height = max(0, float(filled[3]) - float(filled[1]))
+    return not more and filled_width <= width and filled_height <= height
+
+
+def fit_translated_font_size(block: LayoutTextBlock,
+                             min_font_size: float = MIN_REPLICA_FONT_SIZE_PT) -> tuple[float, bool]:
+    """Return the largest font size that fits the translated text in its source box."""
+    if not block.translated_text:
+        return _block_font_size(block), True
+    width, height = _block_box_size(block)
+    base_size = _block_font_size(block)
+    min_size = min(float(min_font_size), base_size)
+    if _translation_fits_box(block.translated_text, base_size, width, height):
+        return base_size, True
+    if not _translation_fits_box(block.translated_text, min_size, width, height):
+        return min_size, False
+
+    low = min_size
+    high = base_size
+    for _ in range(FIT_SEARCH_STEPS):
+        mid = (low + high) / 2
+        if _translation_fits_box(block.translated_text, mid, width, height):
+            low = mid
+        else:
+            high = mid
+    return round(low, 3), True
+
+
 def check_translated_overflow(layout: LayoutDocument) -> list[LayoutFitIssue]:
     issues = []
     for page in layout.pages:
         for block in page.text_blocks:
             if not block.translated_text:
                 continue
-            x0, y0, x1, y1 = block.bbox
-            width = max(0, x1 - x0)
-            height = max(0, y1 - y0)
-            if width <= 0 or height <= 0:
-                raise ValueError(f"文本块坐标无效：{block.id}")
-            story = pymupdf.Story(_story_html(block.translated_text, _block_font_size(block)))
-            more, filled = story.place(pymupdf.Rect(0, 0, width, height))
-            filled_width = max(0, float(filled[2]) - float(filled[0]))
-            filled_height = max(0, float(filled[3]) - float(filled[1]))
-            if more or filled_width > width or filled_height > height:
+            width, height = _block_box_size(block)
+            _, fits = fit_translated_font_size(block)
+            if not fits:
                 issues.append(LayoutFitIssue(
                     page=page.index + 1,
                     block_id=block.id,

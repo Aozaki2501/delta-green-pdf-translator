@@ -29,6 +29,8 @@ def export_html_to_pdf(html_path: str, pdf_output: str,
         browser = p.chromium.launch()
         page = browser.new_page()
         page.goto(_file_url(html_path), wait_until="load")
+        page.evaluate("document.fonts ? document.fonts.ready : Promise.resolve()")
+        page.evaluate("window.replicaFitTranslations ? window.replicaFitTranslations() : []")
         page.pdf(
             path=pdf_output,
             width=f"{width_pt / 72.0}in",

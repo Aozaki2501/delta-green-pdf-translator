@@ -19,6 +19,10 @@ def _css_px_from_pt(value: float) -> str:
     return f"{float(value) * CSS_PX_PER_PDF_POINT:.3f}px"
 
 
+def _raw_css_px_from_pt(value: float) -> float:
+    return float(value) * CSS_PX_PER_PDF_POINT
+
+
 def _css_in_from_pt(value: float) -> str:
     return f"{float(value) / 72.0:.6f}in"
 
@@ -48,6 +52,7 @@ def _render_page(page: LayoutPage, show_boxes: bool) -> str:
     parts = [
         (
             f'<section class="replica-page" '
+            f'data-page="{page.index + 1}" '
             f'style="width:{_css_px_from_pt(page.width)};height:{_css_px_from_pt(page.height)}">'
         )
     ]
@@ -63,13 +68,15 @@ def _render_page(page: LayoutPage, show_boxes: bool) -> str:
         if block.translated_text:
             x0, y0, x1, y1 = block.bbox
             box_class = " replica-translation-box" if show_boxes else ""
+            base_font_px = _raw_css_px_from_pt(_block_font_size(block))
             parts.append(
                 f'<div class="replica-translation{box_class}" '
                 f'data-block-id="{html.escape(block.id)}" '
+                f'data-base-font-px="{base_font_px:.3f}" '
                 f'style="left:{_css_px_from_pt(x0)};top:{_css_px_from_pt(y0)};'
                 f'width:{_css_px_from_pt(x1 - x0)};height:{_css_px_from_pt(y1 - y0)};'
                 f'font-family:{_font_family(_block_font(block))};'
-                f'font-size:{_css_px_from_pt(_block_font_size(block))}">'
+                f'font-size:{base_font_px:.3f}px">'
                 f'{_translated_html(block.translated_text)}'
                 '</div>'
             )
@@ -138,6 +145,9 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
         outline: 0.75px solid rgba(216, 0, 0, 0.75);
         background: rgba(216, 0, 0, 0.045);
     }}
+    .replica-overflow {{
+        outline: 1.25px solid rgba(255, 0, 0, 0.95);
+    }}
     .replica-image {{
         position: absolute;
         border: {("0.75px dashed rgba(0, 92, 255, 0.65)" if show_boxes else "0")};
@@ -171,7 +181,63 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
     ]
     for page in layout.pages:
         chunks.append(_render_page(page, show_boxes=show_boxes))
-    chunks.extend(["</body>", "</html>"])
+    chunks.extend([
+        """
+<script>
+(function () {
+    const MIN_FONT_PX = 5 * 96 / 72;
+
+    function overflows(el) {
+        return el.scrollHeight > el.clientHeight + 0.5 || el.scrollWidth > el.clientWidth + 0.5;
+    }
+
+    window.replicaFitTranslations = function () {
+        const results = [];
+        document.querySelectorAll(".replica-translation").forEach((el) => {
+            const base = Number(el.dataset.baseFontPx || window.getComputedStyle(el).fontSize.replace("px", ""));
+            el.style.fontSize = `${base}px`;
+            el.classList.remove("replica-overflow");
+            if (!overflows(el)) {
+                el.dataset.fitFontPx = base.toFixed(3);
+                results.push({ blockId: el.dataset.blockId, page: el.closest(".replica-page")?.dataset.page, fontPx: base, overflow: false });
+                return;
+            }
+
+            el.style.fontSize = `${MIN_FONT_PX}px`;
+            if (overflows(el)) {
+                el.dataset.fitFontPx = MIN_FONT_PX.toFixed(3);
+                el.dataset.fitOverflow = "true";
+                el.classList.add("replica-overflow");
+                results.push({ blockId: el.dataset.blockId, page: el.closest(".replica-page")?.dataset.page, fontPx: MIN_FONT_PX, overflow: true });
+                return;
+            }
+
+            let low = MIN_FONT_PX;
+            let high = base;
+            for (let i = 0; i < 16; i += 1) {
+                const mid = (low + high) / 2;
+                el.style.fontSize = `${mid}px`;
+                if (overflows(el)) {
+                    high = mid;
+                } else {
+                    low = mid;
+                }
+            }
+            el.style.fontSize = `${low}px`;
+            el.dataset.fitFontPx = low.toFixed(3);
+            results.push({ blockId: el.dataset.blockId, page: el.closest(".replica-page")?.dataset.page, fontPx: low, overflow: false });
+        });
+        window.replicaFitResults = results;
+        return results;
+    };
+
+    window.replicaFitTranslations();
+}());
+</script>
+""",
+        "</body>",
+        "</html>",
+    ])
     Path(output_path).write_text("\n".join(chunks), encoding="utf-8")
 
 
