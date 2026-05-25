@@ -1,5 +1,8 @@
 import json
 
+import pymupdf
+
+from core.layout_extractor import PDFLayoutExtractor
 from core.layout_model import (
     LAYOUT_SCHEMA_VERSION,
     LayoutDocument,
@@ -151,6 +154,27 @@ def test_overflow_report_detects_long_translation(tmp_path):
     assert len(issues) == 1
     assert issues[0].block_id == "p0001_t0000"
     assert "发现 1 个溢出文本块" in out.read_text(encoding="utf-8")
+
+
+def test_layout_extractor_merges_adjacent_body_lines(tmp_path):
+    pdf_path = tmp_path / "lines.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=420, height=300)
+    page.insert_text((50, 60), "First body line", fontsize=10)
+    page.insert_text((50, 74), "Second body line", fontsize=10)
+    page.insert_text((240, 60), "Right column line", fontsize=10)
+    page.insert_text((50, 120), "Separate paragraph", fontsize=10)
+    doc.save(pdf_path)
+    doc.close()
+
+    with PDFLayoutExtractor(str(pdf_path)) as extractor:
+        layout = extractor.extract()
+
+    blocks = layout.pages[0].text_blocks
+    texts = [block_source_text(block) for block in blocks]
+    assert "First body line\nSecond body line" in texts
+    assert "Right column line" in texts
+    assert "Separate paragraph" in texts
 
 
 class FakeTranslator:

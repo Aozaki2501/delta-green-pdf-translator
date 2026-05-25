@@ -310,7 +310,10 @@ def _marked_layout_text(blocks: list[LayoutTextBlock]) -> str:
     parts = [
         "Translate each block below. Preserve every block marker line exactly. "
         "Return one translated block for each source block. Do not merge blocks, remove markers, "
-        "or add commentary."
+        "or add commentary. Inside each block, output plain translated text only. "
+        "Do not add Markdown heading markers, bullet markers, notes, explanations, or formatting "
+        "unless that exact marker exists in the source block. Keep the translation concise so it "
+        "fits back into the original PDF text box."
     ]
     for block in blocks:
         parts.append(f"[BLOCK {block.id}]\n{block_source_text(block)}\n[/BLOCK {block.id}]")
