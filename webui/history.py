@@ -11,8 +11,16 @@ from typing import Any
 HISTORY_SUFFIX_LABELS = (
     ("_extraction_report.md", "提取诊断"),
     ("_glossary_report.md", "术语报告"),
+    ("_replica.overflow.md", "坐标溢出报告"),
+    ("_replica.translated.layout.json", "坐标译文"),
+    ("_replica.translations.json", "坐标译文模板"),
+    ("_replica.layout.json", "坐标版面"),
+    ("_replica.progress.json", "坐标进度"),
+    ("_replica.html", "坐标网页"),
+    ("_replica.pdf", "坐标PDF"),
     ("_audit.json", "审计记录"),
     (".progress.json", "进度"),
+    (".pdf", "PDF"),
     (".html", "网页"),
     (".docx", "文档"),
     (".md", "纯文本"),
@@ -60,7 +68,19 @@ def read_progress_summary(progress_path: Path) -> dict[str, Any]:
     metadata = data.get("metadata", {}) if isinstance(data.get("metadata", {}), dict) else {}
     completed = data.get("completed_pages", [])
     failed = data.get("failed_pages", {})
+    failed_blocks = data.get("failed_blocks", {})
     translations = data.get("translations", {})
+    if not completed and isinstance(failed_blocks, dict):
+        return {
+            "completed": len(translations) if isinstance(translations, dict) else 0,
+            "failed": len(failed_blocks),
+            "translated": len([v for v in translations.values() if str(v).strip()])
+            if isinstance(translations, dict) else 0,
+            "model": metadata.get("model", ""),
+            "provider": metadata.get("provider", ""),
+            "start_page": metadata.get("start_page"),
+            "end_page": metadata.get("end_page"),
+        }
     return {
         "completed": len(completed) if isinstance(completed, list) else 0,
         "failed": len(failed) if isinstance(failed, dict) else 0,

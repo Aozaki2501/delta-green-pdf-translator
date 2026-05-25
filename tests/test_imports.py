@@ -82,6 +82,9 @@ class TestCoreModuleImports:
         "core.utils",
         "core.glossary",
         "core.extractor",
+        "core.layout_model",
+        "core.layout_extractor",
+        "core.layout_translation",
         "core.translator",
         "core.progress",
     ]
@@ -123,6 +126,8 @@ class TestExporterModuleImports:
     EXPORTER_MODULES = [
         "exporters._shared",
         "exporters.html",
+        "exporters.pdf_html",
+        "exporters.pdf_playwright",
         "exporters.word",
         "exporters.markdown",
     ]

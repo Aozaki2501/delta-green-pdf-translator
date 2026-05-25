@@ -16,6 +16,14 @@ from translate_pdf import (
     build_progress_metadata, parse_page_selection, write_glossary_report,
     normalize_page_range, is_failed_translation, build_extraction_diagnostics_report
 )
+from core.layout_extractor import extract_layout_to_file
+from core.layout_translation import (
+    apply_translations_file,
+    translate_layout_to_template,
+    write_overflow_report,
+)
+from exporters.pdf_html import render_layout_html
+from exporters.pdf_playwright import export_layout_pdf
 from webui.components import (
     make_dossier_id,
     render_audit_grid,
@@ -35,6 +43,7 @@ OUTPUT_FORMAT_LABELS = {
     "markdown": "纯文本稿",
     "html": "网页排版",
     "word": "文档排版",
+    "replica_pdf": "原版坐标 PDF",
 }
 
 
@@ -619,10 +628,12 @@ with st.sidebar:
 
     formats = st.multiselect(
         "输出格式",
-        ["markdown", "html", "word"],
+        ["markdown", "html", "word", "replica_pdf"],
         default=["html", "word"],
         format_func=lambda value: OUTPUT_FORMAT_LABELS[value],
     )
+    if "replica_pdf" in formats:
+        st.caption("原版坐标 PDF 会单独运行，图片先保留占位框，不嵌回原图像素。")
 
     display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
     end_page_str = st.text_input("结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
@@ -734,6 +745,8 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         st.error("✗ 请输入模型名称")
     elif not formats:
         st.error("✗ 请至少选择一种输出格式")
+    elif "replica_pdf" in formats and len(formats) > 1:
+        st.error("✗ 原版坐标 PDF 请单独运行，避免和阅读版输出重复调用接口。")
     else:
         run_started_at = time.time()
         source_digest = uploaded_file_digest(pdf_file)
@@ -807,6 +820,137 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             st.warning("未使用术语表。")
         translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
         translator.set_glossary(glossary)
+
+        if formats == ["replica_pdf"]:
+            layout_path = make_output_path(output_base, "_replica.layout.json")
+            translations_path = make_output_path(output_base, "_replica.translations.json")
+            translated_layout_path = make_output_path(output_base, "_replica.translated.layout.json")
+            overflow_path = make_output_path(output_base, "_replica.overflow.md")
+            replica_html_path = make_output_path(output_base, "_replica.html")
+            replica_pdf_path = make_output_path(output_base, "_replica.pdf")
+            replica_progress_path = make_output_path(output_base, "_replica.progress.json")
+
+            render_status_flow(active_index=1)
+            st.info(f"📐 提取坐标版面：第 {start_page + 1}-{end_page} 页")
+            layout = extract_layout_to_file(
+                pdf_path,
+                layout_path,
+                start_page=start_page,
+                end_page=end_page,
+            )
+            generated_files.append(layout_path)
+
+            render_status_flow(active_index=3)
+            st.info("正在按文本块翻译坐标版面。")
+            replica_progress_bar = st.progress(0)
+            replica_status = st.empty()
+            replica_metric_cols = st.columns(4)
+            replica_done_metric = replica_metric_cols[0].empty()
+            replica_elapsed_metric = replica_metric_cols[1].empty()
+            replica_speed_metric = replica_metric_cols[2].empty()
+            replica_cost_metric = replica_metric_cols[3].empty()
+            replica_started_at = time.time()
+
+            def update_replica_progress(done_count, total_count, block_id, success):
+                pct = done_count / total_count if total_count else 1.0
+                elapsed = time.time() - replica_started_at
+                avg_seconds = elapsed / done_count if done_count else None
+                speed = 60 / avg_seconds if avg_seconds else None
+                state_text = "完成" if success else "失败"
+                try:
+                    replica_progress_bar.progress(
+                        min(pct, 1.0),
+                        text=f"{done_count}/{total_count} 块 ({pct * 100:.0f}%)",
+                    )
+                except TypeError:
+                    replica_progress_bar.progress(min(pct, 1.0))
+                replica_status.text(
+                    f"坐标翻译：{state_text} {block_id} | "
+                    f"已用 {format_duration(elapsed)} | 费用 ¥{stats.cost_yuan:.3f}"
+                )
+                replica_done_metric.metric("翻译组", f"{done_count}/{total_count}")
+                replica_elapsed_metric.metric("已用时", format_duration(elapsed))
+                replica_speed_metric.metric("速度", f"{speed:.1f} 组/分钟" if speed else "估算中")
+                replica_cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}")
+
+            translate_layout_to_template(
+                layout,
+                translator,
+                progress_file=replica_progress_path,
+                output_path=translations_path,
+                retry_failed=retry_failed_pages,
+                progress_callback=update_replica_progress,
+            )
+            generated_files.extend([translations_path, replica_progress_path])
+
+            translated_layout = apply_translations_file(
+                layout_path,
+                translations_path,
+                translated_layout_path,
+            )
+            generated_files.append(translated_layout_path)
+
+            issues = write_overflow_report(translated_layout, overflow_path)
+            generated_files.append(overflow_path)
+            render_layout_html(translated_layout, replica_html_path, show_boxes=True)
+            generated_files.append(replica_html_path)
+
+            if issues:
+                render_status_flow(active_index=4, failed=True)
+                st.warning(
+                    f"发现 {len(issues)} 个译文溢出文本块。已生成 HTML 和溢出报告，"
+                    "请先缩短译文或手动调整后再导出 PDF。"
+                )
+            else:
+                render_status_flow(active_index=4)
+                export_layout_pdf(
+                    translated_layout,
+                    replica_pdf_path,
+                    html_output=replica_html_path,
+                    show_boxes=False,
+                )
+                generated_files.append(replica_pdf_path)
+
+            for path in generated_files:
+                file_path = Path(path)
+                with open(file_path, "rb") as f:
+                    st.download_button(
+                        f"📥 下载 {file_path.name}",
+                        f,
+                        file_name=file_path.name,
+                    )
+
+            audit_path = Path(make_output_path(output_base, "_audit.json"))
+            audit_record = {
+                "dossier_id": dossier_id,
+                "source_file": pdf_file.name,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "provider": provider,
+                "model": model,
+                "page_range": f"{start_page + 1}-{end_page}",
+                "formats": formats,
+                "completed_pages": len(layout.pages),
+                "failed_pages": [],
+                "overflow_blocks": len(issues),
+                "glossary": Path(glossary_path).name if glossary_path else "",
+                "outputs": [Path(path).name for path in generated_files],
+            }
+            write_audit_record(audit_path, audit_record)
+            generated_files.append(str(audit_path))
+            render_status_flow(active_index=5, failed=bool(issues))
+            render_completion_stamp("待处理溢出" if issues else "已归档")
+            render_audit_grid({
+                "档案号": dossier_id,
+                "坐标页": len(layout.pages),
+                "溢出块": len(issues),
+                "输出数": len(generated_files),
+            })
+            with open(audit_path, "rb") as f:
+                st.download_button("📥 下载审计记录", f, file_name=audit_path.name)
+            extractor.close()
+            st.stop()
 
         progress_file = output_base + ".progress.json"
         progress_metadata = build_progress_metadata(

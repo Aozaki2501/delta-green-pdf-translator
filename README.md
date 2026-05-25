@@ -102,6 +102,57 @@ python translate_pdf.py --config config.json
 python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 4
 ```
 
+### 开发中：原版坐标 PDF
+
+这条链路用于开发“接近原版 PDF”的输出。它不会替代现有阅读版 HTML/Word。
+Web 界面里也可以在“输出格式”中单独选择“原版坐标 PDF”运行。
+
+注意：
+
+- 这个模式必须单独运行，不要和纯文本稿、网页排版、文档排版一起勾选。
+- 图片目前只保留原位置占位，不嵌回原图像素，方便后续手动处理。
+- 翻译会按同页文本块合并成“翻译组”，减少 API 调用，并保持同页上下文连贯。
+- 如果模型没有按块标记返回译文，任务会直接记录失败块，不会猜测拆分。
+
+先提取坐标级版面：
+
+```powershell
+python extract_layout.py "book.pdf" -o "output/book.layout.json"
+```
+
+再渲染为按原页坐标摆放的 HTML：
+
+```powershell
+python render_layout_html.py "output/book.layout.json" -o "output/book.replica.html" --show-boxes
+```
+
+导出待翻译文本模板：
+
+```powershell
+python export_layout_text.py "output/book.layout.json" -o "output/book.translations.json"
+```
+
+也可以直接调用翻译接口生成译文模板：
+
+```powershell
+python translate_layout_text.py "output/book.layout.json" -o "output/book.translations.json" --api-key "sk-xxx" --glossary glossary.tsv
+```
+
+把译文回填到 layout，并生成溢出报告：
+
+```powershell
+python apply_layout_translations.py "output/book.layout.json" "output/book.translations.json" -o "output/book.translated.layout.json" --overflow-report "output/book.overflow.md"
+python render_layout_html.py "output/book.translated.layout.json" -o "output/book.translated.replica.html" --show-boxes
+```
+
+最后导出 PDF：
+
+```powershell
+python export_replica_pdf.py "output/book.translated.layout.json" -o "output/book.replica.pdf"
+```
+
+当前阶段支持坐标提取、自动翻译、译文回填、HTML 检查、溢出报告和 PDF 导出。
+
 ## Web 使用流程
 
 1. 启动 Web 页面。
