@@ -411,13 +411,16 @@ def translate_layout_to_template(layout: LayoutDocument, translator,
                                  retry_failed: bool = False,
                                  progress_callback=None) -> dict[str, str]:
     progress = LayoutTranslationProgress(progress_file)
-    translations = translate_layout_blocks(
-        layout,
-        translator,
-        progress,
-        retry_failed=retry_failed,
-        progress_callback=progress_callback,
-    )
+    try:
+        translations = translate_layout_blocks(
+            layout,
+            translator,
+            progress,
+            retry_failed=retry_failed,
+            progress_callback=progress_callback,
+        )
+    finally:
+        progress.save()
     translated_layout = apply_translation_map(layout, translations)
     export_translation_template(translated_layout, output_path)
     return translations

@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -138,7 +139,7 @@ class ProgressTracker:
                 tmp_path = Path(f.name)
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.write("\n")
-            os.replace(tmp_path, progress_path)
+            _replace_with_retry(tmp_path, progress_path)
 
     def is_completed(self, page_num: int) -> bool:
         """Check whether a page has already been translated."""
@@ -222,3 +223,18 @@ class ProgressTracker:
         with self._lock:
             self.translation_cache[cache_key] = translation
         self.save()
+
+
+def _replace_with_retry(tmp_path: Path, target_path: Path, attempts: int = 20):
+    """Atomically replace a progress file, tolerating short Windows file locks."""
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        try:
+            os.replace(tmp_path, target_path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt == attempts - 1:
+                break
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
+    raise PermissionError(f"无法写入进度文件，目标可能被其他程序占用：{target_path}") from last_error

@@ -15,6 +15,7 @@ from webui.history import (
     format_file_size,
     format_file_time,
     history_file_label,
+    is_final_output_file,
 )
 
 
@@ -102,13 +103,13 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
         for entry in history_entries:
             progress = entry["progress"]
             audit = entry.get("audit", {})
+            download_files = entry.get("download_files", [])
             formats_text = " / ".join(
                 sorted({
                     history_file_label(path)
-                    for path in entry["files"]
-                    if not path.name.endswith(".progress.json")
+                    for path in download_files
                 })
-            ) or "仅进度"
+            ) or "无最终成品"
             dossier_id = audit.get("dossier_id") or entry["title"]
             header = (
                 f"{dossier_id} ｜ {format_file_time(entry['mtime'])} ｜ "
@@ -117,7 +118,7 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
             with st.expander(header, expanded=False):
                 failed_count = int(progress.get("failed", 0) or 0)
                 metric_cols = st.columns(4 if failed_count else 3)
-                metric_cols[0].metric("输出文件", f"{len(entry['files'])}")
+                metric_cols[0].metric("成品文件", f"{len(download_files)}")
                 metric_cols[1].metric("图片资源", f"{entry['assets']}")
                 metric_cols[2].metric("完成页", f"{progress.get('completed', 0)}")
                 if failed_count:
@@ -135,7 +136,9 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
                 render_audit_grid(audit_items)
                 st.caption(f"目录：{entry['folder']}")
 
-                for file_path in entry["files"]:
+                for file_path in download_files:
+                    if not is_final_output_file(file_path):
+                        continue
                     label = history_file_label(file_path)
                     button_label = f"下载{label}：{file_path.name}"
                     with open(file_path, "rb") as f:

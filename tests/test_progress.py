@@ -98,6 +98,25 @@ class TestSaveLoadRoundTrip:
         assert tracker2.is_completed(2) is True
         assert tracker2.get_translation(2) == "done"
 
+    def test_save_retries_windows_replace_lock(self, tmp_path, monkeypatch):
+        progress_file = str(tmp_path / "retry.progress.json")
+        real_replace = __import__("os").replace
+        calls = {"count": 0}
+
+        def flaky_replace(src, dst):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr("core.progress.os.replace", flaky_replace)
+
+        tracker = ProgressTracker(progress_file)
+        tracker.mark_completed(1, "done")
+
+        assert calls["count"] == 2
+        assert ProgressTracker(progress_file).get_translation(1) == "done"
+
 
 class TestMetadataMismatch:
     """Test metadata mismatch detection and discard behavior."""

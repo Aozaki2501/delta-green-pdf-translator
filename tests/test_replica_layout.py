@@ -267,6 +267,35 @@ def test_translate_layout_to_template_reports_progress(tmp_path):
     assert calls == [(1, 1, "p0001 / 1 块", True)]
 
 
+def test_translate_layout_to_template_writes_empty_progress(tmp_path):
+    layout = LayoutDocument(
+        schema_version=LAYOUT_SCHEMA_VERSION,
+        source_pdf="empty.pdf",
+        page_count=1,
+        pages=[
+            LayoutPage(
+                index=0,
+                width=300,
+                height=200,
+                text_blocks=[],
+                image_blocks=[],
+            )
+        ],
+    )
+    progress_path = tmp_path / "layout.progress.json"
+
+    translate_layout_to_template(
+        layout,
+        FakeTranslator(),
+        progress_file=str(progress_path),
+        output_path=str(tmp_path / "translations.json"),
+    )
+
+    data = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert data["translations"] == {}
+    assert data["failed_blocks"] == {}
+
+
 class BrokenMarkerTranslator:
     def translate_chunk(self, text, page_num=None, prev_context="", cache=None):
         return "没有块标记的译文"

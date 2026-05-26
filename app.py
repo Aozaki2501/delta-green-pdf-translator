@@ -19,6 +19,7 @@ from translate_pdf import (
 from core.layout_extractor import extract_layout_to_file
 from core.layout_translation import (
     apply_translations_file,
+    block_source_text,
     translate_layout_to_template,
     write_overflow_report,
 )
@@ -33,7 +34,7 @@ from webui.components import (
     render_status_flow,
     render_system_log,
 )
-from webui.history import write_audit_record
+from webui.history import is_final_output_file, write_audit_record
 from webui.theme import render_workstation_effects
 
 
@@ -70,6 +71,28 @@ def format_duration(seconds):
 
 def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
+
+
+def existing_output_files(paths, final_only: bool = False):
+    files = [Path(path) for path in paths if Path(path).exists()]
+    if final_only:
+        files = [path for path in files if is_final_output_file(path)]
+    return [str(path) for path in files]
+
+
+def render_downloads(paths, label_prefix="下载"):
+    for path in existing_output_files(paths, final_only=True):
+        file_path = Path(path)
+        with open(file_path, "rb") as f:
+            st.download_button(
+                f"📥 {label_prefix} {file_path.name}",
+                f,
+                file_name=file_path.name,
+            )
+
+
+def contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
 
 def safe_filename_stem(filename: str, default: str = "document") -> str:
@@ -182,7 +205,8 @@ st.markdown("""
     }
 
     @media (prefers-reduced-motion: reduce) {
-        .stApp::after, .boot-screen, .classified-hero, .section-card, .intel-tile { animation: none !important; }
+        .stApp::after, .classified-hero, .section-card, .intel-tile { animation: none !important; }
+        .boot-screen { display: none !important; opacity: 0 !important; visibility: hidden !important; }
     }
 
     section[data-testid="stSidebar"] {
@@ -521,6 +545,11 @@ except TypeError:
     .stDownloadButton > button::before {
         animation: none !important;
     }
+    .boot-screen {
+        display: none !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+    }
 </style>
             """,
             unsafe_allow_html=True,
@@ -563,19 +592,9 @@ st.markdown(
 )
 
 # === HEADER ===
-st.markdown("""
-<div class="boot-screen">
-    <div class="boot-panel">
-        <div class="boot-title">绝密系统接入中</div>
-        <div class="boot-lines">
-            > 正在校验操作员密钥<br>
-            > 正在载入译文编译协议<br>
-            > 正在建立黑色档案通道
-        </div>
-        <div class="boot-bar"></div>
-        <div class="boot-stamp">TOP SECRET</div>
-    </div>
-</div>
+boot_screen = ""
+st.markdown(f"""
+{boot_screen}
 <div class="classified-hero">
     <div class="hero-title">三角洲翻译终端</div>
     <div class="hero-subtitle">
@@ -622,6 +641,7 @@ with st.sidebar:
     word_header_right = ""
 
     st.checkbox("低动效模式", value=False, key="reduce_motion")
+    st.caption("开启后会关闭入场遮罩和主要动画，适合远程部署或低性能浏览器。")
 
     st.caption("必要项")
     api_key = st.text_input("接口密钥", type="password", placeholder="sk-...")
@@ -633,7 +653,7 @@ with st.sidebar:
         format_func=lambda value: OUTPUT_FORMAT_LABELS[value],
     )
     if "replica_pdf" in formats:
-        st.caption("原版坐标 PDF 会单独运行，图片先保留占位框，不嵌回原图像素。")
+        st.caption("原版坐标 PDF 会单独运行，先生成原页底图和中文文本层。")
 
     display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
     end_page_str = st.text_input("结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
@@ -646,6 +666,14 @@ with st.sidebar:
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
+
+    with st.expander("断点续跑说明", expanded=False):
+        st.caption(
+            "同一个 PDF、同一个术语表、同一个模型和同一段页码会复用 progress.json。"
+            "中断后重新上传同一文件并使用相同设置，再点执行即可继续。"
+            "如果只想补失败页，勾选“只重试失败页”。"
+            "如果改过模型、术语表或页码，默认不会复用旧译文。"
+        )
 
     if "word" in formats:
         with st.expander("文档档案输出", expanded=False):
@@ -796,6 +824,19 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         ensure_dir(document_output_dir)
         output_base = str(document_output_dir / f"{pdf_stem}_cn")
         generated_files = []
+        audit_path = Path(make_output_path(output_base, "_audit.json"))
+        write_audit_record(audit_path, {
+            "dossier_id": dossier_id,
+            "source_file": pdf_file.name,
+            "source_sha256": source_digest,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+            "finished_at": "",
+            "status": "running",
+            "provider": provider,
+            "model": model,
+            "formats": formats,
+            "outputs": [],
+        })
 
         # Init
         stats = TokenStats()
@@ -882,6 +923,56 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 progress_callback=update_replica_progress,
             )
             generated_files.extend([translations_path, replica_progress_path])
+            replica_source_blocks = [
+                block
+                for page in layout.pages
+                for block in page.text_blocks
+                if block_source_text(block).strip()
+            ]
+            replica_progress_data = {}
+            if Path(replica_progress_path).exists():
+                try:
+                    import json
+                    replica_progress_data = json.loads(Path(replica_progress_path).read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    replica_progress_data = {}
+            replica_translations = replica_progress_data.get("translations", {})
+            if replica_source_blocks and not any(str(text).strip() for text in replica_translations.values()):
+                write_audit_record(audit_path, {
+                    "dossier_id": dossier_id,
+                    "source_file": pdf_file.name,
+                    "source_sha256": source_digest,
+                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                    "status": "failed",
+                    "provider": provider,
+                    "model": model,
+                    "page_range": f"{start_page + 1}-{end_page}",
+                    "formats": formats,
+                    "reason": "坐标 PDF 没有生成任何译文",
+                    "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
+                })
+                st.error("坐标 PDF 没有生成任何译文，已停止导出，避免产出全英文 PDF。")
+                extractor.close()
+                st.stop()
+            if replica_translations and not any(contains_cjk(str(text)) for text in replica_translations.values()):
+                write_audit_record(audit_path, {
+                    "dossier_id": dossier_id,
+                    "source_file": pdf_file.name,
+                    "source_sha256": source_digest,
+                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                    "status": "failed",
+                    "provider": provider,
+                    "model": model,
+                    "page_range": f"{start_page + 1}-{end_page}",
+                    "formats": formats,
+                    "reason": "坐标 PDF 译文没有中文字符",
+                    "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
+                })
+                st.error("坐标 PDF 译文没有中文字符，已停止导出，避免产出全英文 PDF。")
+                extractor.close()
+                st.stop()
 
             translated_layout = apply_translations_file(
                 layout_path,
@@ -892,7 +983,11 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
 
             issues = write_overflow_report(translated_layout, overflow_path)
             generated_files.append(overflow_path)
-            render_layout_html(translated_layout, replica_html_path, show_boxes=True)
+            render_layout_html(
+                translated_layout,
+                replica_html_path,
+                show_boxes=True,
+            )
             generated_files.append(replica_html_path)
 
             if issues:
@@ -911,22 +1006,15 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             )
             generated_files.append(replica_pdf_path)
 
-            for path in generated_files:
-                file_path = Path(path)
-                with open(file_path, "rb") as f:
-                    st.download_button(
-                        f"📥 下载 {file_path.name}",
-                        f,
-                        file_name=file_path.name,
-                    )
+            render_downloads(generated_files)
 
-            audit_path = Path(make_output_path(output_base, "_audit.json"))
             audit_record = {
                 "dossier_id": dossier_id,
                 "source_file": pdf_file.name,
                 "source_sha256": source_digest,
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "completed",
                 "provider": provider,
                 "model": model,
                 "page_range": f"{start_page + 1}-{end_page}",
@@ -935,7 +1023,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 "failed_pages": [],
                 "overflow_blocks": len(issues),
                 "glossary": Path(glossary_path).name if glossary_path else "",
-                "outputs": [Path(path).name for path in generated_files],
+                "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
             }
             write_audit_record(audit_path, audit_record)
             generated_files.append(str(audit_path))
@@ -945,10 +1033,8 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 "档案号": dossier_id,
                 "坐标页": len(layout.pages),
                 "溢出块": len(issues),
-                "输出数": len(generated_files),
+                "成品数": len(existing_output_files(generated_files, final_only=True)),
             })
-            with open(audit_path, "rb") as f:
-                st.download_button("📥 下载审计记录", f, file_name=audit_path.name)
             extractor.close()
             st.stop()
 
@@ -967,6 +1053,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             expected_metadata=progress_metadata,
             reuse_mismatched=reuse_mismatched_progress,
         )
+        tracker.save()
         if tracker.metadata_mismatches:
             st.warning(
                 "检测到 progress.json 与当前设置不一致："
@@ -1137,6 +1224,42 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 "以下页翻译失败，已记录为失败页，修复网络/API 问题后可勾选“只重试失败页”："
                 + ", ".join(map(str, failed_pages[:20]))
             )
+        if not translated_pages_sorted:
+            write_audit_record(audit_path, {
+                "dossier_id": dossier_id,
+                "source_file": pdf_file.name,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "failed",
+                "provider": provider,
+                "model": model,
+                "page_range": f"{start_page + 1}-{end_page}",
+                "formats": formats,
+                "reason": "没有生成任何译文",
+                "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
+            })
+            st.error("没有生成任何译文，已停止输出。请检查 API、页码范围、PDF 是否有可提取文本，或查看失败页。")
+            extractor.close()
+            st.stop()
+        if not any(contains_cjk(text) for _, text in translated_pages_sorted):
+            write_audit_record(audit_path, {
+                "dossier_id": dossier_id,
+                "source_file": pdf_file.name,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "failed",
+                "provider": provider,
+                "model": model,
+                "page_range": f"{start_page + 1}-{end_page}",
+                "formats": formats,
+                "reason": "译文没有中文字符",
+                "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
+            })
+            st.error("译文没有中文字符，已停止输出，避免产出全英文文件。")
+            extractor.close()
+            st.stop()
 
         # Stats
         col_a, col_b, col_c = st.columns(3)
@@ -1151,23 +1274,11 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             f.write(build_extraction_diagnostics_report(page_diagnostics, pdf_stem))
             f.write("\n")
         generated_files.append(diagnostics_path)
-        with open(diagnostics_path, "rb") as f:
-            st.download_button(
-                "📥 下载提取诊断报告",
-                f,
-                file_name=Path(diagnostics_path).name,
-            )
 
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
             write_glossary_report(pages_text, glossary, report_path, pdf_stem)
             generated_files.append(report_path)
-            with open(report_path, "rb") as f:
-                st.download_button(
-                    "📥 下载术语命中报告",
-                    f,
-                    file_name=Path(report_path).name,
-                )
 
         if "markdown" in formats:
             md_path = make_output_path(output_base, ".md")
@@ -1181,13 +1292,6 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             )
             generated_files.append(md_path)
 
-            with open(md_path, "rb") as f:
-                st.download_button(
-                    "📥 下载纯文本稿",
-                    f,
-                    file_name=Path(md_path).name,
-                )
-
         if "html" in formats:
             html_path = make_output_path(output_base, ".html")
             try:
@@ -1199,13 +1303,6 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     image_assets=image_assets,
                 )
                 generated_files.append(html_path)
-                with open(html_path, "rb") as f:
-                    st.download_button(
-                        "📥 下载网页排版",
-                        f,
-                        file_name=Path(html_path).name,
-                        mime="text/html",
-                    )
             except Exception as e:
                 st.error(f"网页排版输出失败：{e}")
 
@@ -1232,20 +1329,13 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 )
                 generated_files.append(docx_path)
 
-                with open(docx_path, "rb") as f:
-                    st.download_button(
-                        "📥 下载文档排版",
-                        f,
-                        file_name=Path(docx_path).name,
-                    )
-
-        audit_path = Path(make_output_path(output_base, "_audit.json"))
         audit_record = {
             "dossier_id": dossier_id,
             "source_file": pdf_file.name,
             "source_sha256": source_digest,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "status": "completed" if not failed_pages else "completed_with_failures",
             "provider": provider,
             "model": model,
             "page_range": f"{start_page + 1}-{end_page}",
@@ -1253,7 +1343,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             "completed_pages": len(translated_pages_sorted),
             "failed_pages": failed_pages,
             "glossary": Path(glossary_path).name if glossary_path else "",
-            "outputs": [Path(path).name for path in generated_files],
+            "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
         }
         write_audit_record(audit_path, audit_record)
         generated_files.append(str(audit_path))
@@ -1262,15 +1352,10 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         final_audit_items = {
             "档案号": dossier_id,
             "完成页": len(translated_pages_sorted),
-            "输出数": len(generated_files),
+            "成品数": len(existing_output_files(generated_files, final_only=True)),
         }
         if failed_pages:
             final_audit_items["失败页"] = ", ".join(map(str, failed_pages[:12]))
         render_audit_grid(final_audit_items)
-        with open(audit_path, "rb") as f:
-            st.download_button(
-                "📥 下载审计记录",
-                f,
-                file_name=audit_path.name,
-            )
+        render_downloads(generated_files)
         extractor.close()

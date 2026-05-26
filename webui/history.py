@@ -27,6 +27,28 @@ HISTORY_SUFFIX_LABELS = (
 )
 
 
+INTERNAL_OUTPUT_SUFFIXES = (
+    "_extraction_report.md",
+    "_glossary_report.md",
+    "_replica.overflow.md",
+    "_replica.translated.layout.json",
+    "_replica.translations.json",
+    "_replica.layout.json",
+    "_replica.progress.json",
+    "_audit.json",
+    ".progress.json",
+)
+
+FINAL_OUTPUT_SUFFIXES = (
+    "_replica.pdf",
+    "_replica.html",
+    ".pdf",
+    ".html",
+    ".docx",
+    ".md",
+)
+
+
 def history_file_label(path: Path) -> str:
     name = path.name
     for suffix, label in HISTORY_SUFFIX_LABELS:
@@ -37,6 +59,15 @@ def history_file_label(path: Path) -> str:
 
 def is_history_file(path: Path) -> bool:
     return path.is_file() and any(path.name.endswith(suffix) for suffix, _ in HISTORY_SUFFIX_LABELS)
+
+
+def is_final_output_file(path: Path) -> bool:
+    name = path.name
+    if not path.is_file():
+        return False
+    if any(name.endswith(suffix) for suffix in INTERNAL_OUTPUT_SUFFIXES):
+        return False
+    return any(name.endswith(suffix) for suffix in FINAL_OUTPUT_SUFFIXES)
 
 
 def format_file_size(size: int) -> str:
@@ -100,6 +131,24 @@ def write_audit_record(path: Path, record: dict[str, Any]) -> None:
         f.write("\n")
 
 
+def _asset_count(folder: Path) -> int:
+    assets_dir = folder / "assets"
+    if not assets_dir.exists():
+        return 0
+    return len([path for path in assets_dir.rglob("*") if path.is_file()])
+
+
+def _files_for_audit(folder: Path, audit_path: Path, all_files: list[Path]) -> list[Path]:
+    audit = read_json_file(audit_path)
+    output_names = audit.get("outputs", [])
+    if not isinstance(output_names, list) or not output_names:
+        return all_files
+    wanted = {str(name) for name in output_names}
+    wanted.add(audit_path.name)
+    files = [path for path in all_files if path.name in wanted]
+    return files or [audit_path]
+
+
 def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict[str, Any]]:
     if not output_dir.exists():
         return []
@@ -117,21 +166,37 @@ def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict[str, A
             continue
         progress_files = [path for path in files if path.name.endswith(".progress.json")]
         audit_files = [path for path in files if path.name.endswith("_audit.json")]
-        assets_dir = folder / "assets"
-        asset_count = (
-            len([path for path in assets_dir.iterdir() if path.is_file()])
-            if assets_dir.exists() else 0
-        )
-        entries.append({
-            "title": folder.name,
-            "folder": folder,
-            "files": files,
-            "mtime": max(path.stat().st_mtime for path in files),
-            "size": sum(path.stat().st_size for path in files),
-            "assets": asset_count,
-            "progress": read_progress_summary(progress_files[0]) if progress_files else {},
-            "audit": read_json_file(audit_files[0]) if audit_files else {},
-        })
+        if audit_files:
+            for audit_path in audit_files:
+                audit = read_json_file(audit_path)
+                audit_files_for_entry = _files_for_audit(folder, audit_path, files)
+                entry_progress_files = [
+                    path for path in audit_files_for_entry
+                    if path.name.endswith(".progress.json")
+                ] or progress_files
+                entries.append({
+                    "title": folder.name,
+                    "folder": folder,
+                    "files": audit_files_for_entry,
+                    "download_files": [path for path in audit_files_for_entry if is_final_output_file(path)],
+                    "mtime": audit_path.stat().st_mtime,
+                    "size": sum(path.stat().st_size for path in audit_files_for_entry),
+                    "assets": _asset_count(folder),
+                    "progress": read_progress_summary(entry_progress_files[0]) if entry_progress_files else {},
+                    "audit": audit,
+                })
+        else:
+            entries.append({
+                "title": folder.name,
+                "folder": folder,
+                "files": files,
+                "download_files": [path for path in files if is_final_output_file(path)],
+                "mtime": max(path.stat().st_mtime for path in files),
+                "size": sum(path.stat().st_size for path in files),
+                "assets": _asset_count(folder),
+                "progress": read_progress_summary(progress_files[0]) if progress_files else {},
+                "audit": {},
+            })
 
     loose_files = sorted(
         [path for path in output_dir.iterdir() if is_history_file(path)],
@@ -145,6 +210,7 @@ def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict[str, A
             "title": "根目录旧输出",
             "folder": output_dir,
             "files": loose_files[:20],
+            "download_files": [path for path in loose_files[:20] if is_final_output_file(path)],
             "mtime": max(path.stat().st_mtime for path in loose_files),
             "size": sum(path.stat().st_size for path in loose_files),
             "assets": 0,
