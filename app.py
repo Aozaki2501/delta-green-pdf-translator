@@ -37,6 +37,12 @@ from webui.components import (
 from webui.history import is_final_output_file, write_audit_record
 from webui.theme import render_workstation_effects
 
+# MD / DOCX translation support
+from translate_md import translate_md_file
+from translate_docx import translate_docx_file
+from core.md_extractor import MarkdownExtractor
+from core.docx_extractor import DocxExtractor, HAS_DOCX as HAS_DOCX_LIB
+
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_GLOSSARY_PATH = APP_DIR / "glossary.tsv"
@@ -694,11 +700,11 @@ with st.sidebar:
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
 st.subheader("导入机密档案")
-st.caption("上传原始 PDF。默认加载本地 glossary.tsv；只有需要替换术语时再上传自定义文件。")
+st.caption("上传原始文件（PDF / Markdown / Word）。默认加载本地 glossary.tsv；只有需要替换术语时再上传自定义文件。")
 
 col1, col2 = st.columns([1.2, 1])
 with col1:
-    pdf_file = st.file_uploader("PDF 档案", type=["pdf"], label_visibility="collapsed")
+    source_file = st.file_uploader("源文件", type=["pdf", "md", "txt", "docx"], label_visibility="collapsed")
 with col2:
     glossary_file = st.file_uploader("替换术语表，可选", type=["tsv", "txt", "csv"], label_visibility="collapsed")
     if glossary_file:
@@ -708,15 +714,33 @@ with col2:
     else:
         st.caption("未找到默认术语表；可上传自定义术语表。")
 
+# Detect file type
+pdf_file = None
+md_file = None
+docx_file = None
+source_type = None
+if source_file:
+    ext = Path(source_file.name).suffix.lower()
+    if ext == ".pdf":
+        pdf_file = source_file
+        source_type = "pdf"
+    elif ext in (".md", ".txt"):
+        md_file = source_file
+        source_type = "markdown"
+    elif ext == ".docx":
+        docx_file = source_file
+        source_type = "docx"
+
 st.markdown("</div>", unsafe_allow_html=True)
 
-if pdf_file:
-    current_digest = uploaded_file_digest(pdf_file)
-    current_dossier_id = make_dossier_id(pdf_file.name, current_digest)
+if source_file:
+    current_digest = uploaded_file_digest(source_file)
+    current_dossier_id = make_dossier_id(source_file.name, current_digest)
     glossary_name = glossary_file.name if glossary_file else "glossary.tsv"
+    source_type_label = {"pdf": "PDF", "markdown": "Markdown", "docx": "Word"}.get(source_type, "")
     render_dossier_card(
         current_dossier_id,
-        pdf_file.name,
+        f"{source_file.name} [{source_type_label}]",
         current_digest,
         glossary_name=glossary_name,
         loaded=True,
@@ -725,6 +749,7 @@ if pdf_file:
     render_system_log([
         ("info", "档案接收完成"),
         ("info", f"档案号 {current_dossier_id} 已生成"),
+        ("info", f"文件类型：{source_type_label}"),
         ("info", "等待执行翻译任务"),
     ])
 
@@ -763,18 +788,194 @@ if pdf_file and show_extraction_preview:
             preview_extractor.close()
 
 if st.button("执行翻译任务", type="primary", use_container_width=True):
-    if not pdf_file:
-        st.error("✗ 请上传 PDF 文件")
+    if not source_file:
+        st.error("✗ 请上传文件（PDF / Markdown / Word）")
     elif not api_key:
         st.error("✗ 请输入接口密钥")
     elif not base_url.strip():
         st.error("✗ 请输入接口地址")
     elif not model.strip():
         st.error("✗ 请输入模型名称")
-    elif not formats:
+    elif source_type == "pdf" and not formats:
         st.error("✗ 请至少选择一种输出格式")
-    elif "replica_pdf" in formats and len(formats) > 1:
+    elif source_type == "pdf" and "replica_pdf" in formats and len(formats) > 1:
         st.error("✗ 原版坐标 PDF 请单独运行，避免和阅读版输出重复调用接口。")
+    elif source_type in ("markdown", "docx"):
+        # ============================================================
+        # MARKDOWN / DOCX TRANSLATION FLOW
+        # ============================================================
+        run_started_at = time.time()
+        source_digest = uploaded_file_digest(source_file)
+        dossier_id = make_dossier_id(source_file.name, source_digest, created_at=run_started_at)
+        source_type_label = "Markdown" if source_type == "markdown" else "Word"
+        render_dossier_card(
+            dossier_id,
+            f"{source_file.name} [{source_type_label}]",
+            source_digest,
+            glossary_name=glossary_file.name if glossary_file else "glossary.tsv",
+            loaded=True,
+        )
+        render_status_flow(active_index=1)
+        render_system_log([
+            ("info", "接收档案完成"),
+            ("info", f"档案号 {dossier_id}"),
+            ("info", f"文件类型：{source_type_label}"),
+            ("info", "准备提取文本块"),
+        ])
+
+        # Save uploaded files
+        upload_dir = APP_DIR / "uploads"
+        output_dir = APP_DIR / "output"
+        ensure_dir(upload_dir)
+        ensure_dir(output_dir)
+
+        file_stem = safe_filename_stem(source_file.name)
+        file_ext = Path(source_file.name).suffix.lower()
+        upload_name = f"_upload_{file_stem}_{uuid.uuid4().hex[:8]}{file_ext}"
+        source_path = str(upload_dir / upload_name)
+        with open(source_path, "wb") as f:
+            f.write(source_file.getvalue())
+
+        glossary_path = str(DEFAULT_GLOSSARY_PATH) if DEFAULT_GLOSSARY_PATH.exists() else None
+        if glossary_file:
+            glossary_suffix = Path(glossary_file.name).suffix.lower() or ".tsv"
+            glossary_upload_name = f"_upload_{safe_filename_stem(glossary_file.name, 'glossary')}_{uuid.uuid4().hex[:8]}{glossary_suffix}"
+            glossary_path = str(upload_dir / glossary_upload_name)
+            with open(glossary_path, "wb") as f:
+                f.write(glossary_file.getvalue())
+
+        document_output_dir = output_dir / f"{file_stem}_cn"
+        ensure_dir(document_output_dir)
+
+        if source_type == "markdown":
+            output_path = str(document_output_dir / f"{file_stem}_zh.md")
+        else:
+            output_path = str(document_output_dir / f"{file_stem}_zh.docx")
+
+        generated_files = []
+        audit_path = Path(make_output_path(str(document_output_dir / f"{file_stem}_cn"), "_audit.json"))
+        write_audit_record(audit_path, {
+            "dossier_id": dossier_id,
+            "source_file": source_file.name,
+            "source_type": source_type,
+            "source_sha256": source_digest,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+            "finished_at": "",
+            "status": "running",
+            "model": model,
+            "outputs": [],
+        })
+
+        # Progress UI
+        render_status_flow(active_index=3)
+        st.subheader("翻译进度")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        metric_cols = st.columns(4)
+        progress_metric = metric_cols[0].empty()
+        elapsed_metric = metric_cols[1].empty()
+        speed_metric = metric_cols[2].empty()
+        cost_metric = metric_cols[3].empty()
+        translation_started_at = time.time()
+
+        def md_docx_progress_callback(block_idx, text, completed_count, total_count):
+            pct = completed_count / total_count if total_count else 1.0
+            elapsed = time.time() - translation_started_at
+            avg_seconds = elapsed / completed_count if completed_count else None
+            speed = 60 / avg_seconds if avg_seconds else None
+            try:
+                progress_bar.progress(min(pct, 1.0), text=f"{completed_count}/{total_count} 块 ({pct * 100:.0f}%)")
+            except TypeError:
+                progress_bar.progress(min(pct, 1.0))
+            status_text.text(f"翻译中: {completed_count}/{total_count} 块")
+            progress_metric.metric("进度", f"{completed_count}/{total_count}")
+            elapsed_metric.metric("已用时", format_duration(elapsed))
+            speed_metric.metric("速度", f"{speed:.1f} 块/分钟" if speed else "估算中")
+            cost_metric.metric("费用", f"估算中")
+
+        try:
+            if source_type == "markdown":
+                result = translate_md_file(
+                    md_path=source_path,
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    glossary_path=glossary_path,
+                    output_path=output_path,
+                    max_workers=max(1, int(workers)),
+                    progress_callback=md_docx_progress_callback,
+                )
+            else:
+                result = translate_docx_file(
+                    docx_path=source_path,
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    glossary_path=glossary_path,
+                    output_path=output_path,
+                    max_workers=max(1, int(workers)),
+                    progress_callback=md_docx_progress_callback,
+                )
+
+            generated_files.append(result["output_path"])
+
+            # Final progress
+            elapsed = time.time() - translation_started_at
+            try:
+                progress_bar.progress(1.0, text="完成")
+            except TypeError:
+                progress_bar.progress(1.0)
+            status_text.text(f"✓ 翻译完成! 总用时 {format_duration(elapsed)}")
+
+            # Stats
+            col_a, col_b = st.columns(2)
+            col_a.metric("📄 翻译块数", f"{result['translated_count']}/{result['block_count']}")
+            col_b.metric("📁 输出文件", Path(result["output_path"]).name)
+
+            if result.get("stats_summary"):
+                with st.expander("Token 统计", expanded=False):
+                    st.text(result["stats_summary"])
+
+            # Audit
+            write_audit_record(audit_path, {
+                "dossier_id": dossier_id,
+                "source_file": source_file.name,
+                "source_type": source_type,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "completed",
+                "model": model,
+                "block_count": result["block_count"],
+                "translated_count": result["translated_count"],
+                "glossary": Path(glossary_path).name if glossary_path else "",
+                "outputs": [Path(p).name for p in existing_output_files(generated_files, final_only=True)],
+            })
+            generated_files.append(str(audit_path))
+
+            render_status_flow(active_index=5)
+            render_completion_stamp("已归档")
+            render_audit_grid({
+                "档案号": dossier_id,
+                "翻译块": result["translated_count"],
+                "成品数": len(existing_output_files(generated_files, final_only=True)),
+            })
+            render_downloads(generated_files)
+
+        except Exception as e:
+            st.error(f"翻译过程出错：{e}")
+            write_audit_record(audit_path, {
+                "dossier_id": dossier_id,
+                "source_file": source_file.name,
+                "source_type": source_type,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "failed",
+                "model": model,
+                "reason": str(e),
+                "outputs": [],
+            })
     else:
         run_started_at = time.time()
         source_digest = uploaded_file_digest(pdf_file)
