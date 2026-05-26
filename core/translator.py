@@ -122,6 +122,7 @@ Translation rules:
 8. Preserve blockquotes (> lines) exactly as blockquotes.
 9. Do NOT translate image links (![...](...)). Keep them exactly as-is.
 10. Do NOT add any Markdown syntax that was not in the source.
+11. Preserve [BLOCK n] and [/BLOCK n] marker lines exactly. Return one translated block for each source block.
 
 {glossary_section}"""
 
@@ -135,6 +136,7 @@ Translation rules:
 5. If previous context is provided, ensure continuity. Do not re-translate previous content.
 6. If the source contains inline format markers like <b>...</b> or <i>...</i>, preserve them exactly in the translation. These markers indicate bold and italic formatting boundaries that must be maintained.
 7. Translate ONLY the text content. Do not add explanations, notes, or commentary.
+8. If the source contains [BLOCK n] and [/BLOCK n] marker lines, preserve them exactly and return one translated block for each source block.
 
 {glossary_section}"""
 

@@ -10,7 +10,9 @@ Dependencies: python-docx, lxml, shutil
 """
 
 import re
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -64,35 +66,51 @@ def write_docx_inplace(blocks: list[DocxBlock], translations: dict[int, str],
     if not HAS_DOCX:
         raise ImportError("python-docx is required. Run: pip install python-docx")
 
-    # Copy original file
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, output_path)
+    tmp_path = None
 
-    # Open the copy
-    doc = DocxDocument(str(out_path))
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".docx",
+            prefix=out_path.stem + ".",
+            dir=str(out_path.parent),
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
 
-    # Build lookup structures
-    body_para_index = 0
-    table_index = 0
-    body = doc.element.body
+        shutil.copy2(source_path, tmp_path)
+        doc = DocxDocument(str(tmp_path))
 
-    # Process each block's translation
-    for block in blocks:
-        translated = translations.get(block.index)
-        if not translated or not block.translatable:
-            continue
+        missing_replacements = []
+        for block in blocks:
+            translated = translations.get(block.index)
+            if not translated or not block.translatable:
+                continue
 
-        if block.block_type == "paragraph":
-            _replace_body_paragraph(doc, block, translated, cjk_font)
-        elif block.block_type == "table_cell":
-            _replace_table_cell(doc, block, translated, cjk_font)
-        elif block.block_type == "textbox_para":
-            _replace_textbox_paragraph(doc, block, translated, cjk_font)
-        elif block.block_type in ("header", "footer"):
-            _replace_header_footer(doc, block, translated, cjk_font)
+            replaced = False
+            if block.block_type == "paragraph":
+                replaced = _replace_body_paragraph(doc, block, translated, cjk_font)
+            elif block.block_type == "table_cell":
+                replaced = _replace_table_cell(doc, block, translated, cjk_font)
+            elif block.block_type == "textbox_para":
+                replaced = _replace_textbox_paragraph(doc, block, translated, cjk_font)
+            elif block.block_type in ("header", "footer"):
+                replaced = _replace_header_footer(doc, block, translated, cjk_font)
 
-    doc.save(str(out_path))
+            if not replaced:
+                missing_replacements.append(block.index)
+
+        if missing_replacements:
+            sample = ", ".join(map(str, missing_replacements[:10]))
+            raise RuntimeError(f"Word 写回失败，定位不到 {len(missing_replacements)} 个译文块：{sample}")
+
+        doc.save(str(tmp_path))
+        os.replace(tmp_path, out_path)
+        tmp_path = None
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink()
     return str(out_path)
 
 
@@ -105,14 +123,15 @@ def _replace_body_paragraph(doc, block: DocxBlock, translated: str, cjk_font: st
     # Parse parent_path like "body.para[5]"
     m = re.match(r'body\.para\[(\d+)\]', block.parent_path)
     if not m:
-        return
+        return False
 
     para_idx = int(m.group(1))
     if para_idx >= len(doc.paragraphs):
-        return
+        return False
 
     para = doc.paragraphs[para_idx]
     _replace_paragraph_text(para, block, translated, cjk_font)
+    return True
 
 
 def _replace_table_cell(doc, block: DocxBlock, translated: str, cjk_font: str):
@@ -123,7 +142,7 @@ def _replace_table_cell(doc, block: DocxBlock, translated: str, cjk_font: str):
         block.parent_path
     )
     if not m:
-        return
+        return False
 
     table_idx = int(m.group(1))
     row_idx = int(m.group(2))
@@ -131,19 +150,20 @@ def _replace_table_cell(doc, block: DocxBlock, translated: str, cjk_font: str):
     para_idx = int(m.group(4))
 
     if table_idx >= len(doc.tables):
-        return
+        return False
     table = doc.tables[table_idx]
     if row_idx >= len(table.rows):
-        return
+        return False
     row = table.rows[row_idx]
     if cell_idx >= len(row.cells):
-        return
+        return False
     cell = row.cells[cell_idx]
     if para_idx >= len(cell.paragraphs):
-        return
+        return False
     para = cell.paragraphs[para_idx]
 
     _replace_paragraph_text(para, block, translated, cjk_font)
+    return True
 
 
 def _replace_textbox_paragraph(doc, block: DocxBlock, translated: str, cjk_font: str):
@@ -153,41 +173,59 @@ def _replace_textbox_paragraph(doc, block: DocxBlock, translated: str, cjk_font:
     txbx_elements = body.findall('.//' + qn('w:txbxContent'))
 
     if block.textbox_index >= len(txbx_elements):
-        return
+        return False
 
     txbx = txbx_elements[block.textbox_index]
     para_elements = txbx.findall(qn('w:p'))
 
     if block.para_in_textbox >= len(para_elements):
-        return
+        return False
 
     p_elem = para_elements[block.para_in_textbox]
     _replace_p_element_text(p_elem, block, translated, cjk_font)
+    return True
 
 
 def _replace_header_footer(doc, block: DocxBlock, translated: str, cjk_font: str):
     """Replace text in header/footer paragraphs."""
-    # Parse parent_path like "section[0].header.para"
-    m = re.match(r'section\[(\d+)\]\.(header|footer)\.para', block.parent_path)
+    # Parse parent_path like "section[0].header.para[0]"
+    m = re.match(
+        r'section\[(\d+)\]\.(header|footer|first_page_header|first_page_footer|even_page_header|even_page_footer)\.para(?:\[(\d+)\])?',
+        block.parent_path,
+    )
     if not m:
-        return
+        return False
 
     section_idx = int(m.group(1))
     hf_type = m.group(2)
+    para_idx = int(m.group(3)) if m.group(3) is not None else None
 
     if section_idx >= len(doc.sections):
-        return
+        return False
 
     section = doc.sections[section_idx]
-    container = section.header if hf_type == "header" else section.footer
+    containers = {
+        "header": section.header,
+        "footer": section.footer,
+        "first_page_header": section.first_page_header,
+        "first_page_footer": section.first_page_footer,
+        "even_page_header": section.even_page_header,
+        "even_page_footer": section.even_page_footer,
+    }
+    container = containers[hf_type]
     if not container:
-        return
+        return False
 
-    # Find matching paragraph by text
+    if para_idx is not None and para_idx < len(container.paragraphs):
+        _replace_paragraph_text(container.paragraphs[para_idx], block, translated, cjk_font)
+        return True
+
+    # Fallback for old progress paths without paragraph index.
     for para in container.paragraphs:
         if para.text.strip() == block.text:
             _replace_paragraph_text(para, block, translated, cjk_font)
-            break
+            return True
+    return False
 
 
 # ============================================================

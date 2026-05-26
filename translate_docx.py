@@ -12,14 +12,14 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from core.docx_extractor import (
-    DocxExtractor, DocxBlock, merge_docx_blocks_for_translation,
-    serialize_runs_with_markers,
+    DocxExtractor, DocxBlock, serialize_runs_with_markers,
 )
 from core.translator import Translator, TokenStats
 from core.progress import ProgressTracker
@@ -32,6 +32,63 @@ configure_console_output()
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_GLOSSARY_PATH = APP_DIR / "glossary.tsv"
+
+
+def _docx_block_text(block: DocxBlock) -> str:
+    if block.runs and any(r.bold or r.italic for r in block.runs):
+        return serialize_runs_with_markers(block.runs)
+    return block.text
+
+
+def _marked_docx_group_text(group: list[DocxBlock]) -> str:
+    parts = []
+    for block in group:
+        parts.append(f"[BLOCK {block.index}]\n{_docx_block_text(block)}\n[/BLOCK {block.index}]")
+    return "\n\n".join(parts)
+
+
+def _parse_marked_docx_translation(translated: str, group: list[DocxBlock]) -> dict[int, str]:
+    if len(group) == 1 and "[BLOCK " not in (translated or ""):
+        text = (translated or "").strip()
+        if not text:
+            raise ValueError(f"Word 翻译块为空：{group[0].index}")
+        return {group[0].index: text}
+
+    expected = [block.index for block in group]
+    found: dict[int, str] = {}
+    pattern = re.compile(r"\[BLOCK (\d+)\]\s*(.*?)\s*\[/BLOCK \1\]", re.DOTALL)
+    for match in pattern.finditer(translated or ""):
+        block_index = int(match.group(1))
+        if block_index in found:
+            raise ValueError(f"重复返回 Word 翻译块：{block_index}")
+        found[block_index] = match.group(2).strip()
+
+    missing = [idx for idx in expected if idx not in found]
+    extra = [idx for idx in found if idx not in expected]
+    empty = [idx for idx in expected if idx in found and not found[idx]]
+    errors = []
+    if missing:
+        errors.append("缺少块 " + ", ".join(map(str, missing[:10])))
+    if extra:
+        errors.append("多余块 " + ", ".join(map(str, extra[:10])))
+    if empty:
+        errors.append("空译文块 " + ", ".join(map(str, empty[:10])))
+    if errors:
+        raise ValueError("Word 翻译块标记不匹配；" + "；".join(errors))
+    return found
+
+
+def _report_progress(progress_callback, block_idx: int, text: str,
+                     completed: int, total: int, stats: TokenStats) -> None:
+    if not progress_callback:
+        return
+    try:
+        progress_callback(block_idx, text, completed, total, stats)
+    except TypeError as exc:
+        try:
+            progress_callback(block_idx, text, completed, total)
+        except TypeError:
+            raise exc
 
 
 def build_docx_progress_metadata(docx_path: str, glossary_path: str | None,
@@ -73,6 +130,9 @@ def translate_docx_file(
         out_dir = Path(docx_path).parent / f"{stem}_translated"
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = str(out_dir / f"{stem}_zh.docx")
+    output_file = Path(output_path)
+    if output_file.exists():
+        output_file.unlink()
 
     # Load glossary
     glossary = {}
@@ -92,8 +152,7 @@ def translate_docx_file(
     print(f"  Total blocks: {len(all_blocks)}, translatable: {len(translatable)}")
 
     if not translatable:
-        print("No translatable content found.")
-        return {"output_path": output_path, "stats_summary": "", "block_count": 0, "translated_count": 0}
+        raise RuntimeError("Word 文档没有可翻译文本，未生成输出")
 
     # Setup progress tracker
     progress_file = str(Path(output_path).parent / ".progress.json")
@@ -105,8 +164,9 @@ def translate_docx_file(
     translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
     translator.set_glossary(glossary)
 
-    # Merge blocks for API efficiency
-    groups = merge_docx_blocks_for_translation(translatable)
+    # Translate Word blocks one by one. Grouped DOCX requests are faster, but
+    # models often drop block markers and cause silent partial English output.
+    groups = [[block] for block in translatable]
     print(f"  Translation groups: {len(groups)}")
 
     # Translate
@@ -121,24 +181,10 @@ def translate_docx_file(
         if tracker.is_completed(first_idx):
             return first_idx, tracker.get_translation(first_idx), True
 
-        # Build text — use format markers for mixed-format runs
-        if len(group) == 1:
-            block = group[0]
-            if block.runs and any(r.bold or r.italic for r in block.runs):
-                text = serialize_runs_with_markers(block.runs)
-            else:
-                text = block.text
-        else:
-            parts = []
-            for block in group:
-                if block.runs and any(r.bold or r.italic for r in block.runs):
-                    parts.append(serialize_runs_with_markers(block.runs))
-                else:
-                    parts.append(block.text)
-            text = "\n\n".join(parts)
+        text = _docx_block_text(group[0]) if len(group) == 1 else _marked_docx_group_text(group)
 
         result = translator.translate_block(
-            text, block_index=first_idx,
+            text, block_index=None,
             prev_context=prev_ctx, source_type="docx",
             cache=tracker,
         )
@@ -158,19 +204,9 @@ def translate_docx_file(
                 # Check if already done
                 if tracker.is_completed(first_idx):
                     cached = tracker.get_translation(first_idx)
-                    if len(group) == 1:
-                        translations[first_idx] = cached
-                    else:
-                        # Split cached result back to individual blocks
-                        parts = cached.split("\n\n")
-                        for i, block in enumerate(group):
-                            if i < len(parts):
-                                translations[block.index] = parts[i]
-                            else:
-                                translations[block.index] = ""
+                    translations.update(_parse_marked_docx_translation(cached, group))
                     completed += 1
-                    if progress_callback:
-                        progress_callback(first_idx, cached, completed, total)
+                    _report_progress(progress_callback, first_idx, cached, completed, total, stats)
                     continue
 
                 future = executor.submit(translate_group, group, prev_context)
@@ -186,26 +222,33 @@ def translate_docx_file(
                     was_cached = False
 
                 if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
-                    if len(group) == 1:
-                        translations[first_idx] = result
+                    try:
+                        parsed_translations = _parse_marked_docx_translation(result, group)
+                    except ValueError as exc:
+                        result = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+                        if not was_cached:
+                            tracker.mark_failed(first_idx, result)
                     else:
-                        parts = result.split("\n\n")
-                        for i, block in enumerate(group):
-                            if i < len(parts):
-                                translations[block.index] = parts[i]
-                            else:
-                                translations[block.index] = ""
-                    if not was_cached:
-                        tracker.mark_completed(first_idx, result)
-                    prev_context = result[:500]
+                        translations.update(parsed_translations)
+                        if not was_cached:
+                            tracker.mark_completed(first_idx, result)
+                        prev_context = "\n\n".join(parsed_translations.values())[:500]
                 else:
                     if not was_cached:
                         tracker.mark_failed(first_idx, result)
 
                 completed += 1
-                if progress_callback:
-                    progress_callback(first_idx, result or "", completed, total)
+                _report_progress(progress_callback, first_idx, result or "", completed, total, stats)
                 print(f"  [{completed}/{total}] block {first_idx + 1} {'(cached)' if was_cached else 'done'}")
+
+    failed_count = len(tracker.get_failed_pages())
+    if translatable and not translations:
+        raise RuntimeError(f"所有 Word 翻译块都失败了，未生成有效译文；失败组数：{failed_count}")
+    if failed_count:
+        raise RuntimeError(f"Word 翻译有 {failed_count} 个块失败，未生成不完整的 Word 输出")
+    if len(translations) != len(translatable):
+        missing_count = len(translatable) - len(translations)
+        raise RuntimeError(f"Word 翻译缺少 {missing_count} 个块，未生成不完整的 Word 输出")
 
     # Write output
     print(f"\nWriting output to: {output_path}")
@@ -219,6 +262,7 @@ def translate_docx_file(
         "stats_summary": summary,
         "block_count": len(translatable),
         "translated_count": len(translations),
+        "failed_count": failed_count,
     }
 
 

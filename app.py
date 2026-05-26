@@ -878,7 +878,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         cost_metric = metric_cols[3].empty()
         translation_started_at = time.time()
 
-        def md_docx_progress_callback(block_idx, text, completed_count, total_count):
+        def md_docx_progress_callback(block_idx, text, completed_count, total_count, stats=None):
             pct = completed_count / total_count if total_count else 1.0
             elapsed = time.time() - translation_started_at
             avg_seconds = elapsed / completed_count if completed_count else None
@@ -891,7 +891,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             progress_metric.metric("进度", f"{completed_count}/{total_count}")
             elapsed_metric.metric("已用时", format_duration(elapsed))
             speed_metric.metric("速度", f"{speed:.1f} 块/分钟" if speed else "估算中")
-            cost_metric.metric("费用", f"估算中")
+            cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}" if stats else "估算中")
 
         try:
             if source_type == "markdown":
@@ -914,8 +914,13 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     glossary_path=glossary_path,
                     output_path=output_path,
                     max_workers=max(1, int(workers)),
+                    translate_headers=True,
                     progress_callback=md_docx_progress_callback,
                 )
+
+            if result.get("block_count", 0) and not result.get("translated_count", 0):
+                failed_count = result.get("failed_count", 0)
+                raise RuntimeError(f"没有生成任何译文，失败组数：{failed_count}")
 
             generated_files.append(result["output_path"])
 
@@ -948,6 +953,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 "model": model,
                 "block_count": result["block_count"],
                 "translated_count": result["translated_count"],
+                "failed_count": result.get("failed_count", 0),
                 "glossary": Path(glossary_path).name if glossary_path else "",
                 "outputs": [Path(p).name for p in existing_output_files(generated_files, final_only=True)],
             })

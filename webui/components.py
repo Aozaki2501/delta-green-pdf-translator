@@ -100,7 +100,7 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
         st.subheader("输出历史")
         st.caption("这里列出本机 output 目录里的旧结果，只提供查看和下载，不会重新调用翻译接口。")
 
-        for entry in history_entries:
+        for entry_index, entry in enumerate(history_entries):
             progress = entry["progress"]
             audit = entry.get("audit", {})
             download_files = entry.get("download_files", [])
@@ -136,17 +136,18 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
                 render_audit_grid(audit_items)
                 st.caption(f"目录：{entry['folder']}")
 
-                for file_path in download_files:
+                for file_index, file_path in enumerate(download_files):
                     if not is_final_output_file(file_path):
                         continue
                     label = history_file_label(file_path)
                     button_label = f"下载{label}：{file_path.name}"
+                    key_seed = f"{entry_index}:{file_index}:{file_path}"
                     with open(file_path, "rb") as f:
                         st.download_button(
                             button_label,
                             f,
                             file_name=file_path.name,
-                            key="history_" + hashlib.sha256(str(file_path).encode("utf-8")).hexdigest(),
+                            key="history_" + hashlib.sha256(key_seed.encode("utf-8")).hexdigest(),
                         )
         st.markdown("</div>", unsafe_allow_html=True)
     else:

@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,12 +24,57 @@ from core.progress import ProgressTracker
 from core.glossary import load_glossary
 from core.utils import file_sha256, configure_console_output
 from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
-from exporters.md_preserve import write_md_output, split_merged_translation
+from exporters.md_preserve import write_md_output
 
 configure_console_output()
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_GLOSSARY_PATH = APP_DIR / "glossary.tsv"
+
+
+def _marked_md_group_text(group: list[MdBlock]) -> str:
+    return "\n\n".join(
+        f"[BLOCK {block.index}]\n{block.text}\n[/BLOCK {block.index}]"
+        for block in group
+    )
+
+
+def _parse_marked_md_translation(translated: str, group: list[MdBlock]) -> dict[int, str]:
+    expected = [block.index for block in group]
+    found: dict[int, str] = {}
+    pattern = re.compile(r"\[BLOCK (\d+)\]\s*(.*?)\s*\[/BLOCK \1\]", re.DOTALL)
+    for match in pattern.finditer(translated or ""):
+        block_index = int(match.group(1))
+        if block_index in found:
+            raise ValueError(f"重复返回 Markdown 翻译块：{block_index}")
+        found[block_index] = match.group(2).strip()
+
+    missing = [idx for idx in expected if idx not in found]
+    extra = [idx for idx in found if idx not in expected]
+    empty = [idx for idx in expected if idx in found and not found[idx]]
+    errors = []
+    if missing:
+        errors.append("缺少块 " + ", ".join(map(str, missing[:10])))
+    if extra:
+        errors.append("多余块 " + ", ".join(map(str, extra[:10])))
+    if empty:
+        errors.append("空译文块 " + ", ".join(map(str, empty[:10])))
+    if errors:
+        raise ValueError("Markdown 翻译块标记不匹配；" + "；".join(errors))
+    return found
+
+
+def _report_progress(progress_callback, block_idx: int, text: str,
+                     completed: int, total: int, stats: TokenStats) -> None:
+    if not progress_callback:
+        return
+    try:
+        progress_callback(block_idx, text, completed, total, stats)
+    except TypeError as exc:
+        try:
+            progress_callback(block_idx, text, completed, total)
+        except TypeError:
+            raise exc
 
 
 def build_md_progress_metadata(md_path: str, glossary_path: str | None,
@@ -111,16 +157,12 @@ def translate_md_file(
     total = len(groups)
 
     def translate_group(group: list[MdBlock], prev_ctx: str):
-        # Build combined text for the group
-        if len(group) == 1:
-            text = group[0].text
-        else:
-            text = "\n\n".join(b.text for b in group)
-
         # Check cache
         first_idx = group[0].index
         if tracker.is_completed(first_idx):
             return first_idx, tracker.get_translation(first_idx), True
+
+        text = _marked_md_group_text(group)
 
         result = translator.translate_block(
             text, block_index=first_idx,
@@ -143,14 +185,9 @@ def translate_md_file(
                 # Check if already done
                 if tracker.is_completed(first_idx):
                     cached = tracker.get_translation(first_idx)
-                    if len(group) == 1:
-                        translations[first_idx] = cached
-                    else:
-                        split = split_merged_translation(cached, group)
-                        translations.update(split)
+                    translations.update(_parse_marked_md_translation(cached, group))
                     completed += 1
-                    if progress_callback:
-                        progress_callback(first_idx, cached, completed, total)
+                    _report_progress(progress_callback, first_idx, cached, completed, total, stats)
                     continue
 
                 future = executor.submit(translate_group, group, prev_context)
@@ -166,22 +203,28 @@ def translate_md_file(
                     was_cached = False
 
                 if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
-                    if len(group) == 1:
-                        translations[first_idx] = result
+                    try:
+                        parsed_translations = _parse_marked_md_translation(result, group)
+                    except ValueError as exc:
+                        result = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+                        if not was_cached:
+                            tracker.mark_failed(first_idx, result)
                     else:
-                        split = split_merged_translation(result, group)
-                        translations.update(split)
-                    if not was_cached:
-                        tracker.mark_completed(first_idx, result)
-                    prev_context = result[:500]
+                        translations.update(parsed_translations)
+                        if not was_cached:
+                            tracker.mark_completed(first_idx, result)
+                        prev_context = "\n\n".join(parsed_translations.values())[:500]
                 else:
                     if not was_cached:
                         tracker.mark_failed(first_idx, result)
 
                 completed += 1
-                if progress_callback:
-                    progress_callback(first_idx, result or "", completed, total)
+                _report_progress(progress_callback, first_idx, result or "", completed, total, stats)
                 print(f"  [{completed}/{total}] block {first_idx + 1} {'(cached)' if was_cached else 'done'}")
+
+    failed_count = len(tracker.get_failed_pages())
+    if translatable and not translations:
+        raise RuntimeError(f"所有 Markdown 翻译块都失败了，未生成有效译文；失败组数：{failed_count}")
 
     # Write output
     print(f"\nWriting output to: {output_path}")
@@ -195,6 +238,7 @@ def translate_md_file(
         "stats_summary": summary,
         "block_count": len(translatable),
         "translated_count": len(translations),
+        "failed_count": failed_count,
     }
 
 

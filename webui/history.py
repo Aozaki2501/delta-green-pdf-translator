@@ -144,11 +144,23 @@ def _files_for_audit(folder: Path, audit_path: Path, all_files: list[Path]) -> l
     audit = read_json_file(audit_path)
     output_names = audit.get("outputs", [])
     if not isinstance(output_names, list) or not output_names:
-        return all_files
+        return _dedupe_paths(all_files)
     wanted = {str(name) for name in output_names}
     wanted.add(audit_path.name)
     files = [path for path in all_files if path.name in wanted]
-    return files or [audit_path]
+    return _dedupe_paths(files or [audit_path])
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen = set()
+    result = []
+    for path in paths:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
 
 
 def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict[str, Any]]:

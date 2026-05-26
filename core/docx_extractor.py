@@ -26,6 +26,14 @@ except ImportError:
     HAS_DOCX = False
 
 
+_TABLE_ROLL_MARKER_RE = re.compile(r"^\s*(?:\d{1,3}|[dD]\d+|[ivxlcdmIVXLCDM]+)(?:\s*[-–—]\s*(?:\d{1,3}|[ivxlcdmIVXLCDM]+))?[\.)、:]?\s*$")
+
+
+def _is_table_roll_marker(text: str) -> bool:
+    """Return True for narrow dice/table labels such as 1, 2, 1-2, or d10."""
+    return bool(_TABLE_ROLL_MARKER_RE.fullmatch(text or ""))
+
+
 # ============================================================
 # DATA MODEL
 # ============================================================
@@ -122,24 +130,26 @@ class DocxExtractor:
         # Optionally extract headers/footers
         if self.translate_headers:
             for section_idx, section in enumerate(self._doc.sections):
-                for h_para in (section.header.paragraphs if section.header else []):
-                    block = self._extract_paragraph(
-                        h_para, block_index,
-                        f"section[{section_idx}].header.para",
-                        block_type="header"
-                    )
-                    if block:
-                        self.blocks.append(block)
-                        block_index += 1
-                for f_para in (section.footer.paragraphs if section.footer else []):
-                    block = self._extract_paragraph(
-                        f_para, block_index,
-                        f"section[{section_idx}].footer.para",
-                        block_type="footer"
-                    )
-                    if block:
-                        self.blocks.append(block)
-                        block_index += 1
+                containers = (
+                    ("header", section.header, "header"),
+                    ("footer", section.footer, "footer"),
+                    ("first_page_header", section.first_page_header, "header"),
+                    ("first_page_footer", section.first_page_footer, "footer"),
+                    ("even_page_header", section.even_page_header, "header"),
+                    ("even_page_footer", section.even_page_footer, "footer"),
+                )
+                for container_name, container, block_type in containers:
+                    if not container:
+                        continue
+                    for para_idx, para in enumerate(container.paragraphs):
+                        block = self._extract_paragraph(
+                            para, block_index,
+                            f"section[{section_idx}].{container_name}.para[{para_idx}]",
+                            block_type=block_type,
+                        )
+                        if block:
+                            self.blocks.append(block)
+                            block_index += 1
 
         return self.blocks
 
@@ -202,9 +212,14 @@ class DocxExtractor:
         """Extract all cells from a table as individual blocks."""
         blocks = []
         block_index = start_index
+        seen_cells = set()
 
         for row_idx, row in enumerate(table.rows):
             for cell_idx, cell in enumerate(row.cells):
+                cell_key = cell._tc
+                if cell_key in seen_cells:
+                    continue
+                seen_cells.add(cell_key)
                 for para_idx, para in enumerate(cell.paragraphs):
                     text = para.text.strip()
                     if not text:
@@ -231,7 +246,7 @@ class DocxExtractor:
                         index=block_index,
                         block_type="table_cell",
                         text=text,
-                        translatable=True,
+                        translatable=not _is_table_roll_marker(text),
                         style_name=para.style.name if para.style else "",
                         runs=runs_meta,
                         parent_path=path,
