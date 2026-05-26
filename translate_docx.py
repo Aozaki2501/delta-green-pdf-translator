@@ -48,6 +48,11 @@ def _marked_docx_group_text(group: list[DocxBlock]) -> str:
 
 
 def _parse_marked_docx_translation(translated: str, group: list[DocxBlock]) -> dict[int, str]:
+    """Parse BLOCK markers from translated text. Returns found translations.
+
+    For single-block groups without markers, returns the text directly.
+    Raises ValueError only when NO usable translation could be extracted.
+    """
     if len(group) == 1 and "[BLOCK " not in (translated or ""):
         text = (translated or "").strip()
         if not text:
@@ -60,21 +65,17 @@ def _parse_marked_docx_translation(translated: str, group: list[DocxBlock]) -> d
     for match in pattern.finditer(translated or ""):
         block_index = int(match.group(1))
         if block_index in found:
-            raise ValueError(f"重复返回 Word 翻译块：{block_index}")
+            continue  # 重复块取第一个
         found[block_index] = match.group(2).strip()
 
-    missing = [idx for idx in expected if idx not in found]
-    extra = [idx for idx in found if idx not in expected]
-    empty = [idx for idx in expected if idx in found and not found[idx]]
-    errors = []
-    if missing:
-        errors.append("缺少块 " + ", ".join(map(str, missing[:10])))
-    if extra:
-        errors.append("多余块 " + ", ".join(map(str, extra[:10])))
-    if empty:
-        errors.append("空译文块 " + ", ".join(map(str, empty[:10])))
-    if errors:
-        raise ValueError("Word 翻译块标记不匹配；" + "；".join(errors))
+    # 过滤掉空译文和不在预期列表中的块
+    found = {idx: text for idx, text in found.items() if idx in expected and text}
+
+    if not found:
+        # 单块情况下，如果没有标记但有内容，直接使用
+        if len(group) == 1 and (translated or "").strip():
+            return {group[0].index: translated.strip()}
+        raise ValueError("Word 翻译块标记完全无法解析，未找到任何有效 [BLOCK n] 标记")
     return found
 
 
@@ -113,12 +114,17 @@ def translate_docx_file(
     glossary_path: str | None = None,
     output_path: str | None = None,
     max_workers: int = 4,
+    max_blocks: int | None = None,
     cjk_font: str = "Microsoft YaHei",
     translate_headers: bool = False,
     progress_callback=None,
 ) -> dict:
     """
     Translate a Word document end-to-end.
+
+    Args:
+        max_blocks: If set, only translate the first N translatable blocks.
+                    Useful for testing or partial translation.
 
     Returns dict with keys: output_path, stats_summary, block_count, translated_count
     """
@@ -150,6 +156,11 @@ def translate_docx_file(
     all_blocks = extractor.extract()
     translatable = extractor.get_translatable_blocks()
     print(f"  Total blocks: {len(all_blocks)}, translatable: {len(translatable)}")
+
+    # Apply block limit if specified
+    if max_blocks and max_blocks > 0 and len(translatable) > max_blocks:
+        print(f"  Limiting to first {max_blocks} translatable blocks (of {len(translatable)})")
+        translatable = translatable[:max_blocks]
 
     if not translatable:
         raise RuntimeError("Word 文档没有可翻译文本，未生成输出")
@@ -190,6 +201,22 @@ def translate_docx_file(
         )
         return first_idx, result, False
 
+    def _retry_single_docx_block(block: DocxBlock, prev_ctx: str) -> str | None:
+        """Retry translating a single Word block without BLOCK markers."""
+        text = _docx_block_text(block)
+        result = translator.translate_block(
+            text, block_index=None,
+            prev_context=prev_ctx, source_type="docx",
+            cache=tracker,
+        )
+        if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
+            # 剥离可能的 BLOCK 标记
+            m = re.search(r"\[BLOCK \d+\]\s*(.*?)\s*\[/BLOCK \d+\]", result, re.DOTALL)
+            if m:
+                return m.group(1).strip() or None
+            return result.strip() or None
+        return None
+
     prev_context = ""
     max_workers = max(1, int(max_workers))
 
@@ -204,7 +231,15 @@ def translate_docx_file(
                 # Check if already done
                 if tracker.is_completed(first_idx):
                     cached = tracker.get_translation(first_idx)
-                    translations.update(_parse_marked_docx_translation(cached, group))
+                    try:
+                        parsed = _parse_marked_docx_translation(cached, group)
+                        translations.update(parsed)
+                    except ValueError:
+                        # 缓存数据损坏，清除重试
+                        tracker.clear_pages([first_idx])
+                        future = executor.submit(translate_group, group, prev_context)
+                        futures[future] = group
+                        continue
                     completed += 1
                     _report_progress(progress_callback, first_idx, cached, completed, total, stats)
                     continue
@@ -214,41 +249,81 @@ def translate_docx_file(
 
             for future in as_completed(futures):
                 group = futures[future]
+                first_idx = group[0].index
                 try:
                     first_idx, result, was_cached = future.result()
                 except Exception as exc:
-                    first_idx = group[0].index
                     result = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
                     was_cached = False
 
                 if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
                     try:
                         parsed_translations = _parse_marked_docx_translation(result, group)
-                    except ValueError as exc:
-                        result = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
-                        if not was_cached:
-                            tracker.mark_failed(first_idx, result)
-                    else:
-                        translations.update(parsed_translations)
-                        if not was_cached:
-                            tracker.mark_completed(first_idx, result)
-                        prev_context = "\n\n".join(parsed_translations.values())[:500]
+                    except ValueError:
+                        parsed_translations = {}
+
+                    # 检查是否有缺失的块需要单独重试
+                    expected_indices = {b.index for b in group}
+                    found_indices = set(parsed_translations.keys())
+                    missing_indices = expected_indices - found_indices
+
+                    if missing_indices and len(group) > 1:
+                        missing_blocks = [b for b in group if b.index in missing_indices]
+                        print(f"\n  组 {first_idx} 缺少 {len(missing_blocks)} 块，逐块重试...")
+                        for mb in missing_blocks:
+                            single_result = _retry_single_docx_block(mb, prev_context)
+                            if single_result:
+                                parsed_translations[mb.index] = single_result
+                                print(f"    块 {mb.index} 重试成功")
+                            else:
+                                print(f"    块 {mb.index} 重试失败")
+
+                    translations.update(parsed_translations)
+                    if not was_cached and parsed_translations:
+                        tracker.mark_completed(first_idx, result)
+                    prev_context = "\n\n".join(
+                        v for v in parsed_translations.values() if v
+                    )[:500]
                 else:
+                    # 整组翻译失败，尝试逐块降级重试
+                    if len(group) > 1:
+                        print(f"\n  组 {first_idx} 整组失败，逐块降级重试...")
+                        for block in group:
+                            single_result = _retry_single_docx_block(block, prev_context)
+                            if single_result:
+                                translations[block.index] = single_result
+                                print(f"    块 {block.index} 重试成功")
+                            else:
+                                print(f"    块 {block.index} 重试失败")
+                    elif len(group) == 1:
+                        # 单块也失败了，再重试一次
+                        single_result = _retry_single_docx_block(group[0], prev_context)
+                        if single_result:
+                            translations[group[0].index] = single_result
+                            print(f"    块 {group[0].index} 重试成功")
+
                     if not was_cached:
-                        tracker.mark_failed(first_idx, result)
+                        group_indices = {b.index for b in group}
+                        if not any(idx in translations for idx in group_indices):
+                            tracker.mark_failed(first_idx, result)
 
                 completed += 1
                 _report_progress(progress_callback, first_idx, result or "", completed, total, stats)
-                print(f"  [{completed}/{total}] block {first_idx + 1} {'(cached)' if was_cached else 'done'}")
+                translated_in_group = sum(1 for b in group if b.index in translations)
+                print(f"  [{completed}/{total}] block {first_idx + 1} "
+                      f"{'(cached)' if was_cached else f'done ({translated_in_group}/{len(group)})'}")
 
     failed_count = len(tracker.get_failed_pages())
     if translatable and not translations:
         raise RuntimeError(f"所有 Word 翻译块都失败了，未生成有效译文；失败组数：{failed_count}")
-    if failed_count:
-        raise RuntimeError(f"Word 翻译有 {failed_count} 个块失败，未生成不完整的 Word 输出")
-    if len(translations) != len(translatable):
-        missing_count = len(translatable) - len(translations)
-        raise RuntimeError(f"Word 翻译缺少 {missing_count} 个块，未生成不完整的 Word 输出")
+
+    missing_count = len(translatable) - len(translations)
+    if missing_count > 0:
+        print(f"\n  ⚠ {missing_count} 个块未翻译（共 {len(translatable)} 个可翻译块）")
+        # 对缺失的块使用原文填充，确保输出完整
+        for block in translatable:
+            if block.index not in translations:
+                translations[block.index] = block.text
 
     # Write output
     print(f"\nWriting output to: {output_path}")

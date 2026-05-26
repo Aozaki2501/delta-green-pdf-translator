@@ -40,27 +40,41 @@ def _marked_md_group_text(group: list[MdBlock]) -> str:
 
 
 def _parse_marked_md_translation(translated: str, group: list[MdBlock]) -> dict[int, str]:
+    """Parse BLOCK markers from translated text. Returns found translations.
+
+    For single-block groups, accepts plain text without markers.
+    Raises ValueError only when NO blocks could be parsed at all.
+    If some blocks are found but others are missing, returns partial results
+    (caller handles retry for missing blocks).
+    """
+    # 单块组：直接使用返回文本（不需要 BLOCK 标记）
+    if len(group) == 1:
+        text = (translated or "").strip()
+        if not text:
+            raise ValueError(f"Markdown 翻译块为空：{group[0].index}")
+        # 如果 AI 仍然返回了 BLOCK 标记，剥离它
+        m = re.search(r"\[BLOCK \d+\]\s*(.*?)\s*\[/BLOCK \d+\]", text, re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+        # 剥离 AI 可能添加的 # 前缀（heading 重组时会加回来）
+        if group[0].block_type == "heading":
+            text = re.sub(r'^#{1,6}\s*', '', text)
+        return {group[0].index: text} if text else {}
+
     expected = [block.index for block in group]
     found: dict[int, str] = {}
     pattern = re.compile(r"\[BLOCK (\d+)\]\s*(.*?)\s*\[/BLOCK \1\]", re.DOTALL)
     for match in pattern.finditer(translated or ""):
         block_index = int(match.group(1))
         if block_index in found:
-            raise ValueError(f"重复返回 Markdown 翻译块：{block_index}")
+            continue  # 重复块取第一个
         found[block_index] = match.group(2).strip()
 
-    missing = [idx for idx in expected if idx not in found]
-    extra = [idx for idx in found if idx not in expected]
-    empty = [idx for idx in expected if idx in found and not found[idx]]
-    errors = []
-    if missing:
-        errors.append("缺少块 " + ", ".join(map(str, missing[:10])))
-    if extra:
-        errors.append("多余块 " + ", ".join(map(str, extra[:10])))
-    if empty:
-        errors.append("空译文块 " + ", ".join(map(str, empty[:10])))
-    if errors:
-        raise ValueError("Markdown 翻译块标记不匹配；" + "；".join(errors))
+    # 过滤掉空译文和不在预期列表中的块
+    found = {idx: text for idx, text in found.items() if idx in expected and text}
+
+    if not found:
+        raise ValueError("Markdown 翻译块标记完全无法解析，未找到任何有效 [BLOCK n] 标记")
     return found
 
 
@@ -99,10 +113,15 @@ def translate_md_file(
     glossary_path: str | None = None,
     output_path: str | None = None,
     max_workers: int = 4,
+    max_blocks: int | None = None,
     progress_callback=None,
 ) -> dict:
     """
     Translate a Markdown file end-to-end.
+
+    Args:
+        max_blocks: If set, only translate the first N translatable blocks.
+                    Useful for testing or partial translation.
 
     Returns dict with keys: output_path, stats_summary, block_count, translated_count
     """
@@ -131,6 +150,11 @@ def translate_md_file(
     all_blocks = extractor.extract()
     translatable = extractor.get_translatable_blocks()
     print(f"  Total blocks: {len(all_blocks)}, translatable: {len(translatable)}")
+
+    # Apply block limit if specified
+    if max_blocks and max_blocks > 0 and len(translatable) > max_blocks:
+        print(f"  Limiting to first {max_blocks} translatable blocks (of {len(translatable)})")
+        translatable = translatable[:max_blocks]
 
     if not translatable:
         print("No translatable content found.")
@@ -162,7 +186,11 @@ def translate_md_file(
         if tracker.is_completed(first_idx):
             return first_idx, tracker.get_translation(first_idx), True
 
-        text = _marked_md_group_text(group)
+        # 单块组不使用 BLOCK 标记，避免 AI 返回时丢失标记导致解析失败
+        if len(group) == 1:
+            text = group[0].text
+        else:
+            text = _marked_md_group_text(group)
 
         result = translator.translate_block(
             text, block_index=first_idx,
@@ -170,6 +198,21 @@ def translate_md_file(
             cache=tracker,
         )
         return first_idx, result, False
+
+    def _retry_single_block(block: MdBlock, prev_ctx: str) -> str | None:
+        """Retry translating a single block without BLOCK markers."""
+        result = translator.translate_block(
+            block.text, block_index=block.index,
+            prev_context=prev_ctx, source_type="markdown",
+            cache=tracker,
+        )
+        if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
+            # 单块返回可能仍带 BLOCK 标记，尝试剥离
+            m = re.search(r"\[BLOCK \d+\]\s*(.*?)\s*\[/BLOCK \d+\]", result, re.DOTALL)
+            if m:
+                return m.group(1).strip() or None
+            return result.strip() or None
+        return None
 
     prev_context = ""
     max_workers = max(1, int(max_workers))
@@ -185,7 +228,15 @@ def translate_md_file(
                 # Check if already done
                 if tracker.is_completed(first_idx):
                     cached = tracker.get_translation(first_idx)
-                    translations.update(_parse_marked_md_translation(cached, group))
+                    try:
+                        parsed = _parse_marked_md_translation(cached, group)
+                        translations.update(parsed)
+                    except ValueError:
+                        # 缓存数据损坏，清除重试
+                        tracker.clear_pages([first_idx])
+                        future = executor.submit(translate_group, group, prev_context)
+                        futures[future] = group
+                        continue
                     completed += 1
                     _report_progress(progress_callback, first_idx, cached, completed, total, stats)
                     continue
@@ -195,32 +246,69 @@ def translate_md_file(
 
             for future in as_completed(futures):
                 group = futures[future]
+                first_idx = group[0].index
                 try:
                     first_idx, result, was_cached = future.result()
                 except Exception as exc:
-                    first_idx = group[0].index
                     result = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
                     was_cached = False
 
                 if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
                     try:
                         parsed_translations = _parse_marked_md_translation(result, group)
-                    except ValueError as exc:
-                        result = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
-                        if not was_cached:
-                            tracker.mark_failed(first_idx, result)
-                    else:
-                        translations.update(parsed_translations)
-                        if not was_cached:
-                            tracker.mark_completed(first_idx, result)
-                        prev_context = "\n\n".join(parsed_translations.values())[:500]
+                    except ValueError:
+                        parsed_translations = {}
+
+                    # 检查是否有缺失的块需要单独重试
+                    expected_indices = {b.index for b in group}
+                    found_indices = set(parsed_translations.keys())
+                    missing_indices = expected_indices - found_indices
+
+                    if missing_indices and len(group) > 1:
+                        missing_blocks = [b for b in group if b.index in missing_indices]
+                        print(f"\n  组 {first_idx} 缺少 {len(missing_blocks)} 块，逐块重试...")
+                        for mb in missing_blocks:
+                            single_result = _retry_single_block(mb, prev_context)
+                            if single_result:
+                                parsed_translations[mb.index] = single_result
+                                print(f"    块 {mb.index} 重试成功")
+                            else:
+                                print(f"    块 {mb.index} 重试失败")
+
+                    translations.update(parsed_translations)
+                    if not was_cached and parsed_translations:
+                        tracker.mark_completed(first_idx, result)
+                    prev_context = "\n\n".join(
+                        v for v in parsed_translations.values() if v
+                    )[:500]
                 else:
+                    # 整组翻译失败，尝试逐块降级重试
+                    if len(group) > 1:
+                        print(f"\n  组 {first_idx} 整组失败，逐块降级重试...")
+                        for block in group:
+                            single_result = _retry_single_block(block, prev_context)
+                            if single_result:
+                                translations[block.index] = single_result
+                                print(f"    块 {block.index} 重试成功")
+                            else:
+                                print(f"    块 {block.index} 重试失败")
+                    elif len(group) == 1:
+                        # 单块也失败了，再重试一次
+                        single_result = _retry_single_block(group[0], prev_context)
+                        if single_result:
+                            translations[group[0].index] = single_result
+                            print(f"    块 {group[0].index} 重试成功")
                     if not was_cached:
-                        tracker.mark_failed(first_idx, result)
+                        # 只标记完全没有任何结果的组为失败
+                        group_indices = {b.index for b in group}
+                        if not any(idx in translations for idx in group_indices):
+                            tracker.mark_failed(first_idx, result)
 
                 completed += 1
                 _report_progress(progress_callback, first_idx, result or "", completed, total, stats)
-                print(f"  [{completed}/{total}] block {first_idx + 1} {'(cached)' if was_cached else 'done'}")
+                translated_in_group = sum(1 for b in group if b.index in translations)
+                print(f"  [{completed}/{total}] block {first_idx + 1} "
+                      f"{'(cached)' if was_cached else f'done ({translated_in_group}/{len(group)})'}")
 
     failed_count = len(tracker.get_failed_pages())
     if translatable and not translations:

@@ -663,6 +663,11 @@ with st.sidebar:
 
     display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
     end_page_str = st.text_input("结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
+    max_blocks_input = st.number_input(
+        "翻译块数上限（MD/Word）",
+        value=0, min_value=0, step=10,
+        help="仅对 Markdown 和 Word 文件生效。0 表示翻译全部。设为如 50 则只翻译前 50 个文本块。"
+    )
 
     with st.expander("高级任务控制", expanded=False):
         model = st.text_input("模型名称", value=model)
@@ -903,6 +908,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     glossary_path=glossary_path,
                     output_path=output_path,
                     max_workers=max(1, int(workers)),
+                    max_blocks=max_blocks_input if max_blocks_input > 0 else None,
                     progress_callback=md_docx_progress_callback,
                 )
             else:
@@ -914,6 +920,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     glossary_path=glossary_path,
                     output_path=output_path,
                     max_workers=max(1, int(workers)),
+                    max_blocks=max_blocks_input if max_blocks_input > 0 else None,
                     translate_headers=True,
                     progress_callback=md_docx_progress_callback,
                 )

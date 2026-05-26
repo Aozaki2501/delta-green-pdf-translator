@@ -29,6 +29,7 @@ def write_md_output(blocks: list[MdBlock], translations: dict[int, str],
         The output file path.
     """
     output_lines: list[str] = []
+    untranslated_count = 0
 
     for block in blocks:
         if not block.translatable:
@@ -38,8 +39,9 @@ def write_md_output(blocks: list[MdBlock], translations: dict[int, str],
 
         translated = translations.get(block.index)
         if not translated:
-            # Fallback: keep original if no translation available
-            output_lines.append(block.content)
+            # Fallback: keep original with untranslated marker
+            output_lines.append(f"<!-- UNTRANSLATED -->\n{block.content}")
+            untranslated_count += 1
             continue
 
         # Reassemble based on block type
@@ -62,6 +64,9 @@ def write_md_output(blocks: list[MdBlock], translations: dict[int, str],
     # Ensure single trailing newline
     if not output_text.endswith("\n"):
         output_text += "\n"
+
+    if untranslated_count:
+        print(f"  ⚠ {untranslated_count} 个块未翻译，已标记 <!-- UNTRANSLATED -->")
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

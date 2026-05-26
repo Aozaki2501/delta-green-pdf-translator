@@ -280,6 +280,9 @@ Translation rules:
                 self.stats.add_translation_cache_hit()
                 return cached_translation
 
+        # Use higher token limit for large blocks (HTML tables, stat blocks)
+        token_limit = 8192 if len(text) > 2000 else 4096
+
         for attempt in range(self.retry_count):
             try:
                 response = self.client.chat.completions.create(
@@ -289,7 +292,7 @@ Translation rules:
                         {"role": "user", "content": user_prompt}
                     ],
                     temperature=0.3,
-                    max_tokens=4096,
+                    max_tokens=token_limit,
                 )
                 usage = response.usage
                 if usage:

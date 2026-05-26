@@ -227,9 +227,12 @@ class MarkdownExtractor:
             if self._HTML_BLOCK_START_RE.match(line):
                 end = self._find_html_block_end(i)
                 content = "\n".join(self._lines[i:end + 1])
+                # HTML tables with text content should be translatable
+                has_text = self._html_block_has_translatable_text(content)
                 self.blocks.append(MdBlock(
                     index=block_index, block_type="html_block",
-                    content=content, text="", translatable=False,
+                    content=content, text=content if has_text else "",
+                    translatable=has_text,
                     line_start=i, line_end=end,
                 ))
                 block_index += 1
@@ -330,11 +333,32 @@ class MarkdownExtractor:
         if not tag_match:
             return start
         close_tag = f"</{tag_match.group(1)}"
+        # Check if closing tag is on the same line
+        if close_tag in self._lines[start].lower():
+            return start
         for i in range(start + 1, self.total_lines):
             if close_tag in self._lines[i].lower():
                 return i
             if not self._lines[i].strip():
                 return i - 1
+        return self.total_lines - 1
+
+    @staticmethod
+    def _html_block_has_translatable_text(content: str) -> bool:
+        """Check if an HTML block contains meaningful text worth translating.
+
+        Returns True for HTML tables/blocks that contain English prose
+        (character sheets, stat blocks, descriptions, etc.)
+        Returns False for purely structural/empty HTML.
+        """
+        # Strip all HTML tags to get just the text content
+        text_only = re.sub(r'<[^>]+>', ' ', content)
+        # Remove extra whitespace
+        text_only = re.sub(r'\s+', ' ', text_only).strip()
+        # If there's substantial text (more than just numbers/symbols), it's translatable
+        # Count alphabetic characters as a proxy for English prose
+        alpha_chars = sum(1 for c in text_only if c.isalpha())
+        return alpha_chars > 30  # At least 30 letters = meaningful text
         return self.total_lines - 1
 
     def _find_paragraph_end(self, start: int) -> int:
@@ -389,7 +413,7 @@ def merge_blocks_for_translation(blocks: list[MdBlock], max_chars: int = 3000) -
             continue
 
         # These types always go alone
-        if block.block_type in ("heading", "table", "blockquote"):
+        if block.block_type in ("heading", "table", "blockquote", "html_block"):
             if current_group:
                 groups.append(current_group)
                 current_group = []
