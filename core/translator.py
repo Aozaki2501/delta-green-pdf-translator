@@ -109,6 +109,35 @@ Translation rules:
 
 {glossary_section}"""
 
+    SYSTEM_PROMPT_MARKDOWN = """You are a professional TRPG translator. Translate the following Markdown content from English to Chinese.
+
+Translation rules:
+1. Follow the glossary strictly for proper nouns. The longest matching phrase wins.
+2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
+3. Preserve Markdown structure exactly: heading levels (#), bullet lists (- or *), numbered lists, paragraph spacing.
+4. Professional, fluent Chinese. Maintain horror/thriller atmosphere. Precise rule descriptions.
+5. Keep the translation concise. Do not expand, explain, embellish, or add content not in the source.
+6. If previous context is provided, ensure continuity. Do not re-translate previous content.
+7. Preserve Markdown tables as Markdown tables. Translate cell text but keep the same column structure.
+8. Preserve blockquotes (> lines) exactly as blockquotes.
+9. Do NOT translate image links (![...](...)). Keep them exactly as-is.
+10. Do NOT add any Markdown syntax that was not in the source.
+
+{glossary_section}"""
+
+    SYSTEM_PROMPT_DOCX = """You are a professional TRPG translator. Translate the following text from English to Chinese.
+
+Translation rules:
+1. Follow the glossary strictly for proper nouns. The longest matching phrase wins.
+2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
+3. Professional, fluent Chinese. Maintain horror/thriller atmosphere. Precise rule descriptions.
+4. Keep the translation concise. Do not expand, explain, embellish, or add content not in the source.
+5. If previous context is provided, ensure continuity. Do not re-translate previous content.
+6. If the source contains inline format markers like <b>...</b> or <i>...</i>, preserve them exactly in the translation. These markers indicate bold and italic formatting boundaries that must be maintained.
+7. Translate ONLY the text content. Do not add explanations, notes, or commentary.
+
+{glossary_section}"""
+
     def __init__(self, api_key: str, model: str = "deepseek-v4-pro",
                  base_url: str = "https://api.deepseek.com", stats: TokenStats = None):
         if not api_key or not str(api_key).strip():
@@ -163,6 +192,84 @@ Translation rules:
             )
         else:
             user_prompt = f"Translate the following{page_info}:\n\n{text}"
+
+        cache_key = self._translation_cache_key(system_prompt, user_prompt)
+        if cache is not None:
+            cached_translation = cache.get_cached_prompt_translation(cache_key)
+            if cached_translation:
+                self.stats.add_translation_cache_hit()
+                return cached_translation
+
+        for attempt in range(self.retry_count):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=4096,
+                )
+                usage = response.usage
+                if usage:
+                    cached = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+                    self.stats.add(
+                        getattr(usage, "prompt_tokens", 0) or 0,
+                        getattr(usage, "completion_tokens", 0) or 0,
+                        cached,
+                    )
+                if not response.choices:
+                    raise RuntimeError("API 返回空 choices")
+                content = response.choices[0].message.content or ""
+                content = content.strip()
+                if not content:
+                    raise RuntimeError("API 返回空译文")
+                if cache is not None:
+                    cache.mark_cached_prompt_translation(cache_key, content)
+                return content
+            except Exception as e:
+                self.stats.add_failure()
+                if attempt < self.retry_count - 1:
+                    wait = self.retry_delay * (attempt + 1)
+                    print(f"\n  API error (attempt {attempt+1}/{self.retry_count}): {e}")
+                    print(f"     Retrying in {wait}s...", end="", flush=True)
+                    time.sleep(wait)
+                else:
+                    print(f"\n  API failed permanently: {e}")
+                    return f"{TRANSLATION_FAILURE_PREFIX} {e}]\n\nOriginal:\n{text[:200]}..."
+        return ""
+
+    def translate_block(self, text: str, block_index: int = None, prev_context: str = "",
+                        source_type: str = "markdown", cache=None) -> str:
+        """
+        Translate a text block from Markdown or Word source.
+
+        Args:
+            text: The text content to translate
+            block_index: Block index for logging
+            prev_context: Previous block's translated text for continuity
+            source_type: "markdown" or "docx" — selects the appropriate prompt
+            cache: ProgressTracker for translation caching
+        """
+        if not text.strip():
+            return ""
+
+        glossary_section = self._build_glossary_for_chunk(text)
+        if source_type == "docx":
+            system_prompt = self.SYSTEM_PROMPT_DOCX.format(glossary_section=glossary_section)
+        else:
+            system_prompt = self.SYSTEM_PROMPT_MARKDOWN.format(glossary_section=glossary_section)
+
+        block_info = f" (block {block_index + 1})" if block_index is not None else ""
+        if prev_context:
+            user_prompt = (
+                f"[Previous context - DO NOT translate, for reference only]\n"
+                f"{prev_context}\n\n---\n\n"
+                f"Translate the following{block_info}:\n\n{text}"
+            )
+        else:
+            user_prompt = f"Translate the following{block_info}:\n\n{text}"
 
         cache_key = self._translation_cache_key(system_prompt, user_prompt)
         if cache is not None:
