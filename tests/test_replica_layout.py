@@ -23,6 +23,10 @@ from core.layout_translation import (
     write_overflow_report,
 )
 from exporters.pdf_html import render_layout_html
+from exporters.pdf_playwright import (
+    read_browser_layout_report_overflow_count,
+    write_browser_layout_report,
+)
 
 
 def _sample_layout():
@@ -35,6 +39,7 @@ def _sample_layout():
                 index=0,
                 width=612,
                 height=792,
+                page_image_path="assets/replica_pages/page_0001.png",
                 text_blocks=[
                     LayoutTextBlock(
                         id="p0001_t0000",
@@ -70,6 +75,7 @@ def test_layout_document_json_round_trip():
 
     assert restored.page_count == 1
     assert restored.pages[0].width == 612
+    assert restored.pages[0].page_image_path == "assets/replica_pages/page_0001.png"
     assert restored.pages[0].text_blocks[0].spans[0].text == "Delta Green"
     assert restored.pages[0].image_blocks[0].bbox == [200, 120, 300, 220]
 
@@ -86,13 +92,30 @@ def test_layout_document_rejects_wrong_page_count():
         raise AssertionError("wrong page_count should fail")
 
 
+def test_layout_document_rejects_missing_page_image_path():
+    data = _sample_layout().to_dict()
+    del data["pages"][0]["page_image_path"]
+
+    try:
+        layout_document_from_json(json.dumps(data))
+    except ValueError as exc:
+        assert "page_image_path" in str(exc)
+    else:
+        raise AssertionError("missing page_image_path should fail")
+
+
 def test_render_layout_html_uses_source_coordinates(tmp_path):
+    image_dir = tmp_path / "assets" / "replica_pages"
+    image_dir.mkdir(parents=True)
+    (image_dir / "page_0001.png").write_bytes(b"fake")
     out = tmp_path / "replica.html"
 
     render_layout_html(_sample_layout(), str(out), show_boxes=True)
 
     html = out.read_text(encoding="utf-8")
     assert 'class="replica-page"' in html
+    assert 'class="replica-page-image"' in html
+    assert 'src="assets/replica_pages/page_0001.png"' in html
     assert 'data-span-id="p0001_t0000_s0000"' in html
     assert "left:96.000px;top:120.000px" in html
     assert "Delta Green" in html
@@ -139,10 +162,29 @@ def test_render_layout_html_uses_translated_block_when_present(tmp_path):
 
     html = out.read_text(encoding="utf-8")
     assert 'class="replica-translation replica-translation-box"' in html
+    assert 'class="replica-mask replica-mask-box"' in html
     assert 'data-base-font-px="' in html
     assert "replicaFitTranslations" in html
     assert "绿色三角洲" in html
     assert 'data-span-id="p0001_t0000_s0000"' not in html
+
+
+def test_browser_layout_report_records_fit_results(tmp_path):
+    out = tmp_path / "layout_report.md"
+
+    overflow_count = write_browser_layout_report(
+        [
+            {"page": "1", "blockId": "p0001_t0000", "fontPx": 12.25, "overflow": False},
+            {"page": "2", "blockId": "p0002_t0000", "fontPx": 6, "overflow": True},
+        ],
+        str(out),
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert overflow_count == 1
+    assert read_browser_layout_report_overflow_count(str(out)) == 1
+    assert "`p0001_t0000`" in text
+    assert "| 2 | `p0002_t0000` | 6.000 | 是 |" in text
 
 
 def test_overflow_check_shrinks_translation_before_reporting(tmp_path):
@@ -172,6 +214,7 @@ def test_overflow_check_shrinks_translation_before_reporting(tmp_path):
                 index=0,
                 width=612,
                 height=792,
+                page_image_path="assets/replica_pages/page_0001.png",
                 text_blocks=[block],
                 image_blocks=[],
             )
@@ -211,10 +254,15 @@ def test_layout_extractor_merges_adjacent_body_lines(tmp_path):
     doc.save(pdf_path)
     doc.close()
 
-    with PDFLayoutExtractor(str(pdf_path)) as extractor:
+    with PDFLayoutExtractor(
+        str(pdf_path),
+        page_image_dir=str(tmp_path / "assets" / "replica_pages"),
+    ) as extractor:
         layout = extractor.extract()
 
     blocks = layout.pages[0].text_blocks
+    assert (tmp_path / "assets" / "replica_pages" / "page_0001.png").exists()
+    assert layout.pages[0].page_image_path.endswith("page_0001.png")
     texts = [block_source_text(block) for block in blocks]
     assert "First body line\nSecond body line" in texts
     assert "Right column line" in texts
@@ -277,6 +325,7 @@ def test_translate_layout_to_template_writes_empty_progress(tmp_path):
                 index=0,
                 width=300,
                 height=200,
+                page_image_path="assets/replica_pages/page_0001.png",
                 text_blocks=[],
                 image_blocks=[],
             )

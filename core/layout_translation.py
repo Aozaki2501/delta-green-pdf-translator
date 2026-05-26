@@ -272,6 +272,7 @@ def apply_translation_map(layout: LayoutDocument, translations: dict[str, str]) 
             index=page.index,
             width=page.width,
             height=page.height,
+            page_image_path=page.page_image_path,
             text_blocks=text_blocks,
             image_blocks=page.image_blocks,
         ))

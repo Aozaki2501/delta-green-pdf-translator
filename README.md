@@ -110,7 +110,8 @@ Web 界面里也可以在“输出格式”中单独选择“原版坐标 PDF”
 注意：
 
 - 这个模式必须单独运行，不要和纯文本稿、网页排版、文档排版一起勾选。
-- 图片目前只保留原位置占位，不嵌回原图像素，方便后续手动处理。
+- HTML 检查稿会使用原 PDF 页面底图，中文译文覆盖在原坐标位置。
+- 当前还没有精细遮盖英文原文，复杂背景页需要人工检查 HTML。
 - 翻译会按同页文本块合并成“翻译组”，减少 API 调用，并保持同页上下文连贯。
 - 如果模型没有按块标记返回译文，任务会直接记录失败块，不会猜测拆分。
 
@@ -151,8 +152,8 @@ python render_layout_html.py "output/book.translated.layout.json" -o "output/boo
 python export_replica_pdf.py "output/book.translated.layout.json" -o "output/book.replica.pdf"
 ```
 
-当前阶段支持坐标提取、自动翻译、译文回填、HTML 检查、自动缩字、溢出报告和 PDF 导出。
-后续会改为“原页底图 + 中文文本层”的 HTML 中间排版稿，开发计划见 `REPLICA_PDF_LAYOUT_PLAN.md`。
+当前阶段支持坐标提取、原页底图、自动翻译、译文回填、HTML 检查、自动缩字、溢出报告和 PDF 导出。
+后续会继续补原文遮盖和浏览器真实排版报告，开发计划见 `REPLICA_PDF_LAYOUT_PLAN.md`。
 
 ## Web 使用流程
 
@@ -271,6 +272,8 @@ python convert_glossary.py raw_glossary.txt -o glossary.tsv
 ```
 
 同一个 PDF、同一个术语表、同一个模型和同一段页码再次运行时，程序会跳过已经完成的页。
+Web 界面也是同样规则：重新上传同一个 PDF，保持术语表、模型和页码范围不变，再点击执行即可继续。
+如果这些设置变了，程序会提示进度指纹不一致，并默认不复用旧译文，避免旧缓存串到新任务里。
 
 如果某些页调用 API 失败，会写入 `failed_pages`，不会当作正常译文混进最终结果。
 
@@ -279,6 +282,10 @@ python convert_glossary.py raw_glossary.txt -o glossary.tsv
 ```powershell
 python translate_pdf.py "book.pdf" --api-key sk-xxx --retry-failed
 ```
+
+Web 界面里可以在“高级任务控制”勾选“只重试失败页”。
+
+如果输出没有任何中文译文，Web 会停止生成最终文件，避免产出空文档或全英文文件。
 
 ## 离线重新生成输出
 

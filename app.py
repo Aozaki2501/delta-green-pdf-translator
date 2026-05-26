@@ -24,7 +24,7 @@ from core.layout_translation import (
     write_overflow_report,
 )
 from exporters.pdf_html import render_layout_html
-from exporters.pdf_playwright import export_layout_pdf
+from exporters.pdf_playwright import export_layout_pdf, read_browser_layout_report_overflow_count
 from webui.components import (
     make_dossier_id,
     render_audit_grid,
@@ -867,6 +867,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             translations_path = make_output_path(output_base, "_replica.translations.json")
             translated_layout_path = make_output_path(output_base, "_replica.translated.layout.json")
             overflow_path = make_output_path(output_base, "_replica.overflow.md")
+            layout_report_path = make_output_path(output_base, "_replica.layout_report.md")
             replica_html_path = make_output_path(output_base, "_replica.html")
             replica_pdf_path = make_output_path(output_base, "_replica.pdf")
             replica_progress_path = make_output_path(output_base, "_replica.progress.json")
@@ -987,6 +988,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 translated_layout,
                 replica_html_path,
                 show_boxes=True,
+                asset_base_dir=str(Path(layout_path).parent),
             )
             generated_files.append(replica_html_path)
 
@@ -1003,8 +1005,12 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 replica_pdf_path,
                 html_output=replica_html_path,
                 show_boxes=False,
+                asset_base_dir=str(Path(layout_path).parent),
+                layout_report_output=layout_report_path,
             )
             generated_files.append(replica_pdf_path)
+            generated_files.append(layout_report_path)
+            browser_overflow_count = read_browser_layout_report_overflow_count(layout_report_path)
 
             render_downloads(generated_files)
 
@@ -1021,7 +1027,8 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 "formats": formats,
                 "completed_pages": len(layout.pages),
                 "failed_pages": [],
-                "overflow_blocks": len(issues),
+                "overflow_blocks": browser_overflow_count,
+                "conservative_overflow_blocks": len(issues),
                 "glossary": Path(glossary_path).name if glossary_path else "",
                 "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
             }
@@ -1032,7 +1039,7 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
             render_audit_grid({
                 "档案号": dossier_id,
                 "坐标页": len(layout.pages),
-                "溢出块": len(issues),
+                "溢出块": browser_overflow_count,
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             })
             extractor.close()

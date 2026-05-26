@@ -64,6 +64,8 @@ def test_collect_output_history_reads_replica_outputs(tmp_path):
     replica_pdf.write_bytes(b"%PDF-1.7\n")
     overflow = folder / "book_cn_replica.overflow.md"
     overflow.write_text("overflow", encoding="utf-8")
+    layout_report = folder / "book_cn_replica.layout_report.md"
+    layout_report.write_text("report", encoding="utf-8")
 
     history = collect_output_history(output_dir)
 
@@ -72,8 +74,10 @@ def test_collect_output_history_reads_replica_outputs(tmp_path):
     assert history[0]["progress"]["failed"] == 1
     assert history_file_label(replica_pdf) == "坐标PDF"
     assert history_file_label(overflow) == "坐标溢出报告"
+    assert history_file_label(layout_report) == "坐标排版报告"
     assert history[0]["download_files"] == [replica_pdf]
     assert is_final_output_file(overflow) is False
+    assert is_final_output_file(layout_report) is False
 
 
 def test_collect_output_history_groups_files_by_audit_outputs(tmp_path):

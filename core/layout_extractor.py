@@ -38,9 +38,12 @@ def _color_to_hex(value: int) -> str:
 class PDFLayoutExtractor:
     """Extract strict coordinate-level page layout from a PDF."""
 
-    def __init__(self, pdf_path: str):
+    def __init__(self, pdf_path: str, page_image_dir: str | None = None,
+                 page_image_prefix: str = "page"):
         self.pdf_path = str(pdf_path)
         self.doc = pymupdf.open(pdf_path)
+        self.page_image_dir = Path(page_image_dir) if page_image_dir else None
+        self.page_image_prefix = page_image_prefix
 
     def __enter__(self):
         return self
@@ -73,6 +76,7 @@ class PDFLayoutExtractor:
 
     def _extract_page(self, page_index: int) -> LayoutPage:
         page = self.doc[page_index]
+        page_image_path = self._render_page_image(page, page_index)
         page_dict = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
         text_blocks = []
         image_blocks = []
@@ -101,9 +105,20 @@ class PDFLayoutExtractor:
             index=page_index,
             width=round(float(page.rect.width), 3),
             height=round(float(page.rect.height), 3),
+            page_image_path=page_image_path,
             text_blocks=self._merge_adjacent_text_blocks(text_blocks, page.rect.width, page.rect.height),
             image_blocks=image_blocks,
         )
+
+    def _render_page_image(self, page, page_index: int) -> str:
+        if self.page_image_dir is None:
+            raise ValueError("缺少页面底图输出目录")
+
+        self.page_image_dir.mkdir(parents=True, exist_ok=True)
+        image_path = self.page_image_dir / f"{self.page_image_prefix}_{page_index + 1:04d}.png"
+        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(2, 2), alpha=False)
+        pixmap.save(str(image_path))
+        return str(image_path)
 
     def _extract_spans(self, page_index: int, block_index: int, block: dict) -> list[LayoutSpan]:
         spans = []
@@ -222,7 +237,30 @@ class PDFLayoutExtractor:
 def extract_layout_to_file(pdf_path: str, output_path: str,
                            start_page: int = 0, end_page: int | None = None) -> LayoutDocument:
     ensure_output_parent(output_path)
-    with PDFLayoutExtractor(pdf_path) as extractor:
+    output = Path(output_path).expanduser().resolve()
+    page_image_dir = output.parent / "assets" / "replica_pages"
+    with PDFLayoutExtractor(pdf_path, page_image_dir=str(page_image_dir)) as extractor:
         layout = extractor.extract(start_page=start_page, end_page=end_page)
+    layout = _make_page_image_paths_relative(layout, output.parent)
     Path(output_path).write_text(layout.to_json(), encoding="utf-8")
     return layout
+
+
+def _make_page_image_paths_relative(layout: LayoutDocument, base_dir: Path) -> LayoutDocument:
+    pages = []
+    for page in layout.pages:
+        relative_image_path = Path(page.page_image_path).resolve().relative_to(base_dir.resolve())
+        pages.append(LayoutPage(
+            index=page.index,
+            width=page.width,
+            height=page.height,
+            page_image_path=relative_image_path.as_posix(),
+            text_blocks=page.text_blocks,
+            image_blocks=page.image_blocks,
+        ))
+    return LayoutDocument(
+        schema_version=layout.schema_version,
+        source_pdf=layout.source_pdf,
+        page_count=layout.page_count,
+        pages=pages,
+    )

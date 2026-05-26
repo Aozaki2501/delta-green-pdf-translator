@@ -10,7 +10,7 @@ import json
 from typing import Any
 
 
-LAYOUT_SCHEMA_VERSION = 1
+LAYOUT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class LayoutPage:
     index: int
     width: float
     height: float
+    page_image_path: str
     text_blocks: list[LayoutTextBlock]
     image_blocks: list[LayoutImageBlock]
 
@@ -83,7 +84,11 @@ def layout_document_from_dict(data: dict[str, Any]) -> LayoutDocument:
 
     pages = []
     for page_data in data["pages"]:
-        _require_keys(page_data, ("index", "width", "height", "text_blocks", "image_blocks"), "page")
+        _require_keys(
+            page_data,
+            ("index", "width", "height", "page_image_path", "text_blocks", "image_blocks"),
+            "page",
+        )
         text_blocks = []
         for block_data in page_data["text_blocks"]:
             _require_keys(block_data, ("id", "bbox", "spans"), "text block")
@@ -122,6 +127,7 @@ def layout_document_from_dict(data: dict[str, Any]) -> LayoutDocument:
             index=int(page_data["index"]),
             width=float(page_data["width"]),
             height=float(page_data["height"]),
+            page_image_path=str(page_data["page_image_path"]),
             text_blocks=text_blocks,
             image_blocks=image_blocks,
         ))

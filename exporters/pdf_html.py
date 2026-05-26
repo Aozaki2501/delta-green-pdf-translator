@@ -6,7 +6,9 @@ page at its original point size and places text spans by their source bbox.
 """
 
 import html
+import os
 from pathlib import Path
+from urllib.parse import quote
 
 from core.layout_model import LayoutDocument, LayoutPage, LayoutTextBlock, layout_document_from_json
 from core.utils import ensure_output_parent
@@ -48,13 +50,31 @@ def _translated_html(text: str) -> str:
     return "<br>".join(html.escape(line) for line in lines)
 
 
-def _render_page(page: LayoutPage, show_boxes: bool) -> str:
+def _mask_padding_px(block: LayoutTextBlock) -> float:
+    return max(1.5, _raw_css_px_from_pt(_block_font_size(block)) * 0.16)
+
+
+def _asset_url(page_image_path: str, output_dir: Path, asset_base_dir: Path) -> str:
+    image_path = Path(page_image_path)
+    if not image_path.is_absolute():
+        image_path = asset_base_dir / image_path
+    relative_path = Path(os.path.relpath(image_path.resolve(), output_dir.resolve())).as_posix()
+    return quote(relative_path, safe="/._-")
+
+
+def _render_page(page: LayoutPage, show_boxes: bool, output_dir: Path, asset_base_dir: Path) -> str:
+    page_image_src = _asset_url(page.page_image_path, output_dir, asset_base_dir)
     parts = [
         (
             f'<section class="replica-page" '
             f'data-page="{page.index + 1}" '
             f'style="width:{_css_px_from_pt(page.width)};height:{_css_px_from_pt(page.height)}">'
-        )
+        ),
+        (
+            '<img class="replica-page-image" '
+            f'src="{html.escape(page_image_src)}" '
+            f'alt="page {page.index + 1}">'
+        ),
     ]
     for image in page.image_blocks:
         x0, y0, x1, y1 = image.bbox
@@ -69,6 +89,18 @@ def _render_page(page: LayoutPage, show_boxes: bool) -> str:
             x0, y0, x1, y1 = block.bbox
             box_class = " replica-translation-box" if show_boxes else ""
             base_font_px = _raw_css_px_from_pt(_block_font_size(block))
+            mask_pad_px = _mask_padding_px(block)
+            mask_left_px = _raw_css_px_from_pt(x0) - mask_pad_px
+            mask_top_px = _raw_css_px_from_pt(y0) - mask_pad_px
+            mask_width_px = _raw_css_px_from_pt(x1 - x0) + (mask_pad_px * 2)
+            mask_height_px = _raw_css_px_from_pt(y1 - y0) + (mask_pad_px * 2)
+            mask_class = " replica-mask-box" if show_boxes else ""
+            parts.append(
+                f'<div class="replica-mask{mask_class}" '
+                f'data-block-id="{html.escape(block.id)}" '
+                f'style="left:{mask_left_px:.3f}px;top:{mask_top_px:.3f}px;'
+                f'width:{mask_width_px:.3f}px;height:{mask_height_px:.3f}px"></div>'
+            )
             parts.append(
                 f'<div class="replica-translation{box_class}" '
                 f'data-block-id="{html.escape(block.id)}" '
@@ -100,10 +132,13 @@ def _render_page(page: LayoutPage, show_boxes: bool) -> str:
     return "\n".join(parts)
 
 
-def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: bool = False):
+def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: bool = False,
+                       asset_base_dir: str | None = None):
     ensure_output_parent(output_path)
     if not layout.pages:
         raise ValueError("layout 没有页面")
+    output_dir = Path(output_path).expanduser().resolve().parent
+    asset_base = Path(asset_base_dir).expanduser().resolve() if asset_base_dir else output_dir
     first_page = layout.pages[0]
     css = f"""
     * {{
@@ -122,6 +157,15 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
         box-shadow: 0 3px 18px rgba(0, 0, 0, 0.35);
         page-break-after: always;
     }}
+    .replica-page-image {{
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: fill;
+        user-select: none;
+        pointer-events: none;
+    }}
     .replica-span {{
         position: absolute;
         display: block;
@@ -129,6 +173,7 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
         line-height: 1;
         overflow: visible;
         transform-origin: left top;
+        z-index: 2;
     }}
     .replica-span-box {{
         outline: 0.5px solid rgba(216, 0, 0, 0.45);
@@ -140,6 +185,18 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
         overflow: hidden;
         line-height: 1.12;
         transform-origin: left top;
+        z-index: 3;
+    }}
+    .replica-mask {{
+        position: absolute;
+        display: block;
+        pointer-events: none;
+        background: rgba(255, 255, 255, 0.92);
+        z-index: 2;
+    }}
+    .replica-mask-box {{
+        outline: 0.75px dashed rgba(255, 183, 0, 0.88);
+        background: rgba(255, 248, 220, 0.82);
     }}
     .replica-translation-box {{
         outline: 0.75px solid rgba(216, 0, 0, 0.75);
@@ -152,6 +209,7 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
         position: absolute;
         border: {("0.75px dashed rgba(0, 92, 255, 0.65)" if show_boxes else "0")};
         background: {("rgba(0, 92, 255, 0.08)" if show_boxes else "transparent")};
+        z-index: 1;
     }}
     @page {{
         size: {_css_in_from_pt(first_page.width)} {_css_in_from_pt(first_page.height)};
@@ -180,7 +238,7 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
         "<body>",
     ]
     for page in layout.pages:
-        chunks.append(_render_page(page, show_boxes=show_boxes))
+        chunks.append(_render_page(page, show_boxes=show_boxes, output_dir=output_dir, asset_base_dir=asset_base))
     chunks.extend([
         """
 <script>
@@ -242,5 +300,6 @@ def render_layout_html(layout: LayoutDocument, output_path: str, show_boxes: boo
 
 
 def render_layout_json_html(layout_json_path: str, output_path: str, show_boxes: bool = False):
-    layout = layout_document_from_json(Path(layout_json_path).read_text(encoding="utf-8"))
-    render_layout_html(layout, output_path, show_boxes=show_boxes)
+    layout_path = Path(layout_json_path).expanduser().resolve()
+    layout = layout_document_from_json(layout_path.read_text(encoding="utf-8"))
+    render_layout_html(layout, output_path, show_boxes=show_boxes, asset_base_dir=str(layout_path.parent))
