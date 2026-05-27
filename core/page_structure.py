@@ -194,46 +194,40 @@ class PageStructureExtractor:
 
         for img_idx, img_info in enumerate(image_list):
             xref = img_info[0]
-            try:
-                # Get image bounding box on the page
-                img_rects = page.get_image_rects(xref)
-                if not img_rects:
-                    continue
-                bbox_rect = img_rects[0]  # Use first occurrence
-
-                # Extract image pixel data
-                base_image = self.doc.extract_image(xref)
-                if not base_image:
-                    continue
-
-                image_bytes = base_image.get("image")
-                if not image_bytes:
-                    continue
-
-                width_px = base_image.get("width", 0)
-                height_px = base_image.get("height", 0)
-                ext = base_image.get("ext", "png")
-
-                # Save image to assets directory
-                img_id = f"p{page_index + 1:04d}_img{img_idx + 1:04d}"
-                self.image_dir.mkdir(parents=True, exist_ok=True)
-                img_filename = f"{img_id}.{ext}"
-                img_path = self.image_dir / img_filename
-                img_path.write_bytes(image_bytes)
-
-                # Relative path from output_dir
-                relative_path = f"assets/typeset_images/{img_filename}"
-
-                images.append(ImageElement(
-                    id=img_id,
-                    bbox=_round_bbox([bbox_rect.x0, bbox_rect.y0, bbox_rect.x1, bbox_rect.y1]),
-                    image_path=relative_path,
-                    width_px=int(width_px),
-                    height_px=int(height_px),
-                ))
-            except Exception:
-                # Skip images that fail to extract (record warning in production)
+            smask = img_info[1]
+            # Get image bounding box on the page
+            img_rects = page.get_image_rects(xref)
+            if not img_rects:
                 continue
+            bbox_rect = img_rects[0]  # Use first occurrence
+
+            pix = pymupdf.Pixmap(self.doc, xref)
+            if smask:
+                mask = pymupdf.Pixmap(self.doc, smask)
+                pix = pymupdf.Pixmap(pix, mask)
+            if pix.n - pix.alpha > 3:
+                pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+
+            width_px = pix.width
+            height_px = pix.height
+
+            # Save images as PNG so Chromium can render them from HTML.
+            img_id = f"p{page_index + 1:04d}_img{img_idx + 1:04d}"
+            self.image_dir.mkdir(parents=True, exist_ok=True)
+            img_filename = f"{img_id}.png"
+            img_path = self.image_dir / img_filename
+            pix.save(str(img_path))
+
+            # Relative path from output_dir
+            relative_path = f"assets/typeset_images/{img_filename}"
+
+            images.append(ImageElement(
+                id=img_id,
+                bbox=_round_bbox([bbox_rect.x0, bbox_rect.y0, bbox_rect.x1, bbox_rect.y1]),
+                image_path=relative_path,
+                width_px=int(width_px),
+                height_px=int(height_px),
+            ))
 
         return images
 

@@ -53,6 +53,18 @@ def _pt_to_px_str(value: float) -> str:
     return _px(_pt_to_px(value))
 
 
+def _same_text_flow(previous: list[float], current: list[float]) -> bool:
+    """Return True when two text boxes belong to the same vertical text flow."""
+    px0, py0, px1, py1 = previous
+    cx0, cy0, cx1, cy1 = current
+    horizontal_overlap = max(0.0, min(px1, cx1) - max(px0, cx0))
+    narrower_width = max(1.0, min(px1 - px0, cx1 - cx0))
+    if horizontal_overlap / narrower_width < 0.45:
+        return False
+    vertical_gap = cy0 - py1
+    return -18.0 <= vertical_gap <= 18.0
+
+
 class TypesetHTMLRebuilder:
     """HTML/CSS page rebuilder for the typeset reflow pipeline."""
 
@@ -150,11 +162,44 @@ class TypesetHTMLRebuilder:
             "<body>",
         ]
         parts.extend(page_sections)
+        parts.append(self._build_fit_script())
         parts.extend([
             "</body>",
             "</html>",
         ])
         return "\n".join(parts)
+
+    def _build_fit_script(self) -> str:
+        """Build deterministic text fitting for fixed PDF text boxes."""
+        return """
+<script>
+function typesetFitPositionedBlocks() {
+  const boxes = document.querySelectorAll('.typeset-positioned-block[data-fit="text"]');
+  for (const box of boxes) {
+    const child = box.firstElementChild;
+    if (!child) continue;
+    let size = parseFloat(getComputedStyle(child).fontSize) || 12;
+    const minSize = 6;
+    let guard = 0;
+    while (
+      guard < 80 &&
+      size > minSize &&
+      (box.scrollHeight > box.clientHeight + 1 || box.scrollWidth > box.clientWidth + 1)
+    ) {
+      size = Math.max(minSize, size - 0.5);
+      child.style.fontSize = size + 'px';
+      child.style.lineHeight = '1.1';
+      guard += 1;
+    }
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', typesetFitPositionedBlocks);
+} else {
+  typesetFitPositionedBlocks();
+}
+</script>
+"""
 
     def _build_global_css(self, page_width_in: float, page_height_in: float) -> str:
         """Build the global CSS stylesheet."""
@@ -215,6 +260,20 @@ body {{
     position: absolute;
     inset: 0;
     z-index: {Z_TEXT};
+}}
+.typeset-positioned-block {{
+    position: absolute;
+    overflow: hidden;
+}}
+.typeset-positioned-block .typeset-body-text {{
+    margin: 0;
+    line-height: 1.15;
+    text-indent: 0;
+}}
+.typeset-positioned-block .typeset-heading {{
+    margin: 0;
+    line-height: 1.15;
+    text-indent: 0;
 }}
 .typeset-columns {{
     display: flex;
@@ -313,7 +372,7 @@ body {{
         parts.append(self.render_background_layer(page_structure.background))
         parts.append(self.render_image_layer(page_structure.images))
         parts.append(self.render_decoration_layer(page_structure.decorations))
-        parts.append(self.render_text_layer(page_content))
+        parts.append(self.render_text_layer(page_content, page_structure))
 
         parts.append("</section>")
         return "\n".join(parts)
@@ -485,17 +544,27 @@ body {{
             f'background:{fill_color}"></div>'
         )
 
-    def render_text_layer(self, page_content: PageContent) -> str:
+    def render_text_layer(
+        self,
+        page_content: PageContent,
+        page_structure: PageStructure | None = None,
+    ) -> str:
         """
         Render the text layer HTML based on page type.
 
         Args:
             page_content: Page content with text blocks.
+            page_structure: Page structure with original text region boxes.
 
         Returns:
             HTML string for the text layer.
         """
         parts: list[str] = ['<div class="typeset-text-layer">']
+
+        if page_structure is not None:
+            parts.append(self._render_positioned_blocks(page_content, page_structure))
+            parts.append("</div>")
+            return "\n".join(parts)
 
         if page_content.page_type == PageType.COLUMNS:
             parts.append(self._render_columns_page(page_content))
@@ -509,6 +578,188 @@ body {{
 
         parts.append("</div>")
         return "\n".join(parts)
+
+    def _render_positioned_blocks(
+        self,
+        page_content: PageContent,
+        page_structure: PageStructure,
+    ) -> str:
+        """Render text blocks back into their source PDF region boxes."""
+        region_map = {region.id: region.bbox for region in page_structure.text_regions}
+        parts: list[str] = []
+        consumed: set[str] = set()
+        blocks = page_content.blocks
+        for index, block in enumerate(blocks):
+            if block.id in consumed:
+                continue
+            bbox = region_map.get(block.region_id)
+            if bbox is None:
+                parts.append(self._render_block(block))
+                consumed.add(block.id)
+                continue
+
+            if self._is_running_header(block):
+                parts.append(self._render_running_header(block, page_structure, bbox))
+                consumed.add(block.id)
+                continue
+            if self._is_fixed_page_number(block):
+                parts.append(self._render_fixed_page_number(block, bbox))
+                consumed.add(block.id)
+                continue
+            if self._is_flow_body_block(block):
+                group = self._collect_flow_group(blocks, index, region_map, consumed)
+                if len(group) > 1:
+                    parts.append(self._render_positioned_flow_group(group, region_map))
+                    consumed.update(item.id for item in group)
+                    continue
+
+            x0, y0, x1, y1 = bbox
+            left = _pt_to_px(x0)
+            top = _pt_to_px(y0)
+            width = _pt_to_px(max(0.0, x1 - x0))
+            height = _pt_to_px(max(0.0, y1 - y0))
+            color = self._block_text_color(block)
+            inner = self._render_block(block)
+            if not inner:
+                continue
+
+            parts.append(
+                f'<div class="typeset-positioned-block" '
+                f'data-region-id="{html.escape(block.region_id)}" '
+                f'data-fit="text" '
+                f'style="left:{_px(left)};top:{_px(top)};'
+                f'width:{_px(width)};height:{_px(height)};'
+                f'color:{html.escape(color)}">'
+                f"{inner}</div>"
+            )
+            consumed.add(block.id)
+        return "\n".join(parts)
+
+    def _is_flow_body_block(self, block: ContentBlock) -> bool:
+        if block.role != SemanticRole.BODY_COLUMN:
+            return False
+        return self._get_block_font_size(block) < self.config.body_font_size_pt * 1.25
+
+    def _collect_flow_group(
+        self,
+        blocks: list[ContentBlock],
+        start_index: int,
+        region_map: dict[str, list[float]],
+        consumed: set[str],
+    ) -> list[ContentBlock]:
+        group = [blocks[start_index]]
+        last_bbox = region_map[blocks[start_index].region_id]
+        for block in blocks[start_index + 1:]:
+            if block.id in consumed or not self._is_flow_body_block(block):
+                break
+            bbox = region_map.get(block.region_id)
+            if bbox is None or not _same_text_flow(last_bbox, bbox):
+                break
+            group.append(block)
+            last_bbox = bbox
+        return group
+
+    def _render_positioned_flow_group(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> str:
+        bboxes = [region_map[block.region_id] for block in blocks]
+        x0 = min(bbox[0] for bbox in bboxes)
+        y0 = min(bbox[1] for bbox in bboxes)
+        x1 = max(bbox[2] for bbox in bboxes)
+        y1 = max(bbox[3] for bbox in bboxes)
+        left = _pt_to_px(x0)
+        top = _pt_to_px(y0)
+        width = _pt_to_px(max(0.0, x1 - x0))
+        height = _pt_to_px(max(0.0, y1 - y0))
+        color = self._block_text_color(blocks[0])
+        inner = "\n".join(self._render_block(block) for block in blocks)
+        ids = " ".join(block.id for block in blocks)
+        return (
+            f'<div class="typeset-positioned-block" '
+            f'data-flow-blocks="{html.escape(ids)}" '
+            f'data-fit="text" '
+            f'style="left:{_px(left)};top:{_px(top)};'
+            f'width:{_px(width)};height:{_px(height)};'
+            f'color:{html.escape(color)}">'
+            f"{inner}</div>"
+        )
+
+    def _is_running_header(self, block: ContentBlock) -> bool:
+        """Detect the fixed running header line, not normal section titles."""
+        text = block.source_text or ""
+        return block.role == SemanticRole.HEADER and "//" in text and (
+            "Delta Green" in text or "God" in text
+        )
+
+    def _render_running_header(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+        bbox: list[float],
+    ) -> str:
+        """Render fixed left/right running headers in their original slots."""
+        marker_runs = [
+            run for run in block.runs
+            if run.text.strip().startswith("//") and run.text.strip().endswith("//")
+        ]
+        if not marker_runs:
+            marker_runs = block.runs[:1]
+
+        x0, y0, x1, y1 = bbox
+        top = _pt_to_px(y0)
+        height = max(_pt_to_px(y1 - y0), _pt_to_px(12.0))
+        left_margin = x0
+        right_margin = max(0.0, page_structure.width - x1)
+        slot_width = min(180.0, max(80.0, page_structure.width / 2 - left_margin - 8.0))
+        font_size_pt = self._get_block_font_size(block)
+        font_size_px = _pt_to_px(font_size_pt)
+
+        parts: list[str] = []
+        for index, run in enumerate(marker_runs[:2]):
+            text = html.escape(run.text.strip())
+            if index == 0:
+                left = _pt_to_px(left_margin)
+                align = "left"
+            else:
+                left = _pt_to_px(page_structure.width - right_margin - slot_width)
+                align = "right"
+            parts.append(
+                f'<div class="typeset-positioned-block" '
+                f'data-block-id="{html.escape(block.id)}" '
+                f'style="left:{_px(left)};top:{_px(top)};'
+                f'width:{_pt_to_px_str(slot_width)};height:{_px(height)};'
+                f'font-size:{_px(font_size_px)};line-height:1;'
+                f'text-align:{align};white-space:nowrap;color:#000000">'
+                f"{text}</div>"
+            )
+        return "\n".join(parts)
+
+    def _is_fixed_page_number(self, block: ContentBlock) -> bool:
+        """Detect the fixed page number, which sits inside the printed square."""
+        return block.role == SemanticRole.FOOTER and (block.source_text or "").strip().isdigit()
+
+    def _render_fixed_page_number(self, block: ContentBlock, bbox: list[float]) -> str:
+        """Render page numbers without body indentation or paragraph margins."""
+        text = html.escape((block.source_text or "").strip())
+        x0, y0, x1, y1 = bbox
+        center_x = _pt_to_px((x0 + x1) / 2)
+        center_y = _pt_to_px((y0 + y1) / 2)
+        width = _pt_to_px(16.0)
+        height = _pt_to_px(13.0)
+        left = center_x - width / 2
+        top = center_y - height / 2
+        font_size = _pt_to_px(self._get_block_font_size(block))
+        return (
+            f'<div class="typeset-positioned-block" '
+            f'data-block-id="{html.escape(block.id)}" '
+            f'style="left:{_px(left)};top:{_px(top)};'
+            f'width:{_px(width)};height:{_px(height)};'
+            f'font-size:{_px(font_size)};line-height:{_px(height)};'
+            f'text-align:center;text-indent:0;color:#000000">'
+            f"{text}</div>"
+        )
 
     def _render_columns_page(self, page_content: PageContent) -> str:
         """Render a columns page with dual-column layout."""
@@ -596,6 +847,13 @@ body {{
             parts.append(self._render_block(block))
         parts.append("</div>")
         return "\n".join(parts)
+
+    def _block_text_color(self, block: ContentBlock) -> str:
+        """Pick the source text color that should carry over to translated text."""
+        for run in block.runs:
+            if run.text.strip() and run.color:
+                return run.color
+        return "#000000"
 
     def _render_block(self, block: ContentBlock, is_cover: bool = False) -> str:
         """Render a single content block as HTML."""

@@ -36,6 +36,29 @@ PUBLIC_API_SYMBOLS = [
 ]
 
 
+def _import_with_fresh_package(module_name: str, package_prefix: str):
+    """Import a module after clearing its package, then restore test state."""
+    original_modules = {
+        key: value for key, value in sys.modules.items()
+        if key.startswith(package_prefix)
+    }
+    modules_to_remove = [
+        key for key in sys.modules if key.startswith(package_prefix)
+    ]
+    for key in modules_to_remove:
+        del sys.modules[key]
+
+    try:
+        return importlib.import_module(module_name)
+    finally:
+        current_modules = [
+            key for key in sys.modules if key.startswith(package_prefix)
+        ]
+        for key in current_modules:
+            del sys.modules[key]
+        sys.modules.update(original_modules)
+
+
 class TestPublicAPIImports:
     """Test that all 15 Public_API symbols are importable from translate_pdf."""
 
@@ -87,20 +110,21 @@ class TestCoreModuleImports:
         "core.layout_translation",
         "core.translator",
         "core.progress",
+        "core.dispatcher",
+        "core.page_classifier",
+        "core.page_structure",
+        "core.recursive_splitter",
+        "core.semantic_analyzer",
+        "core.typeset_models",
+        "core.typeset_pipeline",
+        "core.typeset_translation",
     ]
 
     @pytest.mark.parametrize("module_name", CORE_MODULES)
     def test_core_module_importable(self, module_name):
         """Each core module should import without circular import errors."""
-        # Remove cached module to force a fresh import
-        modules_to_remove = [
-            key for key in sys.modules if key.startswith("core")
-        ]
-        for key in modules_to_remove:
-            del sys.modules[key]
-
         try:
-            mod = importlib.import_module(module_name)
+            mod = _import_with_fresh_package(module_name, "core")
             assert mod is not None
         except ImportError as e:
             # Allow missing optional dependencies (pymupdf, openai)
@@ -130,20 +154,15 @@ class TestExporterModuleImports:
         "exporters.pdf_playwright",
         "exporters.word",
         "exporters.markdown",
+        "exporters.typeset_html",
+        "exporters.typeset_pdf",
     ]
 
     @pytest.mark.parametrize("module_name", EXPORTER_MODULES)
     def test_exporter_module_importable(self, module_name):
         """Each exporter module should import without circular import errors."""
-        # Remove cached modules to force a fresh import
-        modules_to_remove = [
-            key for key in sys.modules if key.startswith("exporters")
-        ]
-        for key in modules_to_remove:
-            del sys.modules[key]
-
         try:
-            mod = importlib.import_module(module_name)
+            mod = _import_with_fresh_package(module_name, "exporters")
             assert mod is not None
         except ImportError as e:
             error_msg = str(e)

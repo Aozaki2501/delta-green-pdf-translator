@@ -391,7 +391,7 @@ class SemanticAnalyzer:
                         color=color,
                     ))
 
-        return runs
+        return _dedupe_styled_runs(runs)
 
     def _detect_gutter(self, page_structure: PageStructure) -> float | None:
         """Detect the vertical gutter separating two columns.
@@ -559,6 +559,39 @@ def _weighted_avg_font_size(runs: list[StyledTextRun]) -> float:
             weighted_sum += run.font_size * chars
             total_chars += chars
     return weighted_sum / total_chars if total_chars > 0 else 11.0
+
+
+def _dedupe_styled_runs(runs: list[StyledTextRun]) -> list[StyledTextRun]:
+    """Remove duplicate overprinted spans, keeping the visible brighter color."""
+    deduped: list[StyledTextRun] = []
+    for run in runs:
+        if deduped and _same_text_style(deduped[-1], run):
+            if _color_luminance(run.color) >= _color_luminance(deduped[-1].color):
+                deduped[-1] = run
+            continue
+        deduped.append(run)
+    return deduped
+
+
+def _same_text_style(a: StyledTextRun, b: StyledTextRun) -> bool:
+    return (
+        a.text == b.text
+        and abs(a.font_size - b.font_size) < 0.01
+        and a.bold == b.bold
+        and a.italic == b.italic
+    )
+
+
+def _color_luminance(color: str) -> float:
+    if not color or not color.startswith("#") or len(color) != 7:
+        return 0.0
+    try:
+        r = int(color[1:3], 16)
+        g = int(color[3:5], 16)
+        b = int(color[5:7], 16)
+    except ValueError:
+        return 0.0
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
 def _looks_like_table(text: str) -> bool:

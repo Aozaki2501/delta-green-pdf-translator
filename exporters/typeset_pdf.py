@@ -82,6 +82,9 @@ class TypesetPDFExporter:
             page.goto(_file_url(html_path), wait_until="load")
             # Wait for all fonts to be loaded (ensures embedding)
             page.evaluate("document.fonts ? document.fonts.ready : Promise.resolve()")
+            page.evaluate(
+                "window.typesetFitPositionedBlocks ? window.typesetFitPositionedBlocks() : undefined"
+            )
 
             page.pdf(
                 path=pdf_output,
@@ -146,6 +149,9 @@ class TypesetPDFExporter:
             try:
                 page.goto(_file_url(html_path), wait_until="load")
                 page.evaluate("document.fonts ? document.fonts.ready : Promise.resolve()")
+                page.evaluate(
+                    "window.typesetFitPositionedBlocks ? window.typesetFitPositionedBlocks() : undefined"
+                )
 
                 # Get total page count from the HTML (count .typeset-page sections)
                 total_pages = page.evaluate(

@@ -378,6 +378,11 @@ class TypesetPipeline:
                     "page_structure.json schema 版本不匹配，将重新提取"
                 )
                 return None
+            if _has_browser_incompatible_images(doc):
+                logger.warning(
+                    "page_structure.json 包含浏览器不支持的图片格式，将重新提取"
+                )
+                return None
             return doc
         except (json.JSONDecodeError, ValueError, KeyError) as exc:
             logger.warning(f"page_structure.json 加载失败：{exc}")
@@ -587,3 +592,13 @@ class TypesetPipeline:
         """Report progress via callback if available."""
         if self._progress_callback:
             self._progress_callback(phase, done, total)
+
+
+def _has_browser_incompatible_images(doc: PageStructureDocument) -> bool:
+    """Return True when cached image assets cannot be rendered by Chromium."""
+    unsupported = {".jpx", ".jp2", ".j2k", ".jpf"}
+    for page in doc.pages:
+        for image in page.images:
+            if Path(image.image_path).suffix.lower() in unsupported:
+                return True
+    return False
