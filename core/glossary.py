@@ -48,7 +48,12 @@ def load_glossary(glossary_path: str) -> dict:
     return glossary
 
 
-def find_relevant_glossary_terms(text: str, glossary: dict) -> dict:
+def _find_relevant_glossary_terms_regex(text: str, glossary: dict) -> dict:
+    """Original regex-based glossary matching (longest-match-first, non-overlapping).
+
+    This is the internal implementation preserved for backward compatibility and
+    as a fallback when pyahocorasick is not installed.
+    """
     matches = []
     for eng, chn in sorted(glossary.items(), key=lambda item: len(item[0]), reverse=True):
         pattern = re.compile(
@@ -70,6 +75,40 @@ def find_relevant_glossary_terms(text: str, glossary: dict) -> dict:
     for eng, chn in selected:
         relevant[eng] = chn
     return relevant
+
+
+def build_glossary_matcher(glossary: dict, **kwargs) -> "ACGlossaryMatcher":
+    """构建 AC 自动机匹配器（每会话调用一次）。
+
+    Args:
+        glossary: {english_term: chinese_translation}
+        **kwargs: 传递给 ACGlossaryMatcher 的额外参数
+                  (fuzzy, max_fuzzy_edits, normalize_plurals, filter_articles)
+
+    Returns:
+        ACGlossaryMatcher 实例，可跨所有块复用。
+    """
+    return ACGlossaryMatcher(glossary, **kwargs)
+
+
+def find_relevant_glossary_terms(text: str, glossary: dict,
+                                 matcher: "ACGlossaryMatcher | None" = None) -> dict:
+    """向后兼容接口：在源文本中查找相关术语表条目。
+
+    如果提供 matcher 则使用 AC 自动机（O(n) 性能），否则回退到旧的正则逻辑。
+    现有调用方使用 (text, glossary) 两参数签名无需任何修改。
+
+    Args:
+        text: 源文本
+        glossary: {english_term: chinese_translation}
+        matcher: 可选的 ACGlossaryMatcher 实例
+
+    Returns:
+        {english_term: chinese_translation} 匹配到的术语字典
+    """
+    if matcher is not None:
+        return matcher.find_relevant_glossary_terms(text)
+    return _find_relevant_glossary_terms_regex(text, glossary)
 
 
 def _find_unlisted_proper_nouns(text: str, glossary_hits: dict) -> list[str]:
@@ -178,3 +217,484 @@ def write_glossary_report(pages_text: dict, glossary: dict, report_output: str, 
     report = build_glossary_report(pages_text, glossary, title)
     with open(report_output, "w", encoding="utf-8") as f:
         f.write(report)
+
+
+# ============================================================
+# AC AUTOMATON GLOSSARY MATCHER
+# ============================================================
+
+from dataclasses import dataclass
+
+
+@dataclass
+class GlossaryMatch:
+    """单个术语匹配结果"""
+    start: int              # 在源文本中的起始位置
+    end: int                # 在源文本中的结束位置
+    matched_text: str       # 实际匹配到的文本（可能是变体或 OCR 损坏形式）
+    canonical_term: str     # 术语表中的标准英文形式
+    chinese: str            # 中文翻译
+    is_fuzzy: bool = False  # 是否为模糊匹配
+    fuzzy_edits: int = 0    # OCR 替换字符数
+    match_type: str = "exact"  # exact | plural | article | fuzzy
+
+
+# Attempt to import pyahocorasick; if unavailable, set flag for fallback
+try:
+    import ahocorasick as _ahocorasick
+    _HAS_AHOCORASICK = True
+except ImportError:
+    _ahocorasick = None
+    _HAS_AHOCORASICK = False
+
+
+class ACGlossaryMatcher:
+    """基于 Aho-Corasick 自动机的术语匹配器。
+
+    每个翻译会话构建一次，跨所有块复用。当 pyahocorasick 未安装时，
+    自动回退到旧的正则匹配逻辑并打印警告。
+    """
+
+    # English articles to filter when filter_articles is enabled
+    _ARTICLES_PATTERN = re.compile(r'\b(the|a|an)\s$', re.IGNORECASE)
+
+    def __init__(self, glossary: dict[str, str], *,
+                 fuzzy: bool = False,
+                 max_fuzzy_edits: int = 2,
+                 normalize_plurals: bool = True,
+                 filter_articles: bool = True):
+        """
+        构建 AC 自动机。每个翻译会话构建一次，跨所有块复用。
+
+        Args:
+            glossary: {english_term: chinese_translation}
+            fuzzy: 是否启用 OCR 模糊匹配（第二遍扫描未匹配区域）
+            max_fuzzy_edits: 最大允许的 OCR 字符替换数
+            normalize_plurals: 是否归一化英文复数后缀
+            filter_articles: 是否忽略前置冠词（the/a/an）
+        """
+        # Store a shallow copy to guarantee we never mutate the caller's dict
+        self._glossary = dict(glossary)
+        self._fuzzy = fuzzy
+        self._max_edits = max_fuzzy_edits
+        self._normalize_plurals = normalize_plurals
+        self._filter_articles = filter_articles
+        self._fallback = not _HAS_AHOCORASICK
+        self._automaton = None
+        # Maps lowercase key -> list of (canonical_eng, chinese, pattern_length)
+        # Multiple entries possible when glossary has case-different terms (e.g. "Agent" vs "agent")
+        self._variant_map: dict[str, list[tuple[str, str, int]]] = {}
+
+        if self._fallback:
+            print(
+                "[WARNING] pyahocorasick 未安装，ACGlossaryMatcher 将回退到正则匹配。"
+                "请运行 pip install pyahocorasick 以获得最佳性能。"
+            )
+        else:
+            self._build_automaton()
+
+    def _build_automaton(self):
+        """构建 AC 自动机，插入所有术语的小写形式及其复数变体。"""
+        self._automaton = _ahocorasick.Automaton()
+
+        for eng, chn in self._glossary.items():
+            key = eng.lower()
+            # Multiple glossary entries may share the same lowercase key
+            # (e.g. "Agent" -> "特工" and "agent" -> "探员")
+            if key not in self._variant_map:
+                self._variant_map[key] = []
+            self._variant_map[key].append((eng, chn, len(key)))
+
+            # Insert plural variants if enabled
+            if self._normalize_plurals:
+                for variant in self._generate_plural_variants(eng):
+                    vkey = variant.lower()
+                    if vkey != key:
+                        if vkey not in self._variant_map:
+                            self._variant_map[vkey] = []
+                        # Only add if this canonical term isn't already mapped for this variant
+                        if not any(e == eng for e, _, _ in self._variant_map[vkey]):
+                            self._variant_map[vkey].append((eng, chn, len(vkey)))
+
+        # Insert all keys into automaton; store the key itself as value
+        # (we'll look up the variant_map during matching to resolve ambiguity)
+        for key, entries in self._variant_map.items():
+            # Store the first entry's pattern_length (all entries for same key have same length)
+            self._automaton.add_word(key, (key, entries[0][2]))
+
+        if self._variant_map:
+            self._automaton.make_automaton()
+
+    def find_relevant_glossary_terms(self, text: str) -> dict[str, str]:
+        """
+        兼容接口：返回 {english: chinese} 字典。
+        与现有 find_relevant_glossary_terms(text, glossary) 结果一致
+        （最长匹配优先、非重叠）。
+
+        When fuzzy=True, performs a second pass over unmatched regions to find
+        OCR-corrupted terms.
+        """
+        if self._fallback:
+            return _find_relevant_glossary_terms_regex(text, self._glossary)
+
+        if not self._glossary or not text or not self._variant_map:
+            return {}
+
+        # First pass: exact AC automaton matching
+        raw_matches = self._collect_raw_matches(text)
+
+        # Sort by length descending (longest first), then by start position
+        if raw_matches:
+            raw_matches.sort(key=lambda m: (-m[2], m[0]))
+
+        # Select non-overlapping matches (longest-match-first)
+        selected = {}
+        occupied_spans = []
+        for start, end, _length, eng, chn in raw_matches:
+            if any(start < occ_end and end > occ_start
+                   for occ_start, occ_end in occupied_spans):
+                continue
+            # Only keep first occurrence of each canonical term
+            if eng not in selected:
+                selected[eng] = chn
+            occupied_spans.append((start, end))
+
+        # Second pass: fuzzy matching over unmatched regions
+        if self._fuzzy:
+            fuzzy_matches = self._fuzzy_scan(text, occupied_spans)
+            if fuzzy_matches:
+                fuzzy_matches.sort(key=lambda m: (-m[2], m[0]))
+                for start, end, _length, eng, chn in fuzzy_matches:
+                    if any(start < occ_end and end > occ_start
+                           for occ_start, occ_end in occupied_spans):
+                        continue
+                    if eng not in selected:
+                        selected[eng] = chn
+                    occupied_spans.append((start, end))
+
+        return selected
+
+    def find_relevant_glossary_terms_annotated(self, text: str) -> list[GlossaryMatch]:
+        """
+        增强接口：返回带位置和匹配类型注释的匹配列表。
+
+        When fuzzy=True, includes fuzzy matches annotated with is_fuzzy=True,
+        the original corrupted text, and the canonical glossary term.
+        """
+        if self._fallback:
+            # Fallback: use regex and wrap results
+            result = _find_relevant_glossary_terms_regex(text, self._glossary)
+            matches = []
+            for eng, chn in result.items():
+                # Find position in text for annotation
+                pattern = re.compile(
+                    r"(?<![A-Za-z0-9])" + re.escape(eng) + r"(?![A-Za-z0-9])",
+                    re.IGNORECASE,
+                )
+                m = pattern.search(text)
+                if m:
+                    matches.append(GlossaryMatch(
+                        start=m.start(), end=m.end(),
+                        matched_text=m.group(0),
+                        canonical_term=eng, chinese=chn,
+                    ))
+            return matches
+
+        if not self._glossary or not text or not self._variant_map:
+            return []
+
+        # First pass: exact AC automaton matching
+        raw_matches = self._collect_raw_matches(text)
+
+        if raw_matches:
+            # Sort by length descending (longest first), then by start position
+            raw_matches.sort(key=lambda m: (-m[2], m[0]))
+
+        # Select non-overlapping matches (longest-match-first)
+        results = []
+        occupied_spans = []
+        for start, end, _length, eng, chn in raw_matches:
+            if any(start < occ_end and end > occ_start
+                   for occ_start, occ_end in occupied_spans):
+                continue
+            occupied_spans.append((start, end))
+            matched_text = text[start:end]
+            # Determine match type
+            if matched_text.lower() == eng.lower():
+                # Check if preceded by article
+                if self._filter_articles and self._is_preceded_by_article(text, start):
+                    match_type = "article"
+                else:
+                    match_type = "exact"
+            else:
+                match_type = "plural"
+            results.append(GlossaryMatch(
+                start=start, end=end,
+                matched_text=matched_text,
+                canonical_term=eng, chinese=chn,
+                match_type=match_type,
+            ))
+
+        # Second pass: fuzzy matching over unmatched regions
+        if self._fuzzy:
+            fuzzy_raw = self._fuzzy_scan(text, occupied_spans)
+            if fuzzy_raw:
+                fuzzy_raw.sort(key=lambda m: (-m[2], m[0]))
+                fuzzy_matcher = FuzzyMatcher(max_edits=self._max_edits)
+                for start, end, _length, eng, chn in fuzzy_raw:
+                    if any(start < occ_end and end > occ_start
+                           for occ_start, occ_end in occupied_spans):
+                        continue
+                    occupied_spans.append((start, end))
+                    matched_text = text[start:end]
+                    # Get the actual edit count for annotation
+                    _, edits = fuzzy_matcher.is_fuzzy_match(matched_text, eng)
+                    results.append(GlossaryMatch(
+                        start=start, end=end,
+                        matched_text=matched_text,
+                        canonical_term=eng, chinese=chn,
+                        is_fuzzy=True,
+                        fuzzy_edits=edits,
+                        match_type="fuzzy",
+                    ))
+
+        return results
+
+    def _is_preceded_by_article(self, text: str, match_start: int) -> bool:
+        """
+        Check if the match at match_start is immediately preceded by an English
+        article (the/a/an) followed by a space.
+
+        Examples:
+            "the Agent" → True (match_start points to 'A')
+            "a Handler" → True
+            "an Investigator" → True
+            "Delta Green" → False
+        """
+        if match_start < 2:
+            return False
+        # Look at the text before the match (up to 4 chars: "the " is longest)
+        prefix = text[max(0, match_start - 4):match_start]
+        return bool(self._ARTICLES_PATTERN.search(prefix))
+
+    def _collect_raw_matches(self, text: str) -> list[tuple[int, int, int, str, str]]:
+        """
+        Collect all valid matches from the AC automaton with word boundary checks.
+
+        Returns list of (start, end, length, canonical_eng, chinese).
+
+        When multiple glossary entries share the same lowercase key (e.g. "Agent"
+        and "agent"), we resolve by picking the entry that would win in the regex
+        version's sorted order: sorted by length descending, then by insertion order
+        (which is dict iteration order). Since all entries for the same lowercase
+        key have the same length, the first entry in insertion order wins.
+        This means the first-inserted entry "owns" ALL positions where that
+        lowercase pattern matches, replicating the regex IGNORECASE behavior.
+        """
+        text_lower = text.lower()
+        raw_matches = []
+
+        for end_idx, (key, pattern_len) in self._automaton.iter(text_lower):
+            # ahocorasick returns end_idx as the index of the last character
+            start = end_idx - pattern_len + 1
+            end = end_idx + 1
+
+            # Word boundary check: replicate (?<![A-Za-z0-9]) and (?![A-Za-z0-9])
+            if start > 0:
+                char_before = text[start - 1]
+                if char_before.isalnum():
+                    continue
+            if end < len(text):
+                char_after = text[end]
+                if char_after.isalnum():
+                    continue
+
+            # Resolve which canonical entry to use.
+            # The regex version uses IGNORECASE and processes terms in sorted order
+            # (length desc, then insertion order for same length). The first term
+            # in that order occupies ALL positions it matches. For same-lowercase
+            # entries, this means the first-inserted entry always wins regardless
+            # of the actual case in the text.
+            entries = self._variant_map[key]
+            # entries[0] is the first-inserted entry for this lowercase key,
+            # which corresponds to the regex version's winner.
+            eng, chn, _ = entries[0]
+
+            raw_matches.append((start, end, end - start, eng, chn))
+
+        return raw_matches
+
+    def _fuzzy_scan(self, text: str, occupied_spans: list[tuple[int, int]]) -> list[tuple[int, int, int, str, str]]:
+        """
+        Perform a second-pass fuzzy scan over unmatched regions of text.
+
+        For each glossary term, slide a window of the term's length over unmatched
+        regions and check if the substring is an OCR-corrupted version of the term.
+
+        Returns list of (start, end, length, canonical_eng, chinese) for fuzzy matches.
+        """
+        if not self._fuzzy or not self._glossary:
+            return []
+
+        fuzzy_matcher = FuzzyMatcher(max_edits=self._max_edits)
+        fuzzy_matches = []
+
+        # Build list of unmatched regions
+        unmatched_regions = self._get_unmatched_regions(text, occupied_spans)
+
+        for region_start, region_end in unmatched_regions:
+            region_text = text[region_start:region_end]
+            # For each glossary term, slide a window over the region
+            for eng, chn in self._glossary.items():
+                term_len = len(eng)
+                if term_len > len(region_text):
+                    continue
+                for i in range(len(region_text) - term_len + 1):
+                    candidate = region_text[i:i + term_len]
+                    is_match, edits = fuzzy_matcher.is_fuzzy_match(candidate, eng)
+                    if not is_match:
+                        continue
+                    # Word boundary check
+                    abs_start = region_start + i
+                    abs_end = abs_start + term_len
+                    if abs_start > 0:
+                        char_before = text[abs_start - 1]
+                        if char_before.isalnum():
+                            continue
+                    if abs_end < len(text):
+                        char_after = text[abs_end]
+                        if char_after.isalnum():
+                            continue
+                    fuzzy_matches.append((abs_start, abs_end, term_len, eng, chn))
+
+        return fuzzy_matches
+
+    @staticmethod
+    def _get_unmatched_regions(text: str, occupied_spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """
+        Given the text and a list of occupied (matched) spans, return the
+        complementary unmatched regions.
+        """
+        if not occupied_spans:
+            return [(0, len(text))]
+
+        # Sort spans by start position
+        sorted_spans = sorted(occupied_spans, key=lambda s: s[0])
+        regions = []
+        prev_end = 0
+        for span_start, span_end in sorted_spans:
+            if prev_end < span_start:
+                regions.append((prev_end, span_start))
+            prev_end = max(prev_end, span_end)
+        if prev_end < len(text):
+            regions.append((prev_end, len(text)))
+        return regions
+
+    @staticmethod
+    def _generate_plural_variants(term: str) -> list[str]:
+        """生成术语的复数/时态变体用于匹配。
+
+        Handles English morphological rules:
+        - -s plural: Agent -> Agents
+        - -es plural: Watch -> Watches
+        - -ies plural: Entity -> Entities (consonant + y)
+        - -ed past: Handle -> Handled (silent e), Investigate -> Investigated
+        - -ing gerund: Handle -> Handling (silent e), Run -> Running
+        """
+        variants = []
+        # -s plural
+        if not term.endswith('s'):
+            variants.append(term + 's')
+        # -es plural
+        if not term.endswith('es'):
+            variants.append(term + 'es')
+        # -ies plural (consonant + y -> ies)
+        if term.endswith('y') and len(term) > 1 and term[-2] not in 'aeiou':
+            variants.append(term[:-1] + 'ies')
+        # -ed past tense
+        if not term.endswith('ed'):
+            if term.endswith('e'):
+                # Silent e: Handle -> Handled
+                variants.append(term + 'd')
+            else:
+                variants.append(term + 'ed')
+        # -ing gerund
+        if not term.endswith('ing'):
+            if term.endswith('e') and not term.endswith('ee'):
+                # Silent e: Handle -> Handling (drop e, add ing)
+                variants.append(term[:-1] + 'ing')
+            else:
+                variants.append(term + 'ing')
+        return variants
+
+
+# ============================================================
+# FUZZY MATCHER - OCR Character Substitution
+# ============================================================
+
+
+class FuzzyMatcher:
+    """OCR 字符替换模糊匹配器。
+
+    检测常见 OCR 字符替换（如数字替代字母）并判断候选文本是否为
+    术语表条目的 OCR 损坏形式。限制最多 max_edits 个字符替换以避免误报。
+    """
+
+    # Bidirectional OCR substitution mapping.
+    # Each character maps to a set of characters it can be confused with.
+    OCR_SUBSTITUTIONS: dict[str, set[str]] = {
+        '0': {'O', 'o'},
+        'O': {'0'},
+        'o': {'0'},
+        '1': {'l', 'I', 'i'},
+        'l': {'1', 'I', 'i'},
+        'I': {'1', 'l', 'i'},
+        'i': {'1', 'l', 'I'},
+        '5': {'S', 's'},
+        'S': {'5'},
+        's': {'5'},
+        '8': {'B', 'b'},
+        'B': {'8'},
+        'b': {'8'},
+    }
+
+    def __init__(self, max_edits: int = 2):
+        self._max_edits = max_edits
+
+    def is_fuzzy_match(self, candidate: str, target: str) -> tuple[bool, int]:
+        """
+        判断 candidate 是否为 target 的 OCR 损坏形式。
+
+        比较逐字符进行（大小写不敏感的精确匹配优先，然后检查 OCR 替换）。
+        返回 (是否匹配, 替换字符数)。
+
+        Rules:
+        - candidate and target must have the same length
+        - Characters that match exactly (case-insensitive) count as 0 edits
+        - Characters that differ but are in OCR_SUBSTITUTIONS count as 1 edit each
+        - Characters that differ and are NOT in OCR_SUBSTITUTIONS → not a match
+        - Total edits must be >= 1 (pure exact matches are not fuzzy) and <= max_edits
+        """
+        if len(candidate) != len(target):
+            return (False, 0)
+
+        edits = 0
+        for c_char, t_char in zip(candidate, target):
+            # Exact match (case-insensitive)
+            if c_char.lower() == t_char.lower():
+                continue
+            # Check OCR substitution
+            subs = self.OCR_SUBSTITUTIONS.get(c_char)
+            if subs and t_char in subs:
+                edits += 1
+                if edits > self._max_edits:
+                    return (False, 0)
+            else:
+                # Not an OCR substitution - not a fuzzy match
+                return (False, 0)
+
+        # Must have at least 1 edit to be a "fuzzy" match (otherwise it's exact)
+        if edits == 0:
+            return (False, 0)
+
+        return (True, edits)

@@ -51,6 +51,7 @@ OUTPUT_FORMAT_LABELS = {
     "html": "网页排版",
     "word": "文档排版",
     "replica_pdf": "原版坐标 PDF",
+    "typeset_pdf": "纯重绘 PDF（_typeset）",
 }
 
 
@@ -632,6 +633,10 @@ with st.sidebar:
     base_url = "https://api.deepseek.com"
     model = "deepseek-v4-pro"
     workers = 32
+    rate_limit = 60
+    cooldown = 1.0
+    max_split_depth = 10
+    fuzzy_matching = False
     retranslate_pages_str = ""
     retry_failed_pages = False
     reuse_mismatched_progress = False
@@ -654,12 +659,14 @@ with st.sidebar:
 
     formats = st.multiselect(
         "输出格式",
-        ["markdown", "html", "word", "replica_pdf"],
+        ["markdown", "html", "word", "replica_pdf", "typeset_pdf"],
         default=["html", "word"],
         format_func=lambda value: OUTPUT_FORMAT_LABELS[value],
     )
     if "replica_pdf" in formats:
         st.caption("原版坐标 PDF 会单独运行，先生成原页底图和中文文本层。")
+    if "typeset_pdf" in formats:
+        st.caption("纯重绘 PDF 会单独运行，从 PDF 提取结构后用 HTML/CSS 重建页面并导出。")
 
     display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
     end_page_str = st.text_input("结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
@@ -671,7 +678,23 @@ with st.sidebar:
 
     with st.expander("高级任务控制", expanded=False):
         model = st.text_input("模型名称", value=model)
-        workers = st.slider("并发线程", 1, 64, 32)
+        workers = st.slider("并发数", 1, 64, 32, help="并行 API 调用数量")
+        rate_limit = st.number_input(
+            "速率限制（次/分钟）", value=60, min_value=1, max_value=1000, step=10,
+            help="每分钟最大 API 调用次数"
+        )
+        cooldown = st.slider(
+            "批次冷却（秒）", 0.0, 5.0, 1.0, 0.1,
+            help="每批次翻译之间的等待时间"
+        )
+        max_split_depth = st.slider(
+            "最大拆分深度", 1, 20, 10,
+            help="递归拆分失败组的最大深度"
+        )
+        fuzzy_matching = st.checkbox(
+            "模糊术语匹配", value=False,
+            help="启用 OCR 字符替换容错匹配（0↔O, 1↔l↔I, 5↔S, 8↔B）"
+        )
         retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
         retry_failed_pages = st.checkbox("只重试失败页", value=False)
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
@@ -700,6 +723,16 @@ with st.sidebar:
             )
             word_header_left = st.text_input("页眉左侧", value="绿色三角洲")
             word_header_right = st.text_input("页眉右侧", value="", placeholder="留空则使用文件名")
+
+    # Typeset PDF font configuration
+    typeset_font_family = "Noto Serif SC"
+    if "typeset_pdf" in formats:
+        with st.expander("纯重绘排版配置", expanded=False):
+            typeset_font_family = st.text_input(
+                "中文字体",
+                value="Noto Serif SC",
+                help="用于纯重绘 PDF 的中文字体。如字体不可用，将自动回退到 Source Han Serif CN 等备选字体。",
+            )
 
 # === MAIN ===
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -805,6 +838,8 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
         st.error("✗ 请至少选择一种输出格式")
     elif source_type == "pdf" and "replica_pdf" in formats and len(formats) > 1:
         st.error("✗ 原版坐标 PDF 请单独运行，避免和阅读版输出重复调用接口。")
+    elif source_type == "pdf" and "typeset_pdf" in formats and len(formats) > 1:
+        st.error("✗ 纯重绘 PDF 请单独运行，避免和其他输出重复调用接口。")
     elif source_type in ("markdown", "docx"):
         # ============================================================
         # MARKDOWN / DOCX TRANSLATION FLOW
@@ -910,6 +945,10 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     max_workers=max(1, int(workers)),
                     max_blocks=max_blocks_input if max_blocks_input > 0 else None,
                     progress_callback=md_docx_progress_callback,
+                    rate_limit=rate_limit,
+                    cooldown=cooldown,
+                    max_split_depth=max_split_depth,
+                    fuzzy_matching=fuzzy_matching,
                 )
             else:
                 result = translate_docx_file(
@@ -923,6 +962,10 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     max_blocks=max_blocks_input if max_blocks_input > 0 else None,
                     translate_headers=True,
                     progress_callback=md_docx_progress_callback,
+                    rate_limit=rate_limit,
+                    cooldown=cooldown,
+                    max_split_depth=max_split_depth,
+                    fuzzy_matching=fuzzy_matching,
                 )
 
             if result.get("block_count", 0) and not result.get("translated_count", 0):
@@ -1254,6 +1297,172 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                 "档案号": dossier_id,
                 "坐标页": len(layout.pages),
                 "溢出块": browser_overflow_count,
+                "成品数": len(existing_output_files(generated_files, final_only=True)),
+            })
+            extractor.close()
+            st.stop()
+
+        if formats == ["typeset_pdf"]:
+            # ============================================================
+            # TYPESET PDF PIPELINE FLOW
+            # ============================================================
+            import logging as _logging
+            from core.typeset_pipeline import TypesetPipeline
+            from core.typeset_models import TypesetConfig
+
+            # Check font availability and set up fallback
+            typeset_config = TypesetConfig(font_family=typeset_font_family)
+            _font_warning_issued = False
+
+            def _check_font_available(font_name: str) -> bool:
+                """Check if a font is likely available on the system."""
+                try:
+                    from matplotlib.font_manager import findSystemFonts, FontProperties, findfont
+                    prop = FontProperties(family=font_name)
+                    result = findfont(prop, fallback_to_default=False)
+                    return result is not None
+                except Exception:
+                    # matplotlib not available; skip font check
+                    return True
+
+            if not _check_font_available(typeset_font_family):
+                # Try fallback fonts
+                _fallback_used = None
+                for fallback in typeset_config.fallback_fonts:
+                    if _check_font_available(fallback):
+                        _fallback_used = fallback
+                        break
+                if _fallback_used:
+                    _logging.getLogger(__name__).warning(
+                        f"字体 '{typeset_font_family}' 不可用，回退到 '{_fallback_used}'"
+                    )
+                    st.warning(
+                        f"⚠️ 字体 '{typeset_font_family}' 不可用，"
+                        f"已回退到 '{_fallback_used}'。"
+                    )
+                    typeset_config = TypesetConfig(font_family=_fallback_used)
+                else:
+                    _logging.getLogger(__name__).warning(
+                        f"字体 '{typeset_font_family}' 及所有备选字体均不可用，将使用默认配置"
+                    )
+                    st.warning(
+                        f"⚠️ 字体 '{typeset_font_family}' 及备选字体均不可用，"
+                        "将使用系统默认 serif 字体。"
+                    )
+
+            render_status_flow(active_index=1)
+            st.info(f"📐 纯重绘管线：第 {start_page + 1}-{end_page} 页")
+
+            # Progress UI for typeset pipeline
+            typeset_progress_bar = st.progress(0)
+            typeset_status = st.empty()
+            typeset_metric_cols = st.columns(3)
+            typeset_phase_metric = typeset_metric_cols[0].empty()
+            typeset_elapsed_metric = typeset_metric_cols[1].empty()
+            typeset_detail_metric = typeset_metric_cols[2].empty()
+            typeset_started_at = time.time()
+
+            phase_names = {
+                "pipeline": "管线",
+                "translation": "翻译",
+            }
+
+            def update_typeset_progress(phase: str, done: int, total: int):
+                elapsed = time.time() - typeset_started_at
+                phase_label = phase_names.get(phase, phase)
+                if phase == "pipeline":
+                    pct = done / total if total else 1.0
+                    phase_desc = ["结构提取", "语义分析", "翻译", "HTML 重建", "PDF 导出"]
+                    current_desc = phase_desc[done] if done < len(phase_desc) else "完成"
+                    try:
+                        typeset_progress_bar.progress(
+                            min(pct, 1.0),
+                            text=f"阶段 {done}/{total}: {current_desc}",
+                        )
+                    except TypeError:
+                        typeset_progress_bar.progress(min(pct, 1.0))
+                    typeset_status.text(f"纯重绘管线：{current_desc}")
+                    typeset_phase_metric.metric("阶段", f"{done}/{total}")
+                else:
+                    pct = done / total if total else 1.0
+                    try:
+                        typeset_progress_bar.progress(
+                            min(0.4 + pct * 0.2, 1.0),
+                            text=f"翻译 {done}/{total} 区域",
+                        )
+                    except TypeError:
+                        typeset_progress_bar.progress(min(0.4 + pct * 0.2, 1.0))
+                    typeset_status.text(f"翻译中：{done}/{total} 区域")
+                    typeset_phase_metric.metric("翻译区域", f"{done}/{total}")
+                typeset_elapsed_metric.metric("已用时", format_duration(elapsed))
+
+            pipeline = TypesetPipeline(
+                pdf_path=pdf_path,
+                output_dir=str(document_output_dir),
+                translator=translator,
+                glossary=glossary,
+                config=typeset_config,
+            )
+
+            result = pipeline.run(
+                start_page=start_page,
+                end_page=end_page,
+                progress_callback=update_typeset_progress,
+            )
+
+            # Collect generated files
+            if result.pdf_path:
+                generated_files.append(result.pdf_path)
+            if result.html_path:
+                generated_files.append(result.html_path)
+            if result.page_structure_path:
+                generated_files.append(result.page_structure_path)
+            if result.page_content_path:
+                generated_files.append(result.page_content_path)
+
+            # Report results
+            elapsed_total = time.time() - typeset_started_at
+            typeset_progress_bar.progress(1.0)
+            typeset_status.text(
+                f"✓ 纯重绘完成! 总用时 {format_duration(elapsed_total)}"
+            )
+
+            if result.export_errors:
+                st.warning(
+                    f"管线完成，但有 {len(result.export_errors)} 个错误：\n"
+                    + "\n".join(f"- {e}" for e in result.export_errors[:10])
+                )
+
+            render_downloads(generated_files)
+
+            audit_record = {
+                "dossier_id": dossier_id,
+                "source_file": pdf_file.name,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "completed" if not result.export_errors else "completed_with_errors",
+                "provider": provider,
+                "model": model,
+                "page_range": f"{start_page + 1}-{end_page}",
+                "formats": formats,
+                "completed_pages": result.total_pages,
+                "translated_regions": result.translated_regions,
+                "failed_regions": result.failed_regions,
+                "export_errors": len(result.export_errors),
+                "glossary": Path(glossary_path).name if glossary_path else "",
+                "font_family": typeset_config.font_family,
+                "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
+            }
+            write_audit_record(audit_path, audit_record)
+            generated_files.append(str(audit_path))
+            render_status_flow(active_index=5, failed=bool(result.export_errors))
+            render_completion_stamp("已归档" if not result.export_errors else "待检查")
+            render_audit_grid({
+                "档案号": dossier_id,
+                "总页数": result.total_pages,
+                "翻译区域": result.translated_regions,
+                "失败区域": result.failed_regions,
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             })
             extractor.close()

@@ -215,6 +215,8 @@ def export_translation_template(layout: LayoutDocument, output_path: str):
             source_text = block_source_text(block)
             if not source_text:
                 continue
+            if not _should_translate_block(block):
+                continue
             translations.append({
                 "id": block.id,
                 "page": page.index + 1,
@@ -294,13 +296,23 @@ def apply_translations_file(layout_json_path: str, translations_json_path: str,
     return translated
 
 
+def _should_translate_block(block: LayoutTextBlock) -> bool:
+    """Return True if the block should be translated, False if it should be skipped."""
+    from core.layout_extractor import PDFLayoutExtractor
+    if not block_source_text(block):
+        return False
+    if PDFLayoutExtractor.is_skip_translation_block(block):
+        return False
+    return True
+
+
 def _layout_page_units(layout: LayoutDocument, progress: LayoutTranslationProgress,
                        failed_filter: set[str] | None = None):
     units = []
     for page in layout.pages:
         blocks = [
             block for block in page.text_blocks
-            if block_source_text(block)
+            if _should_translate_block(block)
         ]
         if failed_filter is not None:
             blocks = [block for block in blocks if block.id in failed_filter]
