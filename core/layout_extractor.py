@@ -233,6 +233,45 @@ class PDFLayoutExtractor:
             return True
         return False
 
+    @staticmethod
+    def is_skip_translation_block(block: "LayoutTextBlock") -> bool:
+        """Determine if a text block should be skipped during translation.
+
+        Blocks that are page numbers, running headers/footers, copyright lines,
+        or other decorative/structural elements should not be translated.
+        They will be left as-is (no mask, no translation overlay).
+        """
+        from core.layout_translation import block_source_text
+        text = block_source_text(block)
+        compact = " ".join(text.split()).strip()
+        if not compact:
+            return True
+        # Pure page numbers (1-4 digits)
+        if compact.isdigit() and len(compact) <= 4:
+            return True
+        # Very short text (1-2 chars) that is likely decorative
+        if len(compact) <= 2:
+            return True
+        # Running headers like "// Title //" or "// Section //"
+        if compact.startswith("//") and compact.endswith("//"):
+            return True
+        # ISBN lines
+        if compact.startswith("ISBN "):
+            return True
+        # Copyright/footer lines with © that are short
+        if "©" in compact and len(compact) <= 80:
+            return True
+        # "Delta Green: TitleN© Author" pattern (page footer)
+        if compact.startswith("Delta Green:") and "©" in compact:
+            return True
+        # Page number with surrounding text like "Page 3" or "- 3 -"
+        import re
+        if re.match(r'^[-–—\s]*\d{1,4}[-–—\s]*$', compact):
+            return True
+        if re.match(r'^(page|p\.?)\s*\d{1,4}$', compact, re.IGNORECASE):
+            return True
+        return False
+
 
 def extract_layout_to_file(pdf_path: str, output_path: str,
                            start_page: int = 0, end_page: int | None = None) -> LayoutDocument:
