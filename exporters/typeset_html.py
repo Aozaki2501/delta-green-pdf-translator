@@ -9,6 +9,7 @@ is a complete HTML document ready for Playwright PDF export.
 from __future__ import annotations
 
 import html
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -63,6 +64,14 @@ def _same_text_flow(previous: list[float], current: list[float]) -> bool:
         return False
     vertical_gap = cy0 - py1
     return -18.0 <= vertical_gap <= 18.0
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _normalized_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "").lower()
 
 
 class TypesetHTMLRebuilder:
@@ -192,6 +201,21 @@ function typesetFitPositionedBlocks() {
       guard += 1;
     }
   }
+  const reflowAreas = document.querySelectorAll('.typeset-reflow-area[data-fit="reflow"]');
+  for (const area of reflowAreas) {
+    let size = parseFloat(getComputedStyle(area).fontSize) || 14;
+    const minSize = 11;
+    let guard = 0;
+    while (
+      guard < 80 &&
+      size > minSize &&
+      (area.scrollHeight > area.clientHeight + 1 || area.scrollWidth > area.clientWidth + 1)
+    ) {
+      size = Math.max(minSize, size - 0.5);
+      area.style.fontSize = size + 'px';
+      guard += 1;
+    }
+  }
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', typesetFitPositionedBlocks);
@@ -274,6 +298,45 @@ body {{
     margin: 0;
     line-height: 1.15;
     text-indent: 0;
+}}
+.typeset-reflow-area {{
+    position: absolute;
+    overflow: hidden;
+    color: #111;
+    font-size: {_pt_to_px(10.8):.3f}px;
+}}
+.typeset-reflow-columns {{
+    display: flex;
+    gap: {_pt_to_px(24.0):.3f}px;
+    height: 100%;
+}}
+.typeset-reflow-column {{
+    flex: 1;
+    overflow: hidden;
+}}
+.typeset-reflow-title {{
+    font-size: 1.667em;
+    line-height: 1.25;
+    margin: 0 0 {_pt_to_px(8.0):.3f}px 0;
+    text-align: center;
+    font-weight: 700;
+    text-indent: 0;
+}}
+.typeset-reflow-subtitle {{
+    font-size: 1.296em;
+    line-height: 1.25;
+    margin: {_pt_to_px(10.0):.3f}px 0 {_pt_to_px(5.0):.3f}px 0;
+    font-weight: 700;
+    text-indent: 0;
+}}
+.typeset-reflow-body {{
+    font-size: 1em;
+    line-height: 1.58;
+    margin: 0 0 {_pt_to_px(6.0):.3f}px 0;
+    text-indent: 2em;
+    text-align: left;
+    word-break: normal;
+    overflow-wrap: break-word;
 }}
 .typeset-columns {{
     display: flex;
@@ -562,7 +625,10 @@ body {{
         parts: list[str] = ['<div class="typeset-text-layer">']
 
         if page_structure is not None:
-            parts.append(self._render_positioned_blocks(page_content, page_structure))
+            if self._should_reflow_chinese_page(page_content):
+                parts.append(self._render_chinese_reflow_page(page_content, page_structure))
+            else:
+                parts.append(self._render_positioned_blocks(page_content, page_structure))
             parts.append("</div>")
             return "\n".join(parts)
 
@@ -578,6 +644,323 @@ body {{
 
         parts.append("</div>")
         return "\n".join(parts)
+
+    def _should_reflow_chinese_page(self, page_content: PageContent) -> bool:
+        if page_content.page_type in (PageType.ART, PageType.COVER):
+            return False
+        return any(_contains_cjk(block.translated_text or "") for block in page_content.blocks)
+
+    def _render_chinese_reflow_page(
+        self,
+        page_content: PageContent,
+        page_structure: PageStructure,
+    ) -> str:
+        """Render translated Chinese like a typeset text page."""
+        region_map = {region.id: region.bbox for region in page_structure.text_regions}
+        fixed_parts: list[str] = []
+        content_blocks: list[ContentBlock] = []
+
+        for block in page_content.blocks:
+            bbox = region_map.get(block.region_id)
+            if bbox is None:
+                continue
+            if self._is_running_header(block):
+                fixed_parts.append(self._render_running_header(block, page_structure, bbox))
+                continue
+            if self._is_fixed_page_number(block):
+                fixed_parts.append(self._render_fixed_page_number(block, bbox))
+                continue
+            if block.role == SemanticRole.FOOTER:
+                continue
+            if not ((block.translated_text or "").strip() or (block.source_text or "").strip()):
+                continue
+            content_blocks.append(block)
+
+        content_blocks = self._dedupe_content_blocks(content_blocks, region_map)
+        content_blocks = sorted(
+            content_blocks,
+            key=lambda block: (region_map[block.region_id][1], region_map[block.region_id][0]),
+        )
+        flow_items = self._build_reflow_items(content_blocks)
+        if not flow_items:
+            return "\n".join(fixed_parts)
+        content_blocks = [block for block, _ in flow_items]
+        text_by_id = {block.id: text for block, text in flow_items}
+
+        flow_area = self._flow_area_bbox(content_blocks, region_map, page_structure)
+        x0, y0, x1, y1 = flow_area
+        left = _pt_to_px(x0)
+        top = _pt_to_px(y0)
+        width = _pt_to_px(x1 - x0)
+        height = _pt_to_px(y1 - y0)
+
+        columns = self._content_columns(page_content, content_blocks, region_map, flow_area)
+        if len(columns) >= 2:
+            inner = self._render_reflow_mixed_columns(content_blocks, text_by_id, region_map, flow_area)
+        else:
+            inner = "\n".join(
+                self._render_reflow_block(block, text_by_id[block.id])
+                for block in content_blocks
+                if block.id in text_by_id
+            )
+
+        flow = (
+            f'<div class="typeset-reflow-area" '
+            f'data-fit="reflow" '
+            f'style="left:{_px(left)};top:{_px(top)};'
+            f'width:{_px(width)};height:{_px(height)}">'
+            f"{inner}</div>"
+        )
+        return "\n".join([*fixed_parts, flow])
+
+    def _dedupe_content_blocks(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> list[ContentBlock]:
+        result: list[ContentBlock] = []
+        for block in blocks:
+            text = _normalized_text(block.source_text)
+            if len(text) < 8:
+                result.append(block)
+                continue
+            replaced = False
+            skip = False
+            for index, kept in enumerate(result):
+                kept_text = _normalized_text(kept.source_text)
+                if not kept_text:
+                    continue
+                if not self._boxes_overlap(region_map[block.region_id], region_map[kept.region_id]):
+                    continue
+                if text in kept_text:
+                    skip = True
+                    break
+                if kept_text in text:
+                    result[index] = block
+                    replaced = True
+                    break
+            if not skip and not replaced:
+                result.append(block)
+        return result
+
+    def _build_reflow_items(self, blocks: list[ContentBlock]) -> list[tuple[ContentBlock, str]]:
+        items: list[tuple[ContentBlock, str]] = []
+        seen_text = ""
+
+        for block in blocks:
+            original_text = (block.translated_text or block.source_text or "").strip()
+            if not original_text:
+                continue
+
+            text = original_text
+            trimmed = False
+            if _contains_cjk(text):
+                text = self._trim_repeated_prefix(text, seen_text)
+                trimmed = text != original_text
+                if not text:
+                    continue
+
+            if (
+                items
+                and self._is_mergeable_reflow_body(items[-1][0], block)
+                and (trimmed or self._source_text_windows_overlap(items[-1][0], block))
+            ):
+                previous_block, previous_text = items[-1]
+                items[-1] = (previous_block, self._join_reflow_text(previous_text, text))
+            else:
+                items.append((block, text))
+
+            seen_text += _normalized_text(text)
+
+        return items
+
+    def _trim_repeated_prefix(self, text: str, seen_text: str) -> str:
+        normalized = _normalized_text(text)
+        if len(normalized) < 8:
+            return text
+
+        max_prefix = min(len(normalized), 120)
+        for size in range(max_prefix, 7, -1):
+            if normalized[:size] in seen_text:
+                return text[size:].lstrip("，。；：、,. ;:")
+        return text
+
+    def _is_mergeable_reflow_body(self, previous: ContentBlock, current: ContentBlock) -> bool:
+        return (
+            previous.role == SemanticRole.BODY_COLUMN
+            and current.role == SemanticRole.BODY_COLUMN
+            and not self._looks_like_subtitle(previous)
+            and not self._looks_like_subtitle(current)
+        )
+
+    def _source_text_windows_overlap(self, previous: ContentBlock, current: ContentBlock) -> bool:
+        previous_text = _normalized_text(previous.source_text)
+        current_text = _normalized_text(current.source_text)
+        if len(previous_text) < 24 or len(current_text) < 24:
+            return False
+        if previous_text in current_text or current_text in previous_text:
+            return True
+        max_size = min(len(previous_text), len(current_text), 160)
+        for size in range(max_size, 23, -1):
+            if previous_text[-size:] == current_text[:size]:
+                return True
+        return False
+
+    def _join_reflow_text(self, previous: str, current: str) -> str:
+        if not previous:
+            return current
+        if not current:
+            return previous
+        if previous[-1] in "。！？.!?":
+            return previous + current
+        return previous + current
+
+    def _boxes_overlap(self, a: list[float], b: list[float]) -> bool:
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        overlap_w = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        overlap_h = max(0.0, min(ay1, by1) - max(ay0, by0))
+        return overlap_w > 0 and overlap_h > 0
+
+    def _flow_area_bbox(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+        page_structure: PageStructure,
+    ) -> list[float]:
+        bboxes = [region_map[block.region_id] for block in blocks]
+        x0 = max(34.0, min(bbox[0] for bbox in bboxes))
+        y0 = max(64.0, min(bbox[1] for bbox in bboxes))
+        x1 = min(page_structure.width - 34.0, max(bbox[2] for bbox in bboxes))
+        y1 = min(page_structure.height - 54.0, max(bbox[3] for bbox in bboxes))
+        if x1 - x0 < page_structure.width * 0.55:
+            x0 = 54.0
+            x1 = page_structure.width - 54.0
+        if y1 - y0 < page_structure.height * 0.35:
+            y1 = page_structure.height - 84.0
+        return [x0, y0, x1, y1]
+
+    def _content_columns(
+        self,
+        page_content: PageContent,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+        flow_area: list[float],
+    ) -> list[list[ContentBlock]]:
+        if len(page_content.columns) < 2:
+            return [blocks]
+        mid = (flow_area[0] + flow_area[2]) / 2
+        left: list[ContentBlock] = []
+        right: list[ContentBlock] = []
+        for block in blocks:
+            bbox = region_map[block.region_id]
+            center = (bbox[0] + bbox[2]) / 2
+            if center < mid:
+                left.append(block)
+            else:
+                right.append(block)
+        if not left or not right:
+            return [blocks]
+        return [left, right]
+
+    def _render_reflow_mixed_columns(
+        self,
+        blocks: list[ContentBlock],
+        text_by_id: dict[str, str],
+        region_map: dict[str, list[float]],
+        flow_area: list[float],
+    ) -> str:
+        parts: list[str] = []
+        pending: list[ContentBlock] = []
+
+        for block in blocks:
+            if self._is_full_width_reflow_block(block, region_map, flow_area):
+                parts.append(self._render_reflow_column_pair(pending, text_by_id, region_map, flow_area))
+                pending = []
+                parts.append(self._render_reflow_block(block, text_by_id[block.id]))
+            else:
+                pending.append(block)
+
+        parts.append(self._render_reflow_column_pair(pending, text_by_id, region_map, flow_area))
+        return "\n".join(part for part in parts if part)
+
+    def _render_reflow_column_pair(
+        self,
+        blocks: list[ContentBlock],
+        text_by_id: dict[str, str],
+        region_map: dict[str, list[float]],
+        flow_area: list[float],
+    ) -> str:
+        if not blocks:
+            return ""
+        columns = self._content_columns_for_blocks(blocks, region_map, flow_area)
+        if len(columns) < 2:
+            return "\n".join(
+                self._render_reflow_block(block, text_by_id[block.id])
+                for block in blocks
+                if block.id in text_by_id
+            )
+
+        rendered = ['<div class="typeset-reflow-columns">']
+        for col_blocks in columns:
+            rendered.append('<div class="typeset-reflow-column">')
+            rendered.extend(
+                self._render_reflow_block(block, text_by_id[block.id])
+                for block in col_blocks
+                if block.id in text_by_id
+            )
+            rendered.append("</div>")
+        rendered.append("</div>")
+        return "\n".join(rendered)
+
+    def _content_columns_for_blocks(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+        flow_area: list[float],
+    ) -> list[list[ContentBlock]]:
+        mid = (flow_area[0] + flow_area[2]) / 2
+        left = []
+        right = []
+        for block in blocks:
+            bbox = region_map[block.region_id]
+            center = (bbox[0] + bbox[2]) / 2
+            if center < mid:
+                left.append(block)
+            else:
+                right.append(block)
+        if not left or not right:
+            return [blocks]
+        return [left, right]
+
+    def _is_full_width_reflow_block(
+        self,
+        block: ContentBlock,
+        region_map: dict[str, list[float]],
+        flow_area: list[float],
+    ) -> bool:
+        bbox = region_map[block.region_id]
+        mid = (flow_area[0] + flow_area[2]) / 2
+        width = bbox[2] - bbox[0]
+        flow_width = flow_area[2] - flow_area[0]
+        return width >= flow_width * 0.65 or (bbox[0] < mid < bbox[2])
+
+    def _render_reflow_block(self, block: ContentBlock, text: str | None = None) -> str:
+        text = (text if text is not None else (block.translated_text or block.source_text or "")).strip()
+        if not text:
+            return ""
+        escaped = self._format_text(text)
+        if block.role in (SemanticRole.TITLE, SemanticRole.HEADER):
+            return f'<h2 class="typeset-reflow-title">{escaped}</h2>'
+        if self._looks_like_subtitle(block):
+            return f'<h3 class="typeset-reflow-subtitle">{escaped}</h3>'
+        return f'<p class="typeset-reflow-body">{escaped}</p>'
+
+    def _looks_like_subtitle(self, block: ContentBlock) -> bool:
+        text = (block.translated_text or block.source_text or "").strip()
+        if len(text) <= 18 and self._get_block_font_size(block) >= self.config.body_font_size_pt:
+            return True
+        return block.role == SemanticRole.LIST
 
     def _render_positioned_blocks(
         self,
@@ -689,9 +1072,7 @@ body {{
     def _is_running_header(self, block: ContentBlock) -> bool:
         """Detect the fixed running header line, not normal section titles."""
         text = block.source_text or ""
-        return block.role == SemanticRole.HEADER and "//" in text and (
-            "Delta Green" in text or "God" in text
-        )
+        return block.role == SemanticRole.HEADER and "//" in text
 
     def _render_running_header(
         self,

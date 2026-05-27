@@ -153,7 +153,7 @@ class SemanticAnalyzer:
 
             role = self.classify_region(region, context, runs)
             source_text = "".join(run.text for run in runs)
-            translatable = role not in (SemanticRole.HEADER, SemanticRole.FOOTER)
+            translatable = not _is_fixed_nontranslatable_text(source_text, role)
 
             block_id = f"{region.id}_b0001"
             blocks.append(ContentBlock(
@@ -571,6 +571,17 @@ def _dedupe_styled_runs(runs: list[StyledTextRun]) -> list[StyledTextRun]:
             continue
         deduped.append(run)
     return deduped
+
+
+def _is_fixed_nontranslatable_text(text: str, role: SemanticRole) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if role == SemanticRole.FOOTER and stripped.isdigit():
+        return True
+    if role == SemanticRole.HEADER and "//" in stripped:
+        return True
+    return False
 
 
 def _same_text_style(a: StyledTextRun, b: StyledTextRun) -> bool:

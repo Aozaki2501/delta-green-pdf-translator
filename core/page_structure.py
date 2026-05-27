@@ -190,21 +190,18 @@ class PageStructureExtractor:
             List of ImageElement with saved image paths.
         """
         images: list[ImageElement] = []
-        image_list = page.get_images(full=True)
+        page_dict = page.get_text("dict")
+        image_blocks = [
+            block for block in page_dict.get("blocks", [])
+            if block.get("type") == 1 and block.get("image")
+        ]
 
-        for img_idx, img_info in enumerate(image_list):
-            xref = img_info[0]
-            smask = img_info[1]
-            # Get image bounding box on the page
-            img_rects = page.get_image_rects(xref)
-            if not img_rects:
+        for img_idx, block in enumerate(image_blocks):
+            bbox = block.get("bbox")
+            if not bbox or len(bbox) != 4:
                 continue
-            bbox_rect = img_rects[0]  # Use first occurrence
 
-            pix = pymupdf.Pixmap(self.doc, xref)
-            if smask:
-                mask = pymupdf.Pixmap(self.doc, smask)
-                pix = pymupdf.Pixmap(pix, mask)
+            pix = pymupdf.Pixmap(block["image"])
             if pix.n - pix.alpha > 3:
                 pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
 
@@ -223,7 +220,7 @@ class PageStructureExtractor:
 
             images.append(ImageElement(
                 id=img_id,
-                bbox=_round_bbox([bbox_rect.x0, bbox_rect.y0, bbox_rect.x1, bbox_rect.y1]),
+                bbox=_round_bbox(bbox),
                 image_path=relative_path,
                 width_px=int(width_px),
                 height_px=int(height_px),
