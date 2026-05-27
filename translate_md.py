@@ -21,7 +21,8 @@ from pathlib import Path
 from core.md_extractor import MarkdownExtractor, MdBlock, merge_blocks_for_translation
 from core.translator import Translator, TokenStats
 from core.progress import ProgressTracker
-from core.glossary import load_glossary
+from core.glossary import load_glossary, build_glossary_matcher
+from core.dispatcher import ConcurrentDispatcher, DispatcherConfig
 from core.utils import file_sha256, configure_console_output
 from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
 from exporters.md_preserve import write_md_output
@@ -115,6 +116,10 @@ def translate_md_file(
     max_workers: int = 4,
     max_blocks: int | None = None,
     progress_callback=None,
+    rate_limit: int = 60,
+    cooldown: float = 1.0,
+    max_split_depth: int = 10,
+    fuzzy_matching: bool = False,
 ) -> dict:
     """
     Translate a Markdown file end-to-end.
@@ -166,149 +171,37 @@ def translate_md_file(
     metadata = build_md_progress_metadata(md_path, glossary_path, model, base_url)
     tracker = ProgressTracker(progress_file, expected_metadata=metadata)
 
-    # Setup translator
+    # Setup translator with AC glossary matcher
     stats = TokenStats()
-    translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
+    glossary_matcher = build_glossary_matcher(glossary, fuzzy=fuzzy_matching) if glossary else None
+    translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats,
+                            glossary_matcher=glossary_matcher)
     translator.set_glossary(glossary)
 
     # Merge blocks for API efficiency
     groups = merge_blocks_for_translation(translatable)
     print(f"  Translation groups: {len(groups)}")
 
-    # Translate
-    translations: dict[int, str] = {}
-    completed = 0
-    total = len(groups)
+    # Log configuration
+    print(f"  Config: workers={max_workers}, rate_limit={rate_limit}/min, "
+          f"cooldown={cooldown}s, max_split_depth={max_split_depth}, "
+          f"fuzzy_matching={fuzzy_matching}")
 
-    def translate_group(group: list[MdBlock], prev_ctx: str):
-        # Check cache
-        first_idx = group[0].index
-        if tracker.is_completed(first_idx):
-            return first_idx, tracker.get_translation(first_idx), True
-
-        # 单块组不使用 BLOCK 标记，避免 AI 返回时丢失标记导致解析失败
-        if len(group) == 1:
-            text = group[0].text
-        else:
-            text = _marked_md_group_text(group)
-
-        result = translator.translate_block(
-            text, block_index=first_idx,
-            prev_context=prev_ctx, source_type="markdown",
-            cache=tracker,
-        )
-        return first_idx, result, False
-
-    def _retry_single_block(block: MdBlock, prev_ctx: str) -> str | None:
-        """Retry translating a single block without BLOCK markers."""
-        result = translator.translate_block(
-            block.text, block_index=block.index,
-            prev_context=prev_ctx, source_type="markdown",
-            cache=tracker,
-        )
-        if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
-            # 单块返回可能仍带 BLOCK 标记，尝试剥离
-            m = re.search(r"\[BLOCK \d+\]\s*(.*?)\s*\[/BLOCK \d+\]", result, re.DOTALL)
-            if m:
-                return m.group(1).strip() or None
-            return result.strip() or None
-        return None
-
-    prev_context = ""
-    max_workers = max(1, int(max_workers))
-
-    # Process in sequential groups to maintain context window
-    for group_start in range(0, len(groups), max_workers):
-        batch = groups[group_start:group_start + max_workers]
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {}
-            for group in batch:
-                first_idx = group[0].index
-                # Check if already done
-                if tracker.is_completed(first_idx):
-                    cached = tracker.get_translation(first_idx)
-                    try:
-                        parsed = _parse_marked_md_translation(cached, group)
-                        translations.update(parsed)
-                    except ValueError:
-                        # 缓存数据损坏，清除重试
-                        tracker.clear_pages([first_idx])
-                        future = executor.submit(translate_group, group, prev_context)
-                        futures[future] = group
-                        continue
-                    completed += 1
-                    _report_progress(progress_callback, first_idx, cached, completed, total, stats)
-                    continue
-
-                future = executor.submit(translate_group, group, prev_context)
-                futures[future] = group
-
-            for future in as_completed(futures):
-                group = futures[future]
-                first_idx = group[0].index
-                try:
-                    first_idx, result, was_cached = future.result()
-                except Exception as exc:
-                    result = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
-                    was_cached = False
-
-                if result and not result.startswith(TRANSLATION_FAILURE_PREFIX):
-                    try:
-                        parsed_translations = _parse_marked_md_translation(result, group)
-                    except ValueError:
-                        parsed_translations = {}
-
-                    # 检查是否有缺失的块需要单独重试
-                    expected_indices = {b.index for b in group}
-                    found_indices = set(parsed_translations.keys())
-                    missing_indices = expected_indices - found_indices
-
-                    if missing_indices and len(group) > 1:
-                        missing_blocks = [b for b in group if b.index in missing_indices]
-                        print(f"\n  组 {first_idx} 缺少 {len(missing_blocks)} 块，逐块重试...")
-                        for mb in missing_blocks:
-                            single_result = _retry_single_block(mb, prev_context)
-                            if single_result:
-                                parsed_translations[mb.index] = single_result
-                                print(f"    块 {mb.index} 重试成功")
-                            else:
-                                print(f"    块 {mb.index} 重试失败")
-
-                    translations.update(parsed_translations)
-                    if not was_cached and parsed_translations:
-                        tracker.mark_completed(first_idx, result)
-                    prev_context = "\n\n".join(
-                        v for v in parsed_translations.values() if v
-                    )[:500]
-                else:
-                    # 整组翻译失败，尝试逐块降级重试
-                    if len(group) > 1:
-                        print(f"\n  组 {first_idx} 整组失败，逐块降级重试...")
-                        for block in group:
-                            single_result = _retry_single_block(block, prev_context)
-                            if single_result:
-                                translations[block.index] = single_result
-                                print(f"    块 {block.index} 重试成功")
-                            else:
-                                print(f"    块 {block.index} 重试失败")
-                    elif len(group) == 1:
-                        # 单块也失败了，再重试一次
-                        single_result = _retry_single_block(group[0], prev_context)
-                        if single_result:
-                            translations[group[0].index] = single_result
-                            print(f"    块 {group[0].index} 重试成功")
-                    if not was_cached:
-                        # 只标记完全没有任何结果的组为失败
-                        group_indices = {b.index for b in group}
-                        if not any(idx in translations for idx in group_indices):
-                            tracker.mark_failed(first_idx, result)
-
-                completed += 1
-                _report_progress(progress_callback, first_idx, result or "", completed, total, stats)
-                translated_in_group = sum(1 for b in group if b.index in translations)
-                print(f"  [{completed}/{total}] block {first_idx + 1} "
-                      f"{'(cached)' if was_cached else f'done ({translated_in_group}/{len(group)})'}")
+    # Dispatch translation via ConcurrentDispatcher
+    config = DispatcherConfig(
+        concurrency=max_workers,
+        rate_limit=rate_limit,
+        cooldown=cooldown,
+        max_split_depth=max_split_depth,
+        fuzzy_matching=fuzzy_matching,
+    )
+    dispatcher = ConcurrentDispatcher(config, translator, tracker, stats, progress_callback)
+    translations = dispatcher.dispatch_all(
+        groups,
+        build_text_fn=_marked_md_group_text,
+        parse_fn=_parse_marked_md_translation,
+        source_type="markdown",
+    )
 
     failed_count = len(tracker.get_failed_pages())
     if translatable and not translations:

@@ -141,7 +141,8 @@ Translation rules:
 {glossary_section}"""
 
     def __init__(self, api_key: str, model: str = "deepseek-v4-pro",
-                 base_url: str = "https://api.deepseek.com", stats: TokenStats = None):
+                 base_url: str = "https://api.deepseek.com", stats: TokenStats = None,
+                 glossary_matcher=None):
         if not api_key or not str(api_key).strip():
             raise ValueError("API Key 不能为空")
         if not model or not str(model).strip():
@@ -152,6 +153,7 @@ Translation rules:
         self.retry_count = 3
         self.retry_delay = 5
         self.stats = stats or TokenStats()
+        self._glossary_matcher = glossary_matcher
 
     def set_glossary(self, glossary: dict):
         self.glossary = glossary
@@ -166,6 +168,8 @@ Translation rules:
         return "\nGlossary (this section):\n" + "\n".join(glossary_lines)
 
     def _find_relevant_glossary_terms(self, text: str) -> dict:
+        if self._glossary_matcher:
+            return self._glossary_matcher.find_relevant_glossary_terms(text)
         return find_relevant_glossary_terms(text, self.glossary)
 
     def _translation_cache_key(self, system_prompt: str, user_prompt: str) -> str:

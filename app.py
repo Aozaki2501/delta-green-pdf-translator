@@ -632,6 +632,10 @@ with st.sidebar:
     base_url = "https://api.deepseek.com"
     model = "deepseek-v4-pro"
     workers = 32
+    rate_limit = 60
+    cooldown = 1.0
+    max_split_depth = 10
+    fuzzy_matching = False
     retranslate_pages_str = ""
     retry_failed_pages = False
     reuse_mismatched_progress = False
@@ -671,7 +675,23 @@ with st.sidebar:
 
     with st.expander("高级任务控制", expanded=False):
         model = st.text_input("模型名称", value=model)
-        workers = st.slider("并发线程", 1, 64, 32)
+        workers = st.slider("并发数", 1, 64, 32, help="并行 API 调用数量")
+        rate_limit = st.number_input(
+            "速率限制（次/分钟）", value=60, min_value=1, max_value=1000, step=10,
+            help="每分钟最大 API 调用次数"
+        )
+        cooldown = st.slider(
+            "批次冷却（秒）", 0.0, 5.0, 1.0, 0.1,
+            help="每批次翻译之间的等待时间"
+        )
+        max_split_depth = st.slider(
+            "最大拆分深度", 1, 20, 10,
+            help="递归拆分失败组的最大深度"
+        )
+        fuzzy_matching = st.checkbox(
+            "模糊术语匹配", value=False,
+            help="启用 OCR 字符替换容错匹配（0↔O, 1↔l↔I, 5↔S, 8↔B）"
+        )
         retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
         retry_failed_pages = st.checkbox("只重试失败页", value=False)
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
@@ -910,6 +930,10 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     max_workers=max(1, int(workers)),
                     max_blocks=max_blocks_input if max_blocks_input > 0 else None,
                     progress_callback=md_docx_progress_callback,
+                    rate_limit=rate_limit,
+                    cooldown=cooldown,
+                    max_split_depth=max_split_depth,
+                    fuzzy_matching=fuzzy_matching,
                 )
             else:
                 result = translate_docx_file(
@@ -923,6 +947,10 @@ if st.button("执行翻译任务", type="primary", use_container_width=True):
                     max_blocks=max_blocks_input if max_blocks_input > 0 else None,
                     translate_headers=True,
                     progress_callback=md_docx_progress_callback,
+                    rate_limit=rate_limit,
+                    cooldown=cooldown,
+                    max_split_depth=max_split_depth,
+                    fuzzy_matching=fuzzy_matching,
                 )
 
             if result.get("block_count", 0) and not result.get("translated_count", 0):
