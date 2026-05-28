@@ -264,6 +264,15 @@ class TestClassifyRegion:
         result = self._classify(region, context, runs)
         assert result == SemanticRole.TITLE
 
+    def test_red_heading_detection(self):
+        region = TextRegionBBox(id="p0001_r0001", bbox=[50, 200, 260, 225], block_ids=["t0"])
+        context = self._make_context(median_font_size=11.0)
+        runs = [
+            StyledTextRun(text="The Road to Kali Ghati", font_size=14.0, bold=True, italic=False, color="#ed1c24"),
+        ]
+        result = self._classify(region, context, runs)
+        assert result == SemanticRole.SUBTITLE
+
     def test_body_column_default(self):
         """Region in middle of page with normal font is BODY_COLUMN."""
         region = TextRegionBBox(id="p0001_r0001", bbox=[50, 300, 560, 400], block_ids=["t0"])

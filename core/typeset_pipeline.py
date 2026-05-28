@@ -275,6 +275,7 @@ class TypesetPipeline:
             progress=progress,
             glossary=self.glossary,
             progress_callback=translation_callback,
+            max_workers=self.config.translation_concurrency,
         )
 
         # Save translated content

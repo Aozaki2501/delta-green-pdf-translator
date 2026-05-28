@@ -214,8 +214,12 @@ class SemanticAnalyzer:
         # Title detection: large font size (>= 1.5x median)
         if runs:
             avg_font_size = _weighted_avg_font_size(runs)
+            if _has_accent_heading_color(runs) and avg_font_size >= page_context.median_font_size * 0.95:
+                return SemanticRole.SUBTITLE
             if avg_font_size >= page_context.median_font_size * 1.5:
                 return SemanticRole.TITLE
+            if _short_styled_heading(region, page_context, runs):
+                return SemanticRole.SUBTITLE
 
         # Footnote detection: small text near bottom
         if runs and y0 > page_height * 0.80:
@@ -547,6 +551,27 @@ def _bbox_area(bbox: list[float]) -> float:
     width = abs(bbox[2] - bbox[0])
     height = abs(bbox[3] - bbox[1])
     return width * height
+
+
+def _has_accent_heading_color(runs: list[StyledTextRun]) -> bool:
+    return any(run.text.strip() and run.color.lower() == "#ed1c24" for run in runs)
+
+
+def _short_styled_heading(
+    region: TextRegionBBox,
+    page_context: PageContext,
+    runs: list[StyledTextRun],
+) -> bool:
+    text = "".join(run.text for run in runs).strip()
+    if not text or "\n" in text:
+        return False
+    avg_font_size = _weighted_avg_font_size(runs)
+    x0, _, x1, _ = region.bbox
+    width = x1 - x0
+    if width > page_context.page_width * 0.55:
+        return False
+    has_style = any(run.bold or run.italic for run in runs)
+    return has_style and len(text) <= 48 and avg_font_size >= page_context.median_font_size * 1.1
 
 
 def _weighted_avg_font_size(runs: list[StyledTextRun]) -> float:

@@ -18,6 +18,8 @@ from core.typeset_models import (
     SemanticRole,
     StyledTextRun,
     TextRegionBBox,
+    TextLineBBox,
+    TextSpanBBox,
     TypesetConfig,
     TypesetResult,
 )
@@ -41,6 +43,7 @@ def test_page_structure_document_roundtrip():
                         image_path="assets/typeset_images/p0001_img0001.png",
                         width_px=580,
                         height_px=760,
+                        transform=[100.0, 0.0, 0.0, 80.0, 10.0, 20.0],
                     )
                 ],
                 decorations=[
@@ -59,6 +62,28 @@ def test_page_structure_document_roundtrip():
                         id="p0001_r0001",
                         bbox=[50.0, 100.0, 300.0, 700.0],
                         block_ids=["b001", "b002"],
+                        angle=-4.0,
+                        lines=[
+                            TextLineBBox(
+                                bbox=[50.0, 100.0, 260.0, 114.0],
+                                text="Slanted heading",
+                                font_size=14.9,
+                                bold=True,
+                                italic=True,
+                                color="#ed1c24",
+                                angle=-4.0,
+                                spans=[
+                                    TextSpanBBox(
+                                        bbox=[50.0, 100.0, 160.0, 114.0],
+                                        text="Slanted",
+                                        font_size=14.9,
+                                        bold=True,
+                                        italic=True,
+                                        color="#ed1c24",
+                                    )
+                                ],
+                            )
+                        ],
                     )
                 ],
             )
@@ -146,15 +171,19 @@ def test_page_content_schema_version_validation():
 
 def test_typeset_config_defaults():
     cfg = TypesetConfig()
-    assert cfg.font_family == "Noto Serif SC"
+    assert cfg.font_family == "FandolSong"
+    assert "FandolSong-Regular" in cfg.fallback_fonts
     assert "Source Han Serif CN" in cfg.fallback_fonts
     assert "SimSun" in cfg.fallback_fonts
     assert "serif" in cfg.fallback_fonts
-    assert cfg.body_font_size_pt == 11.0
-    assert cfg.min_body_font_size_pt == 10.0
+    assert cfg.heading_font_family == "FZZJ-MSMLJW"
+    assert "SimHei" in cfg.heading_fallback_fonts
+    assert cfg.body_font_size_pt == 10.9
+    assert cfg.min_body_font_size_pt == 8.0
     assert cfg.line_height == 1.6
-    assert cfg.column_gap_pt == 20.0
+    assert cfg.column_gap_pt == 30.0
     assert cfg.text_indent == "2em"
+    assert cfg.subtitle_color == "#ed1c24"
 
 
 def test_json_format_utf8_indented():
@@ -181,6 +210,7 @@ def test_schema_version_constants():
 def test_semantic_role_enum():
     assert SemanticRole.BODY_COLUMN.value == "body_column"
     assert SemanticRole.TITLE.value == "title"
+    assert SemanticRole.SUBTITLE.value == "subtitle"
     assert SemanticRole.HEADER.value == "header"
     assert SemanticRole.FOOTER.value == "footer"
     assert SemanticRole.FOOTNOTE.value == "footnote"

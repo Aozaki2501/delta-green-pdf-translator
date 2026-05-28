@@ -15,7 +15,9 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -52,6 +54,7 @@ class TypesetTranslationProgress:
         self.translation_cache: dict[str, str] = {}
         self.completed_phases: list[str] = []
         self.last_translated_page: int = -1
+        self._lock = threading.RLock()
         self._load()
 
     def _load(self):
@@ -71,50 +74,56 @@ class TypesetTranslationProgress:
         self.last_translated_page = int(data.get("last_translated_page", -1))
 
     def save(self):
-        data = {
-            "schema": 1,
-            "pipeline": "typeset",
-            "translations": self.translations,
-            "failed_blocks": self.failed_blocks,
-            "translation_cache": self.translation_cache,
-            "completed_phases": self.completed_phases,
-            "last_translated_page": self.last_translated_page,
-        }
-        progress_path = Path(self.progress_file)
-        progress_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(progress_path.parent),
-            prefix=progress_path.name + ".",
-            suffix=".tmp",
-            delete=False,
-        ) as f:
-            tmp_path = Path(f.name)
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        _replace_with_retry(tmp_path, progress_path)
+        with self._lock:
+            data = {
+                "schema": 1,
+                "pipeline": "typeset",
+                "translations": self.translations,
+                "failed_blocks": self.failed_blocks,
+                "translation_cache": self.translation_cache,
+                "completed_phases": self.completed_phases,
+                "last_translated_page": self.last_translated_page,
+            }
+            progress_path = Path(self.progress_file)
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(progress_path.parent),
+                prefix=progress_path.name + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = Path(f.name)
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            _replace_with_retry(tmp_path, progress_path)
 
     # -- Query methods --
 
     def is_completed(self, block_id: str) -> bool:
-        return block_id in self.translations
+        with self._lock:
+            return block_id in self.translations
 
     def get_translation(self, block_id: str) -> str:
-        return self.translations.get(block_id, "")
+        with self._lock:
+            return self.translations.get(block_id, "")
 
     def get_failed_blocks(self) -> set[str]:
-        return set(self.failed_blocks)
+        with self._lock:
+            return set(self.failed_blocks)
 
     # -- Cache interface (compatible with Translator.translate_chunk cache param) --
 
     def get_cached_prompt_translation(self, cache_key: str) -> str:
-        return self.translation_cache.get(cache_key, "")
+        with self._lock:
+            return self.translation_cache.get(cache_key, "")
 
     def mark_cached_prompt_translation(self, cache_key: str, translation: str):
         if cache_key and translation:
-            self.translation_cache[cache_key] = translation
-            self.save()
+            with self._lock:
+                self.translation_cache[cache_key] = translation
+                self.save()
 
     # -- Mutation methods --
 
@@ -123,36 +132,41 @@ class TypesetTranslationProgress:
             raise ValueError("block_id 不能为空")
         if not translation:
             raise ValueError(f"译文为空：{block_id}")
-        self.translations[block_id] = translation
-        self.failed_blocks.pop(block_id, None)
-        self.save()
+        with self._lock:
+            self.translations[block_id] = translation
+            self.failed_blocks.pop(block_id, None)
+            self.save()
 
     def mark_failed(self, block_id: str, message: str):
         if not block_id:
             raise ValueError("block_id 不能为空")
-        self.translations.pop(block_id, None)
-        self.failed_blocks[block_id] = str(message or "translation failed")
-        self.save()
+        with self._lock:
+            self.translations.pop(block_id, None)
+            self.failed_blocks[block_id] = str(message or "translation failed")
+            self.save()
 
     def clear_failed_blocks(self, block_ids=None) -> int:
-        block_filter = None if block_ids is None else set(block_ids)
-        cleared = 0
-        for block_id in list(self.failed_blocks):
-            if block_filter is not None and block_id not in block_filter:
-                continue
-            self.failed_blocks.pop(block_id, None)
-            cleared += 1
-        if cleared:
-            self.save()
-        return cleared
+        with self._lock:
+            block_filter = None if block_ids is None else set(block_ids)
+            cleared = 0
+            for block_id in list(self.failed_blocks):
+                if block_filter is not None and block_id not in block_filter:
+                    continue
+                self.failed_blocks.pop(block_id, None)
+                cleared += 1
+            if cleared:
+                self.save()
+            return cleared
 
     def mark_phase_completed(self, phase: str):
-        if phase not in self.completed_phases:
-            self.completed_phases.append(phase)
-            self.save()
+        with self._lock:
+            if phase not in self.completed_phases:
+                self.completed_phases.append(phase)
+                self.save()
 
     def is_phase_completed(self, phase: str) -> bool:
-        return phase in self.completed_phases
+        with self._lock:
+            return phase in self.completed_phases
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +280,7 @@ def translate_typeset_content(
     progress: TypesetTranslationProgress,
     glossary: dict,
     progress_callback: Callable[[int, int, str, bool], None] | None = None,
+    max_workers: int = 4,
 ) -> PageContentDocument:
     """Translate typeset content blocks, producing a translated PageContentDocument.
 
@@ -296,10 +311,129 @@ def translate_typeset_content(
     page_units = _collect_translation_units(content, progress)
 
     total_units = len(page_units)
+    max_workers = max(1, int(max_workers or 1))
+    completed_units = 0
+
+    futures = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for page_index, blocks in page_units:
+            unit_id = blocks[0].id if len(blocks) == 1 else f"p{page_index + 1:04d}"
+            cached_result = _finish_cached_unit(page_index, blocks, progress)
+            if cached_result is not None:
+                completed_units += 1
+                if progress_callback:
+                    progress_callback(completed_units, total_units, f"{unit_id} ({cached_result})", True)
+                continue
+
+            pending_blocks = [b for b in blocks if not progress.is_completed(b.id)]
+            if not pending_blocks:
+                completed_units += 1
+                if progress_callback:
+                    progress_callback(completed_units, total_units, f"{unit_id} (resumed)", True)
+                progress.last_translated_page = page_index
+                progress.save()
+                continue
+
+            future = executor.submit(
+                _translate_typeset_unit,
+                translator,
+                page_index,
+                pending_blocks,
+            )
+            futures[future] = (page_index, unit_id, pending_blocks)
+
+        for future in as_completed(futures):
+            page_index, unit_id, pending_blocks = futures[future]
+            completed_units += 1
+            try:
+                parsed = future.result()
+            except Exception as exc:
+                message = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+                for block in pending_blocks:
+                    progress.mark_failed(block.id, message)
+                if progress_callback:
+                    progress_callback(completed_units, total_units, unit_id, False)
+                continue
+
+            for block in pending_blocks:
+                block_translation = parsed.get(block.id)
+                if not block_translation:
+                    progress.mark_failed(block.id, f"{TRANSLATION_FAILURE_PREFIX} missing translation]")
+                    continue
+                progress.mark_completed(block.id, block_translation)
+                progress.mark_cached_prompt_translation(_source_text_hash(block.source_text), block_translation)
+
+            progress.last_translated_page = page_index
+            progress.save()
+
+            if progress_callback:
+                progress_callback(completed_units, total_units, f"{unit_id} / {len(pending_blocks)} 块", True)
+
+    # Build translated document
+    return _build_translated_document(content, progress)
+
+
+def _finish_cached_unit(
+    page_index: int,
+    blocks: list[ContentBlock],
+    progress: TypesetTranslationProgress,
+) -> str | None:
+    all_cached = True
+    for block in blocks:
+        cache_key = _source_text_hash(block.source_text)
+        cached = progress.get_cached_prompt_translation(cache_key)
+        if cached:
+            if not progress.is_completed(block.id):
+                progress.mark_completed(block.id, cached)
+        else:
+            all_cached = False
+
+    if all_cached and all(progress.is_completed(b.id) for b in blocks):
+        progress.last_translated_page = page_index
+        progress.save()
+        return "cached"
+    if all(progress.is_completed(b.id) for b in blocks):
+        progress.last_translated_page = page_index
+        progress.save()
+        return "resumed"
+    return None
+
+
+def _translate_typeset_unit(
+    translator,
+    page_index: int,
+    pending_blocks: list[ContentBlock],
+) -> dict[str, str]:
+    source_text = _build_marked_text(pending_blocks)
+    pending_ids = {block.id for block in pending_blocks}
+    translation = _translate_with_retry(
+        translator,
+        source_text,
+        page_num=page_index,
+        prev_context="",
+        cache=None,
+    )
+    if translation and translation.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
+        raise RuntimeError(translation)
+    return _parse_marked_translations(translation, pending_ids)
+
+
+def _translate_typeset_content_sequential_legacy(
+    content: PageContentDocument,
+    translator,
+    progress: TypesetTranslationProgress,
+    glossary: dict,
+    progress_callback: Callable[[int, int, str, bool], None] | None = None,
+) -> PageContentDocument:
+    if glossary:
+        translator.set_glossary(glossary)
+
+    page_units = _collect_translation_units(content, progress)
+    total_units = len(page_units)
     previous_context = ""
 
     for done, (page_index, blocks) in enumerate(page_units, start=1):
-        unit_id = f"p{page_index + 1:04d}"
+        unit_id = blocks[0].id if len(blocks) == 1 else f"p{page_index + 1:04d}"
         expected_ids = {block.id for block in blocks}
 
         # Check translation cache by source text hash
@@ -396,7 +530,7 @@ def _collect_translation_units(
     content: PageContentDocument,
     progress: TypesetTranslationProgress,
 ) -> list[tuple[int, list[ContentBlock]]]:
-    """Collect translatable blocks grouped by page, skipping completed ones.
+    """Collect translatable blocks as single-block units, skipping completed ones.
 
     Returns list of (page_index, blocks) tuples where blocks need translation.
     """
@@ -406,19 +540,10 @@ def _collect_translation_units(
             block for block in page.blocks
             if block.translatable and block.source_text.strip()
         ]
-        # Include page if it has any blocks not yet completed
-        pending = [
-            block for block in translatable_blocks
-            if not progress.is_completed(block.id)
-        ]
-        if pending or translatable_blocks:
-            # Include all translatable blocks for context, but only translate pending ones
-            units.append((page.page_index, translatable_blocks))
-    # Filter to only pages with pending work
-    return [
-        (page_index, blocks) for page_index, blocks in units
-        if any(not progress.is_completed(b.id) for b in blocks)
-    ]
+        for block in translatable_blocks:
+            if not progress.is_completed(block.id):
+                units.append((page.page_index, [block]))
+    return units
 
 
 def _build_translated_document(

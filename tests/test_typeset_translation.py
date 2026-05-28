@@ -12,6 +12,8 @@ Tests cover:
 import json
 import os
 import tempfile
+import threading
+import time
 
 import pytest
 
@@ -98,6 +100,26 @@ class MockTranslator:
             source = match.group(2).strip()
             parts.append(f"[BLOCK {block_id}]\n翻译：{source}\n[/BLOCK {block_id}]")
         return "\n\n".join(parts)
+
+
+class SlowMockTranslator(MockTranslator):
+    def __init__(self, delay: float):
+        super().__init__()
+        self.delay = delay
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+
+    def translate_chunk(self, text: str, page_num=None, prev_context="", cache=None):
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(self.delay)
+            return super().translate_chunk(text, page_num=page_num, prev_context=prev_context, cache=cache)
+        finally:
+            with self._lock:
+                self.active -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +305,7 @@ class TestTranslateTypesetContent:
         assert b1.translated_text == "翻译：Hello world"
         assert b2.translated_text is None  # header, not translated
         assert b3.translated_text == "翻译：Another paragraph"
+        assert translator.call_count == 2
 
     def test_checkpoint_resume(self, tmp_path):
         """Already-translated blocks are skipped on resume."""
@@ -376,6 +399,28 @@ class TestTranslateTypesetContent:
         assert callbacks[0][0] == 1  # done
         assert callbacks[0][1] == 1  # total
         assert callbacks[0][3] is True  # success
+
+    def test_single_block_units_run_concurrently(self, tmp_path):
+        blocks = [_make_block(f"b{i}", f"Block {i}") for i in range(4)]
+        content = _make_content_doc([blocks])
+        progress_file = str(tmp_path / "progress.json")
+        progress = TypesetTranslationProgress(progress_file)
+        translator = SlowMockTranslator(delay=0.08)
+
+        start = time.perf_counter()
+        result = translate_typeset_content(
+            content,
+            translator,
+            progress,
+            {},
+            max_workers=4,
+        )
+        elapsed = time.perf_counter() - start
+
+        assert translator.call_count == 4
+        assert translator.max_active > 1
+        assert elapsed < 0.28
+        assert all(block.translated_text for block in result.pages[0].blocks)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,11 @@ vector decorations (lines, rects), and text region bounding boxes.
 Outputs a PageStructureDocument that can be serialized to page_structure.json.
 """
 
+from io import BytesIO
+import math
 from pathlib import Path
+
+from PIL import Image
 
 try:
     import pymupdf
@@ -23,6 +27,8 @@ from core.typeset_models import (
     ImageElement,
     PageStructure,
     PageStructureDocument,
+    TextLineBBox,
+    TextSpanBBox,
     TextRegionBBox,
 )
 from core.utils import ensure_output_parent
@@ -62,6 +68,165 @@ def _color_tuple_to_css(color_tuple) -> str | None:
         b = int(255 * (1 - y) * (1 - k))
         return f"#{r:02x}{g:02x}{b:02x}"
     return None
+
+
+def _crop_axis_aligned_pixmap_to_bbox(pix, transform, bbox) -> tuple[Image.Image, int, int]:
+    """Crop an axis-aligned PDF image to the visible page bbox using its transform."""
+    image = Image.open(BytesIO(pix.tobytes("png")))
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGBA" if pix.alpha else "RGB")
+
+    if not transform or len(transform) != 6:
+        return image, pix.width, pix.height
+
+    a, b, c, d, e, f = [float(v) for v in transform]
+    if abs(b) > 1e-6 or abs(c) > 1e-6 or abs(a) < 1e-6 or abs(d) < 1e-6:
+        return image, pix.width, pix.height
+
+    x0, y0, x1, y1 = [float(v) for v in bbox]
+    display_left = min(e, e + a)
+    display_top = min(f, f + d)
+    display_width = abs(a)
+    display_height = abs(d)
+
+    left_frac = max(0.0, min(1.0, (x0 - display_left) / display_width))
+    right_frac = max(0.0, min(1.0, (x1 - display_left) / display_width))
+    top_frac = max(0.0, min(1.0, (y0 - display_top) / display_height))
+    bottom_frac = max(0.0, min(1.0, (y1 - display_top) / display_height))
+
+    if right_frac <= left_frac or bottom_frac <= top_frac:
+        return image, pix.width, pix.height
+
+    if a >= 0:
+        crop_left = left_frac * pix.width
+        crop_right = right_frac * pix.width
+    else:
+        crop_left = (1.0 - right_frac) * pix.width
+        crop_right = (1.0 - left_frac) * pix.width
+
+    if d >= 0:
+        crop_top = top_frac * pix.height
+        crop_bottom = bottom_frac * pix.height
+    else:
+        crop_top = (1.0 - bottom_frac) * pix.height
+        crop_bottom = (1.0 - top_frac) * pix.height
+
+    crop_box = (
+        max(0, min(pix.width - 1, round(crop_left))),
+        max(0, min(pix.height - 1, round(crop_top))),
+        max(1, min(pix.width, round(crop_right))),
+        max(1, min(pix.height, round(crop_bottom))),
+    )
+
+    image = image.crop(crop_box)
+    if a < 0:
+        image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if d < 0:
+        image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    return image, image.width, image.height
+
+
+def _is_axis_aligned_transform(transform) -> bool:
+    if not transform or len(transform) != 6:
+        return True
+    _, b, c, _, _, _ = [float(v) for v in transform]
+    return abs(b) <= 1e-6 and abs(c) <= 1e-6
+
+
+def _line_angle(line) -> float:
+    direction = line.get("dir", (1.0, 0.0))
+    if not direction or len(direction) != 2:
+        return 0.0
+    return math.degrees(math.atan2(float(direction[1]), float(direction[0])))
+
+
+def _dominant_text_angle(lines) -> float:
+    angles = []
+    for line in lines:
+        if not any(span.get("text", "").strip() for span in line.get("spans", [])):
+            continue
+        angle = _line_angle(line)
+        if abs(angle) >= 0.5:
+            angles.append(angle)
+    if not angles:
+        return 0.0
+    return round(sum(angles) / len(angles), 2)
+
+
+def _line_text(line) -> str:
+    return "".join(span.get("text", "") for span in line.get("spans", []))
+
+
+def _line_style(line) -> tuple[float, bool, bool, str]:
+    spans = [span for span in line.get("spans", []) if span.get("text", "").strip()]
+    if not spans:
+        return 11.0, False, False, "#000000"
+
+    total_weight = 0
+    weighted_size = 0.0
+    bold = False
+    italic = False
+    color = "#000000"
+    for span in spans:
+        text = span.get("text", "")
+        weight = max(1, len(text.strip()))
+        size = float(span.get("size", 11.0))
+        flags = int(span.get("flags", 0))
+        weighted_size += size * weight
+        total_weight += weight
+        bold = bold or bool(flags & (1 << 4))
+        italic = italic or bool(flags & (1 << 1))
+        if color == "#000000":
+            color = _color_int_to_css(int(span.get("color", 0)))
+    return round(weighted_size / max(1, total_weight), 2), bold, italic, color
+
+
+def _span_style(span) -> tuple[float, bool, bool, str]:
+    flags = int(span.get("flags", 0))
+    return (
+        round(float(span.get("size", 11.0)), 2),
+        bool(flags & (1 << 4)),
+        bool(flags & (1 << 1)),
+        _color_int_to_css(int(span.get("color", 0))),
+    )
+
+
+def _line_spans(line) -> list[TextSpanBBox]:
+    spans: list[TextSpanBBox] = []
+    for span in line.get("spans", []):
+        text = span.get("text", "")
+        if not text:
+            continue
+        font_size, bold, italic, color = _span_style(span)
+        spans.append(TextSpanBBox(
+            bbox=_round_bbox(span.get("bbox", [0, 0, 0, 0])),
+            text=text,
+            font_size=font_size,
+            bold=bold,
+            italic=italic,
+            color=color,
+        ))
+    return spans
+
+
+def _text_lines(lines) -> list[TextLineBBox]:
+    result: list[TextLineBBox] = []
+    for line in lines:
+        text = _line_text(line)
+        if not text.strip():
+            continue
+        font_size, bold, italic, color = _line_style(line)
+        result.append(TextLineBBox(
+            bbox=_round_bbox(line.get("bbox", [0, 0, 0, 0])),
+            text=text,
+            font_size=font_size,
+            bold=bold,
+            italic=italic,
+            color=color,
+            angle=round(_line_angle(line), 2),
+            spans=_line_spans(line),
+        ))
+    return result
 
 
 class PageStructureExtractor:
@@ -202,18 +367,32 @@ class PageStructureExtractor:
                 continue
 
             pix = pymupdf.Pixmap(block["image"])
+            if block.get("mask"):
+                mask = pymupdf.Pixmap(block["mask"])
+                pix = pymupdf.Pixmap(pix, mask)
             if pix.n - pix.alpha > 3:
                 pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
 
-            width_px = pix.width
-            height_px = pix.height
+            transform = block.get("transform")
+            if _is_axis_aligned_transform(transform):
+                image, width_px, height_px = _crop_axis_aligned_pixmap_to_bbox(
+                    pix, transform, bbox
+                )
+                image_transform = None
+            else:
+                image = Image.open(BytesIO(pix.tobytes("png")))
+                if image.mode not in ("RGB", "RGBA"):
+                    image = image.convert("RGBA" if pix.alpha else "RGB")
+                width_px = image.width
+                height_px = image.height
+                image_transform = _round_bbox(transform)
 
             # Save images as PNG so Chromium can render them from HTML.
             img_id = f"p{page_index + 1:04d}_img{img_idx + 1:04d}"
             self.image_dir.mkdir(parents=True, exist_ok=True)
             img_filename = f"{img_id}.png"
             img_path = self.image_dir / img_filename
-            pix.save(str(img_path))
+            image.save(str(img_path))
 
             # Relative path from output_dir
             relative_path = f"assets/typeset_images/{img_filename}"
@@ -224,6 +403,7 @@ class PageStructureExtractor:
                 image_path=relative_path,
                 width_px=int(width_px),
                 height_px=int(height_px),
+                transform=image_transform,
             ))
 
         return images
@@ -392,6 +572,8 @@ class PageStructureExtractor:
                 id=region_id,
                 bbox=_round_bbox(block["bbox"]),
                 block_ids=[block_id],
+                angle=_dominant_text_angle(block.get("lines", [])),
+                lines=_text_lines(block.get("lines", [])),
             ))
             region_idx += 1
 

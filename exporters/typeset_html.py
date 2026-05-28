@@ -26,16 +26,18 @@ from core.typeset_models import (
     PageStructureDocument,
     PageType,
     SemanticRole,
+    TextRegionBBox,
     TypesetConfig,
 )
+from core.typeset_templates import select_typeset_template
 
 # PDF points → CSS pixels conversion factor (96 DPI / 72 DPI)
 CSS_PX_PER_PT = 96.0 / 72.0
 
 # z-index layer constants
 Z_BACKGROUND = 1
-Z_IMAGES = 2
-Z_DECORATIONS = 3
+Z_DECORATIONS = 2
+Z_IMAGES = 3
 Z_TEXT = 4
 
 
@@ -91,6 +93,15 @@ class TypesetHTMLRebuilder:
         """Build the CSS font-family string from config."""
         fonts = [f'"{self.config.font_family}"']
         for fallback in self.config.fallback_fonts:
+            if fallback in ("serif", "sans-serif", "monospace"):
+                fonts.append(fallback)
+            else:
+                fonts.append(f'"{fallback}"')
+        return ", ".join(fonts)
+
+    def _heading_font_stack(self) -> str:
+        fonts = [f'"{self.config.heading_font_family}"']
+        for fallback in self.config.heading_fallback_fonts:
             if fallback in ("serif", "sans-serif", "monospace"):
                 fonts.append(fallback)
             else:
@@ -183,6 +194,7 @@ class TypesetHTMLRebuilder:
         return """
 <script>
 function typesetFitPositionedBlocks() {
+  typesetFlowLineTracks();
   const boxes = document.querySelectorAll('.typeset-positioned-block[data-fit="text"]');
   for (const box of boxes) {
     const child = box.firstElementChild;
@@ -201,7 +213,9 @@ function typesetFitPositionedBlocks() {
       guard += 1;
     }
   }
-  const reflowAreas = document.querySelectorAll('.typeset-reflow-area[data-fit="reflow"]');
+  const reflowAreas = document.querySelectorAll(
+    '.typeset-reflow-area[data-fit="reflow"], .typeset-region-flow[data-fit="reflow"]'
+  );
   for (const area of reflowAreas) {
     let size = parseFloat(getComputedStyle(area).fontSize) || 14;
     const minSize = 11;
@@ -217,6 +231,46 @@ function typesetFitPositionedBlocks() {
     }
   }
 }
+function typesetFlowLineTracks() {
+  const flows = document.querySelectorAll('.typeset-line-track-flow');
+  for (const flow of flows) {
+    const rawText = flow.dataset.flowText || '';
+    const slots = Array.from(flow.querySelectorAll('.typeset-line-slot'));
+    const tokens = typesetTokenizeFlowText(rawText);
+    let cursor = 0;
+    for (const slot of slots) {
+      slot.textContent = '';
+      if (cursor >= tokens.length) continue;
+      let low = 0;
+      let high = tokens.length - cursor;
+      let best = 0;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        slot.textContent = tokens.slice(cursor, cursor + mid).join('');
+        if (slot.scrollWidth <= slot.clientWidth + 1 && slot.scrollHeight <= slot.clientHeight + 1) {
+          best = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      if (best <= 0) best = 1;
+      slot.textContent = tokens.slice(cursor, cursor + best).join('');
+      cursor += best;
+    }
+    flow.dataset.overflow = cursor < tokens.length ? 'true' : 'false';
+  }
+}
+function typesetTokenizeFlowText(text) {
+  const source = (text || '').replace(/\\s+/g, ' ').trim();
+  if (!source) return [];
+  if (/[\u4e00-\u9fff]/.test(source)) {
+    const matches = source.match(/[\u4e00-\u9fff]|[^\u4e00-\u9fff\\s]+|\\s+/g) || [];
+    return matches.map((item) => /^\\s+$/.test(item) ? ' ' : item);
+  }
+  const parts = source.split(/(\\s+)/).filter(Boolean);
+  return parts.length ? parts : Array.from(source);
+}
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', typesetFitPositionedBlocks);
 } else {
@@ -228,6 +282,7 @@ if (document.readyState === 'loading') {
     def _build_global_css(self, page_width_in: float, page_height_in: float) -> str:
         """Build the global CSS stylesheet."""
         font_stack = self._font_stack()
+        heading_font_stack = self._heading_font_stack()
         body_font_px = self._body_font_size_px()
         min_font_px = self._min_font_size_px()
         line_height = self.config.line_height
@@ -302,7 +357,7 @@ body {{
 .typeset-reflow-area {{
     position: absolute;
     overflow: hidden;
-    color: #111;
+    color: {self.config.body_color};
     font-size: {_pt_to_px(10.8):.3f}px;
 }}
 .typeset-reflow-columns {{
@@ -315,28 +370,82 @@ body {{
     overflow: hidden;
 }}
 .typeset-reflow-title {{
-    font-size: 1.667em;
+    font-family: {heading_font_stack};
+    font-size: 2em;
     line-height: 1.25;
     margin: 0 0 {_pt_to_px(8.0):.3f}px 0;
     text-align: center;
     font-weight: 700;
     text-indent: 0;
+    color: {self.config.title_color};
 }}
 .typeset-reflow-subtitle {{
-    font-size: 1.296em;
+    font-family: {heading_font_stack};
+    font-size: 1.37em;
     line-height: 1.25;
     margin: {_pt_to_px(10.0):.3f}px 0 {_pt_to_px(5.0):.3f}px 0;
     font-weight: 700;
     text-indent: 0;
+    color: {self.config.subtitle_color};
 }}
 .typeset-reflow-body {{
     font-size: 1em;
     line-height: 1.58;
-    margin: 0 0 {_pt_to_px(6.0):.3f}px 0;
+    margin: 0 0 0.18em 0;
     text-indent: 2em;
     text-align: left;
     word-break: normal;
     overflow-wrap: break-word;
+}}
+.typeset-region-flow {{
+    position: absolute;
+    overflow: hidden;
+    color: {self.config.body_color};
+    font-size: {body_font_px:.3f}px;
+    line-height: {line_height};
+}}
+.typeset-region-flow .typeset-reflow-body {{
+    line-height: {line_height};
+}}
+.typeset-line-track-flow {{
+    position: absolute;
+    inset: 0;
+    color: {self.config.body_color};
+}}
+.typeset-line-slot {{
+    position: absolute;
+    overflow: hidden;
+    white-space: nowrap;
+    word-break: keep-all;
+    text-indent: 0;
+    font-size: {body_font_px:.3f}px;
+    line-height: 1.18;
+}}
+.typeset-line-slot[data-bold="true"] {{
+    font-weight: 700;
+}}
+.typeset-line-slot[data-italic="true"] {{
+    font-style: italic;
+}}
+.typeset-source-span {{
+    position: absolute;
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+}}
+.typeset-source-title {{
+    font-family: {heading_font_stack};
+    font-weight: 700;
+    line-height: 1.18;
+    text-indent: 0;
+    color: {self.config.title_color};
+}}
+.typeset-source-subtitle {{
+    font-family: {heading_font_stack};
+    font-weight: 700;
+    line-height: 1.2;
+    text-indent: 0;
+    color: {self.config.subtitle_color};
 }}
 .typeset-columns {{
     display: flex;
@@ -372,6 +481,7 @@ body {{
     margin-bottom: 0.4em;
 }}
 .typeset-heading {{
+    font-family: {heading_font_stack};
     font-weight: bold;
     line-height: 1.3;
     margin: 0.6em 0 0.3em 0;
@@ -423,11 +533,13 @@ body {{
         """
         width_px = _pt_to_px(page_structure.width)
         height_px = _pt_to_px(page_structure.height)
+        template = select_typeset_template(page_content, page_structure)
 
         parts: list[str] = []
         parts.append(
             f'<section class="typeset-page" '
             f'data-page="{page_structure.page_index + 1}" '
+            f'data-template="{html.escape(template.id)}" '
             f'style="width:{_px(width_px)};height:{_px(height_px)}">'
         )
 
@@ -476,6 +588,9 @@ body {{
 
         parts: list[str] = ['<div class="typeset-image-layer">']
         for img in images:
+            if img.transform:
+                parts.append(self._render_transformed_image(img))
+                continue
             x0, y0, x1, y1 = img.bbox
             left = _pt_to_px(x0)
             top = _pt_to_px(y0)
@@ -625,6 +740,7 @@ body {{
         parts: list[str] = ['<div class="typeset-text-layer">']
 
         if page_structure is not None:
+            self._current_template = select_typeset_template(page_content, page_structure)
             if self._should_reflow_chinese_page(page_content):
                 parts.append(self._render_chinese_reflow_page(page_content, page_structure))
             else:
@@ -645,6 +761,26 @@ body {{
         parts.append("</div>")
         return "\n".join(parts)
 
+    def _render_transformed_image(self, img: ImageElement) -> str:
+        """Render an image with the original PDF transform matrix."""
+        a, b, c, d, e, f = [float(v) for v in img.transform or [1, 0, 0, 1, 0, 0]]
+        css_a = _pt_to_px(a) / max(1, img.width_px)
+        css_b = _pt_to_px(b) / max(1, img.width_px)
+        css_c = _pt_to_px(c) / max(1, img.height_px)
+        css_d = _pt_to_px(d) / max(1, img.height_px)
+        css_e = _pt_to_px(e)
+        css_f = _pt_to_px(f)
+        matrix = f"matrix({css_a:.9f},{css_b:.9f},{css_c:.9f},{css_d:.9f},{css_e:.3f},{css_f:.3f})"
+        return (
+            f'<img class="typeset-image" '
+            f'src="{html.escape(img.image_path)}" '
+            f'alt="" '
+            f'data-image-id="{html.escape(img.id)}" '
+            f'style="left:0;top:0;'
+            f'width:{max(1, img.width_px)}px;height:{max(1, img.height_px)}px;'
+            f'transform-origin:0 0;transform:{matrix}">'
+        )
+
     def _should_reflow_chinese_page(self, page_content: PageContent) -> bool:
         if page_content.page_type in (PageType.ART, PageType.COVER):
             return False
@@ -663,6 +799,9 @@ body {{
         for block in page_content.blocks:
             bbox = region_map.get(block.region_id)
             if bbox is None:
+                continue
+            if abs(self._region_angle(block.region_id, page_structure)) >= 1.0:
+                fixed_parts.append(self._render_positioned_single_block(block, page_structure, bbox))
                 continue
             if self._is_running_header(block):
                 fixed_parts.append(self._render_running_header(block, page_structure, bbox))
@@ -686,6 +825,17 @@ body {{
             return "\n".join(fixed_parts)
         content_blocks = [block for block, _ in flow_items]
         text_by_id = {block.id: text for block, text in flow_items}
+
+        source_region_html = self._render_source_region_flows(
+            page_content,
+            page_structure,
+            content_blocks,
+            text_by_id,
+            region_map,
+            fixed_parts,
+        )
+        if source_region_html:
+            return source_region_html
 
         flow_area = self._flow_area_bbox(content_blocks, region_map, page_structure)
         x0, y0, x1, y1 = flow_area
@@ -712,6 +862,259 @@ body {{
             f"{inner}</div>"
         )
         return "\n".join([*fixed_parts, flow])
+
+    def _render_source_region_flows(
+        self,
+        page_content: PageContent,
+        page_structure: PageStructure,
+        content_blocks: list[ContentBlock],
+        text_by_id: dict[str, str],
+        region_map: dict[str, list[float]],
+        fixed_parts: list[str],
+    ) -> str:
+        """Render Chinese text in source-derived regions instead of one large box."""
+        if len(page_content.columns) < 2:
+            return ""
+
+        region_by_id = {region.id: region for region in page_structure.text_regions}
+        self._current_region_by_id = region_by_id
+        parts = list(fixed_parts)
+        consumed: set[str] = set()
+
+        for block in content_blocks:
+            region = region_by_id.get(block.region_id)
+            bbox = region_map.get(block.region_id)
+            if region is None or bbox is None:
+                continue
+            if self._is_source_positioned_heading(block, region, page_structure):
+                parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+                consumed.add(block.id)
+
+        block_by_id = {block.id: block for block in content_blocks if block.id not in consumed}
+        column_parts: list[str] = []
+        for column in page_content.columns:
+            column_blocks = [
+                block_by_id[block_id]
+                for block_id in column.block_ids
+                if block_id in block_by_id and block_id in text_by_id
+            ]
+            if not column_blocks:
+                continue
+            column_parts.append(self._render_source_column_flow(
+                column.side,
+                column.bbox,
+                column_blocks,
+                text_by_id,
+                region_map,
+            ))
+            consumed.update(block.id for block in column_blocks)
+
+        for block in content_blocks:
+            if block.id in consumed:
+                continue
+            bbox = region_map.get(block.region_id)
+            if bbox is None:
+                continue
+            parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+            consumed.add(block.id)
+
+        if not column_parts:
+            return ""
+        return "\n".join([*parts, *column_parts])
+
+    def _render_source_column_flow(
+        self,
+        side: str,
+        bbox: list[float],
+        blocks: list[ContentBlock],
+        text_by_id: dict[str, str],
+        region_map: dict[str, list[float]],
+    ) -> str:
+        template = getattr(self, "_current_template", None)
+        line_flow = self._render_source_column_line_flow(side, blocks, text_by_id, region_map)
+        if line_flow and (template is None or template.use_line_tracks):
+            return line_flow
+
+        x0, y0, x1, y1 = self._expanded_column_bbox(bbox)
+        left = _pt_to_px(x0)
+        top = _pt_to_px(y0)
+        width = _pt_to_px(max(0.0, x1 - x0))
+        height = _pt_to_px(max(0.0, y1 - y0))
+        ordered = sorted(blocks, key=lambda block: (region_map[block.region_id][1], region_map[block.region_id][0]))
+        inner = "\n".join(
+            self._render_reflow_block(block, text_by_id[block.id])
+            for block in ordered
+            if block.id in text_by_id
+        )
+        return (
+            f'<div class="typeset-region-flow" '
+            f'data-column="{html.escape(side)}" '
+            f'data-fit="reflow" '
+            f'style="left:{_px(left)};top:{_px(top)};'
+            f'width:{_px(width)};height:{_px(height)}">'
+            f"{inner}</div>"
+        )
+
+    def _render_source_column_line_flow(
+        self,
+        side: str,
+        blocks: list[ContentBlock],
+        text_by_id: dict[str, str],
+        region_map: dict[str, list[float]],
+    ) -> str:
+        tracks = self._source_line_tracks(blocks, region_map)
+        if len(tracks) < 3:
+            return ""
+        ordered_blocks = sorted(blocks, key=lambda block: (region_map[block.region_id][1], region_map[block.region_id][0]))
+        flow_text = self._join_line_flow_text(
+            text_by_id[block.id]
+            for block in ordered_blocks
+            if block.id in text_by_id
+        )
+        if not flow_text:
+            return ""
+
+        slots = []
+        for index, track in enumerate(tracks):
+            x0, y0, x1, y1 = track["bbox"]
+            left = _pt_to_px(x0)
+            top = _pt_to_px(y0)
+            width = _pt_to_px(max(0.0, x1 - x0))
+            height = max(_pt_to_px(max(0.0, y1 - y0)), _pt_to_px(self.config.body_font_size_pt * 1.15))
+            font_size = _pt_to_px(max(self.config.min_body_font_size_pt, min(track["font_size"], self.config.body_font_size_pt)))
+            color = self.config.subtitle_color if track["color"].lower() == self.config.subtitle_color.lower() else self.config.body_color
+            slots.append(
+                f'<span class="typeset-line-slot" '
+                f'data-line-index="{index}" '
+                f'data-bold="{str(track["bold"]).lower()}" '
+                f'data-italic="{str(track["italic"]).lower()}" '
+                f'style="left:{_px(left)};top:{_px(top)};'
+                f'width:{_px(width)};height:{_px(height)};'
+                f'font-size:{_px(font_size)};color:{html.escape(color)}"></span>'
+            )
+        return (
+            f'<div class="typeset-line-track-flow" '
+            f'data-column="{html.escape(side)}" '
+            f'data-flow-text="{html.escape(flow_text)}">'
+            f'{"".join(slots)}</div>'
+        )
+
+    def _source_line_tracks(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> list[dict[str, object]]:
+        region_by_id = getattr(self, "_current_region_by_id", {})
+        tracks: list[dict[str, object]] = []
+        for block in blocks:
+            region = region_by_id.get(block.region_id)
+            if region is None:
+                continue
+            lines = getattr(region, "lines", [])
+            if not lines:
+                continue
+            for line in lines:
+                angle = float(getattr(line, "angle", 0.0) or 0.0)
+                if abs(angle) >= 1.0:
+                    continue
+                bbox = list(getattr(line, "bbox", []))
+                if len(bbox) != 4:
+                    continue
+                tracks.append({
+                    "bbox": bbox,
+                    "font_size": float(getattr(line, "font_size", self.config.body_font_size_pt) or self.config.body_font_size_pt),
+                    "bold": bool(getattr(line, "bold", False)),
+                    "italic": bool(getattr(line, "italic", False)),
+                    "color": str(getattr(line, "color", self.config.body_color) or self.config.body_color),
+                })
+        tracks.sort(key=lambda track: (track["bbox"][1], track["bbox"][0]))
+        return tracks
+
+    def _join_line_flow_text(self, texts) -> str:
+        parts = [str(text).strip() for text in texts if str(text).strip()]
+        return "".join(parts)
+
+    def _expanded_column_bbox(self, bbox: list[float]) -> list[float]:
+        x0, y0, x1, y1 = bbox
+        return [x0, max(0.0, y0 - 2.0), x1, y1 + 4.0]
+
+    def _is_source_positioned_heading(
+        self,
+        block: ContentBlock,
+        region: TextRegionBBox,
+        page_structure: PageStructure,
+    ) -> bool:
+        if block.role in (SemanticRole.HEADER, SemanticRole.TITLE, SemanticRole.SUBTITLE):
+            return True
+        if self._get_block_font_size(block) >= self.config.body_font_size_pt * 1.45:
+            return True
+        x0, _, x1, _ = region.bbox
+        width_ratio = (x1 - x0) / max(1.0, page_structure.width)
+        return width_ratio >= 0.65 and self._looks_like_subtitle(block)
+
+    def _render_source_positioned_block(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+        bbox: list[float],
+    ) -> str:
+        span_html = self._render_source_span_block(block, page_structure)
+        if span_html:
+            return span_html
+        x0, y0, x1, y1 = bbox
+        left = _pt_to_px(x0)
+        top = _pt_to_px(y0)
+        width = _pt_to_px(max(0.0, x1 - x0))
+        height = _pt_to_px(max(0.0, y1 - y0))
+        inner = self._render_block(block)
+        if not inner:
+            return ""
+        return self._positioned_block_html(
+            block.region_id,
+            left,
+            top,
+            width,
+            height,
+            self._block_text_color(block),
+            inner,
+            self._region_angle(block.region_id, page_structure),
+        )
+
+    def _render_source_span_block(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+    ) -> str:
+        if block.translated_text and block.translated_text.strip() != (block.source_text or "").strip():
+            return ""
+        region = {item.id: item for item in page_structure.text_regions}.get(block.region_id)
+        if region is None or not getattr(region, "lines", None):
+            return ""
+        spans_html: list[str] = []
+        for line in region.lines:
+            for span in getattr(line, "spans", []):
+                text = getattr(span, "text", "")
+                if not text:
+                    continue
+                x0, y0, x1, y1 = span.bbox
+                font_size_px = _pt_to_px(float(span.font_size))
+                style = (
+                    f"left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};"
+                    f"width:{_pt_to_px_str(max(0.0, x1 - x0))};"
+                    f"height:{_pt_to_px_str(max(0.0, y1 - y0))};"
+                    f"font-size:{_px(font_size_px)};"
+                    f"line-height:1.05;color:{html.escape(span.color)};"
+                    f"font-weight:{'700' if span.bold else '400'};"
+                    f"font-style:{'italic' if span.italic else 'normal'}"
+                )
+                spans_html.append(
+                    f'<span class="typeset-source-span" '
+                    f'data-region-id="{html.escape(block.region_id)}" '
+                    f'style="{style}">{html.escape(text)}</span>'
+                )
+        if not spans_html:
+            return ""
+        return "".join(spans_html)
 
     def _dedupe_content_blocks(
         self,
@@ -952,15 +1355,18 @@ body {{
         escaped = self._format_text(text)
         if block.role in (SemanticRole.TITLE, SemanticRole.HEADER):
             return f'<h2 class="typeset-reflow-title">{escaped}</h2>'
-        if self._looks_like_subtitle(block):
+        if block.role == SemanticRole.SUBTITLE or self._looks_like_subtitle(block):
             return f'<h3 class="typeset-reflow-subtitle">{escaped}</h3>'
         return f'<p class="typeset-reflow-body">{escaped}</p>'
 
     def _looks_like_subtitle(self, block: ContentBlock) -> bool:
-        text = (block.translated_text or block.source_text or "").strip()
-        if len(text) <= 18 and self._get_block_font_size(block) >= self.config.body_font_size_pt:
+        text = (block.source_text or block.translated_text or "").strip()
+        font_size = self._get_block_font_size(block)
+        if any(run.color.lower() == self.config.subtitle_color.lower() for run in block.runs):
             return True
-        return block.role == SemanticRole.LIST
+        if len(text) <= 32 and font_size >= self.config.body_font_size_pt:
+            return True
+        return block.role in (SemanticRole.SUBTITLE, SemanticRole.LIST)
 
     def _render_positioned_blocks(
         self,
@@ -1006,22 +1412,72 @@ body {{
             if not inner:
                 continue
 
-            parts.append(
-                f'<div class="typeset-positioned-block" '
-                f'data-region-id="{html.escape(block.region_id)}" '
-                f'data-fit="text" '
-                f'style="left:{_px(left)};top:{_px(top)};'
-                f'width:{_px(width)};height:{_px(height)};'
-                f'color:{html.escape(color)}">'
-                f"{inner}</div>"
-            )
+            parts.append(self._positioned_block_html(
+                block.region_id, left, top, width, height, color, inner,
+                self._region_angle(block.region_id, page_structure),
+            ))
             consumed.add(block.id)
         return "\n".join(parts)
+
+    def _render_positioned_single_block(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+        bbox: list[float],
+    ) -> str:
+        x0, y0, x1, y1 = bbox
+        left = _pt_to_px(x0)
+        top = _pt_to_px(y0)
+        width = _pt_to_px(max(0.0, x1 - x0))
+        height = _pt_to_px(max(0.0, y1 - y0))
+        inner = self._render_block(block)
+        if not inner:
+            return ""
+        return self._positioned_block_html(
+            block.region_id,
+            left,
+            top,
+            width,
+            height,
+            self._block_text_color(block),
+            inner,
+            self._region_angle(block.region_id, page_structure),
+        )
+
+    def _positioned_block_html(
+        self,
+        region_id: str,
+        left: float,
+        top: float,
+        width: float,
+        height: float,
+        color: str,
+        inner: str,
+        angle: float = 0.0,
+    ) -> str:
+        transform = ""
+        if abs(angle) >= 1.0:
+            transform = f"transform-origin:0 0;transform:rotate({angle:.3f}deg);"
+        return (
+            f'<div class="typeset-positioned-block" '
+            f'data-region-id="{html.escape(region_id)}" '
+            f'data-fit="text" '
+            f'style="left:{_px(left)};top:{_px(top)};'
+            f'width:{_px(width)};height:{_px(height)};'
+            f'color:{html.escape(color)};{transform}">'
+            f"{inner}</div>"
+        )
 
     def _is_flow_body_block(self, block: ContentBlock) -> bool:
         if block.role != SemanticRole.BODY_COLUMN:
             return False
         return self._get_block_font_size(block) < self.config.body_font_size_pt * 1.25
+
+    def _region_angle(self, region_id: str, page_structure: PageStructure) -> float:
+        for region in page_structure.text_regions:
+            if region.id == region_id:
+                return float(getattr(region, "angle", 0.0) or 0.0)
+        return 0.0
 
     def _collect_flow_group(
         self,
@@ -1231,6 +1687,10 @@ body {{
 
     def _block_text_color(self, block: ContentBlock) -> str:
         """Pick the source text color that should carry over to translated text."""
+        if block.role == SemanticRole.TITLE:
+            return self.config.title_color
+        if block.role == SemanticRole.SUBTITLE or self._looks_like_subtitle(block):
+            return self.config.subtitle_color
         for run in block.runs:
             if run.text.strip() and run.color:
                 return run.color
@@ -1249,6 +1709,8 @@ body {{
         # Check if this is a heading
         if self._is_heading(block_font_size_pt) or block.role == SemanticRole.TITLE:
             return self._render_heading_block(block, text, block_font_size_pt)
+        if block.role == SemanticRole.SUBTITLE:
+            return self._render_subtitle_block(block, text, block_font_size_pt)
         else:
             return self._render_body_block(block, text, block_font_size_pt)
 
@@ -1277,6 +1739,18 @@ body {{
             f'style="font-size:{_px(font_size_px)}">'
             f"{escaped_text}"
             f"</{tag}>"
+        )
+
+    def _render_subtitle_block(
+        self, block: ContentBlock, text: str, font_size_pt: float
+    ) -> str:
+        font_size_px = _pt_to_px(max(font_size_pt, self.config.body_font_size_pt * 1.2))
+        escaped_text = self._format_text(text)
+        return (
+            f'<h3 class="typeset-heading typeset-source-subtitle" '
+            f'data-block-id="{html.escape(block.id)}" '
+            f'style="font-size:{_px(font_size_px)}">'
+            f"{escaped_text}</h3>"
         )
 
     def _render_body_block(

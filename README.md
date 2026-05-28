@@ -153,7 +153,7 @@ python export_replica_pdf.py "output/book.translated.layout.json" -o "output/boo
 ```
 
 当前阶段支持坐标提取、原页底图、自动翻译、译文回填、HTML 检查、自动缩字、溢出报告和 PDF 导出。
-后续会继续补原文遮盖和浏览器真实排版报告，开发计划见 `REPLICA_PDF_LAYOUT_PLAN.md`。
+后续会继续补原文遮盖和浏览器真实排版报告，开发计划见 `docs/plans/REPLICA_PDF_LAYOUT_PLAN.md`。
 
 ## Web 使用流程
 

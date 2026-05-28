@@ -44,6 +44,7 @@ class ImageElement:
     image_path: str            # 相对路径，如 "assets/typeset_images/p0001_img0001.png"
     width_px: int              # 图片像素宽度
     height_px: int             # 图片像素高度
+    transform: list[float] | None = None
 
 
 @dataclass(frozen=True)
@@ -60,12 +61,40 @@ class DecorationElement:
 
 
 @dataclass(frozen=True)
+class TextSpanBBox:
+    """A source text span with geometry and style."""
+
+    bbox: list[float]
+    text: str
+    font_size: float
+    bold: bool
+    italic: bool
+    color: str
+
+
+@dataclass(frozen=True)
+class TextLineBBox:
+    """A source text line with geometry and dominant style."""
+
+    bbox: list[float]
+    text: str
+    font_size: float
+    bold: bool
+    italic: bool
+    color: str
+    angle: float = 0.0
+    spans: list[TextSpanBBox] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class TextRegionBBox:
     """文本区域边界框。"""
 
     id: str                    # 如 "p0001_r0001"
     bbox: list[float]          # [x0, y0, x1, y1]
     block_ids: list[str]       # 对应的 layout.json 文本块 ID 列表
+    angle: float = 0.0
+    lines: list[TextLineBBox] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -117,6 +146,7 @@ class SemanticRole(Enum):
 
     BODY_COLUMN = "body_column"
     TITLE = "title"
+    SUBTITLE = "subtitle"
     HEADER = "header"
     FOOTER = "footer"
     FOOTNOTE = "footnote"
@@ -213,13 +243,19 @@ class PageContentDocument:
 class TypesetConfig:
     """纯重绘管线配置。"""
 
-    font_family: str = "Noto Serif SC"
-    fallback_fonts: list[str] = field(default_factory=lambda: ["Source Han Serif CN", "SimSun", "serif"])
-    body_font_size_pt: float = 11.0
-    min_body_font_size_pt: float = 10.0
+    font_family: str = "FandolSong"
+    fallback_fonts: list[str] = field(default_factory=lambda: ["FandolSong-Regular", "Noto Serif SC", "Source Han Serif CN", "SimSun", "serif"])
+    heading_font_family: str = "FZZJ-MSMLJW"
+    heading_fallback_fonts: list[str] = field(default_factory=lambda: ["FandolHei", "Noto Serif CJK SC", "SimHei", "sans-serif"])
+    body_font_size_pt: float = 10.9
+    min_body_font_size_pt: float = 8.0
     line_height: float = 1.6
-    column_gap_pt: float = 20.0
+    column_gap_pt: float = 30.0
     text_indent: str = "2em"
+    title_color: str = "#000000"
+    subtitle_color: str = "#ed1c24"
+    body_color: str = "#111111"
+    translation_concurrency: int = 4
 
 
 @dataclass
@@ -256,6 +292,7 @@ def _page_structure_document_from_dict(data: dict[str, Any]) -> PageStructureDoc
                 image_path=img["image_path"],
                 width_px=img["width_px"],
                 height_px=img["height_px"],
+                transform=img.get("transform"),
             )
             for img in p["images"]
         ]
@@ -276,6 +313,30 @@ def _page_structure_document_from_dict(data: dict[str, Any]) -> PageStructureDoc
                 id=tr["id"],
                 bbox=tr["bbox"],
                 block_ids=tr["block_ids"],
+                angle=float(tr.get("angle", 0.0)),
+                lines=[
+                    TextLineBBox(
+                        bbox=line["bbox"],
+                        text=line.get("text", ""),
+                        font_size=float(line.get("font_size", 11.0)),
+                        bold=bool(line.get("bold", False)),
+                        italic=bool(line.get("italic", False)),
+                        color=line.get("color", "#000000"),
+                        angle=float(line.get("angle", 0.0)),
+                        spans=[
+                            TextSpanBBox(
+                                bbox=span["bbox"],
+                                text=span.get("text", ""),
+                                font_size=float(span.get("font_size", line.get("font_size", 11.0))),
+                                bold=bool(span.get("bold", line.get("bold", False))),
+                                italic=bool(span.get("italic", line.get("italic", False))),
+                                color=span.get("color", line.get("color", "#000000")),
+                            )
+                            for span in line.get("spans", [])
+                        ],
+                    )
+                    for line in tr.get("lines", [])
+                ],
             )
             for tr in p["text_regions"]
         ]

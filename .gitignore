@@ -1,9 +1,12 @@
 *.pyc
 __pycache__/
+.pytest_cache/
 .venv/
 .streamlit/
 .codex_logs/
 uploads/
 output/
+scratch/
+.kiro/steering/
 diag_*.py
 test_card_*.py
