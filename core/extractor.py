@@ -132,21 +132,33 @@ class PDFExtractor:
         return list(self._page_image_regions.get(page_num, []))
 
     def export_page_images(self, page_num: int, output_dir: str, stem: str,
-                           zoom: float = 2.0) -> list[str]:
+                           zoom: float = 2.0) -> list[dict]:
         regions = self.get_image_regions(page_num)
         if not regions:
             return []
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         page = self.doc[page_num]
-        paths = []
+        assets = []
         matrix = pymupdf.Matrix(float(zoom), float(zoom))
         for idx, rect in enumerate(regions, start=1):
             path = out_dir / f"{stem}_p{page_num + 1:04d}_img{idx}.png"
             pix = page.get_pixmap(matrix=matrix, clip=rect, alpha=False)
             pix.save(str(path))
-            paths.append(str(path))
-        return paths
+            placement = self._image_region_placement(rect, page.rect.width)
+            assets.append({
+                "path": str(path),
+                "bbox": [round(float(rect.x0), 3), round(float(rect.y0), 3),
+                         round(float(rect.x1), 3), round(float(rect.y1), 3)],
+                "placement": placement,
+            })
+        return assets
+
+    def _image_region_placement(self, rect, page_width: float) -> str:
+        if rect.width >= page_width * 0.54:
+            return "full"
+        center = (rect.x0 + rect.x1) / 2
+        return "left" if center < page_width / 2 else "right"
 
     def get_page_diagnostics(self, page_num: int, text: str = "") -> dict:
         notes = self.get_layout_notes(page_num)
@@ -1126,6 +1138,7 @@ class PDFExtractor:
             and drawing_count >= 8
             and single_line_ratio >= 0.45
             and short_block_ratio >= 0.35
+            and not has_two_column_signal
         ):
             return "character"
         if has_two_column_signal and full_width_ratio < 0.45:
@@ -1134,7 +1147,7 @@ class PDFExtractor:
         # 检测整页都是非正文字体的情况（如整页卡片/情报页）
         # 如果页面没有任何衬线体正文块，说明整页都是特殊排版，用单栏
         body_fonts = self._page_body_fonts(content_blocks, page_width)
-        if not body_fonts and len(content_blocks) >= 3:
+        if not body_fonts and len(content_blocks) >= 3 and not has_two_column_signal:
             # 没有找到正文字体，检查是否所有块都用同一种非衬线字体
             all_fonts = set()
             for block in content_blocks:
@@ -1148,7 +1161,7 @@ class PDFExtractor:
         # 这通常是卡片/信息框页面的特征，应该用单栏
         if len(content_blocks) >= 15:
             single_line_blocks = sum(1 for b in content_blocks if self._block_line_count(b) == 1)
-            if single_line_blocks >= len(content_blocks) * 0.7:
+            if single_line_blocks >= len(content_blocks) * 0.7 and not has_two_column_signal:
                 return "single"
 
         # 检测整页都是非衬线字体的情况（无 Sabon/Times 等衬线体）
@@ -1160,7 +1173,7 @@ class PDFExtractor:
             for f in page_all_fonts
         )
         has_body_text_blocks = any(self._block_line_count(b) >= 3 for b in content_blocks)
-        if not has_serif and has_body_text_blocks and len(content_blocks) >= 3:
+        if not has_serif and has_body_text_blocks and len(content_blocks) >= 3 and not has_two_column_signal:
             return "single"
 
         if full_width_ratio >= 0.45:
@@ -1313,6 +1326,10 @@ class PDFExtractor:
                 return
             if any(self._rect_overlap_ratio(rect, card_rect) > 0.20 for card_rect in card_rects):
                 return
+            if self._image_region_contains_text_layer(rect, content_blocks):
+                return
+            if self._is_textual_image_region(page, rect):
+                return
             regions.append(rect)
 
         for block in page.get_text("dict").get("blocks", []):
@@ -1320,6 +1337,69 @@ class PDFExtractor:
                 add_rect(self._rect_from_bbox(block["bbox"]))
 
         return self._merge_visual_rects(regions, tolerance=8)
+
+    def _image_region_contains_text_layer(self, rect, content_blocks) -> bool:
+        text_blocks_inside = 0
+        text_chars_inside = 0
+        text_chars_overlapping = 0
+        overlap_area = 0.0
+        rect_area = max(float(rect.get_area()), 1.0)
+        for block in content_blocks:
+            if block.get("type") != 0:
+                continue
+            text = self._extract_block_text(block).strip()
+            if not text:
+                continue
+            block_rect = self._rect_from_bbox(block.get("bbox", (0, 0, 0, 0)))
+            center = ((block_rect.x0 + block_rect.x1) / 2, (block_rect.y0 + block_rect.y1) / 2)
+            if rect.contains(center):
+                text_blocks_inside += 1
+                text_chars_inside += len(text)
+            intersection = rect & block_rect
+            if not intersection.is_empty:
+                intersection_area = float(intersection.get_area())
+                overlap_area += intersection_area
+                if intersection_area / max(float(block_rect.get_area()), 1.0) >= 0.15:
+                    text_chars_overlapping += len(text)
+
+        if text_blocks_inside >= 3 and text_chars_inside >= 240:
+            return True
+        return overlap_area / rect_area >= 0.25 and text_chars_overlapping >= 120
+
+    def _is_textual_image_region(self, page, rect) -> bool:
+        try:
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(0.45, 0.45), clip=rect, alpha=False)
+        except Exception:
+            return False
+        samples = pix.samples
+        channels = max(1, pix.n)
+        if pix.width <= 0 or pix.height <= 0 or not samples:
+            return False
+        total = pix.width * pix.height
+        if total <= 0:
+            return False
+
+        dark = 0
+        light = 0
+        colorfulness_sum = 0.0
+        step = channels
+        for idx in range(0, len(samples), step):
+            r = samples[idx]
+            g = samples[idx + 1] if channels > 1 else r
+            b = samples[idx + 2] if channels > 2 else r
+            brightness = (int(r) + int(g) + int(b)) / 3.0
+            if brightness < 85:
+                dark += 1
+            if brightness > 210:
+                light += 1
+            colorfulness_sum += max(r, g, b) - min(r, g, b)
+
+        dark_ratio = dark / total
+        light_ratio = light / total
+        colorfulness = colorfulness_sum / total
+        mostly_monochrome = colorfulness < 18
+        text_on_light_card = light_ratio >= 0.45 and 0.015 <= dark_ratio <= 0.24
+        return mostly_monochrome and text_on_light_card
 
     def _interleaved_body_and_card_sections(self, body_blocks, card_groups,
                                             page_width, page_height, image_regions=None) -> list[str]:

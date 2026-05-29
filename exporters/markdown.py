@@ -23,6 +23,12 @@ from exporters._shared import (
 # Markdown-specific helpers
 # ---------------------------------------------------------------------------
 
+def _image_asset_path(asset) -> str:
+    if isinstance(asset, dict):
+        return str(asset.get("path") or "")
+    return str(asset or "")
+
+
 def _format_markdown_block(text: str, image_paths=None, image_cursor=None, md_output: str = "") -> str:
     lines = []
     in_full_title = False
@@ -51,7 +57,7 @@ def _format_markdown_block(text: str, image_paths=None, image_cursor=None, md_ou
             if image_paths is not None and image_cursor is not None:
                 cursor = image_cursor[0]
                 if cursor < len(image_paths):
-                    image_path = image_paths[cursor]
+                    image_path = _image_asset_path(image_paths[cursor])
                 image_cursor[0] = cursor + 1
             if image_path:
                 try:

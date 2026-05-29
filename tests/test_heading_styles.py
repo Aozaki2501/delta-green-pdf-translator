@@ -142,6 +142,38 @@ def test_image_region_uses_image_marker():
     assert sections == ["[IMAGE]\nIllustration placeholder\n[/IMAGE]"]
 
 
+def test_text_layer_over_image_region_is_not_exported_as_art():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    rect = extractor._rect_from_bbox((80, 100, 540, 360))
+    blocks = [
+        _block("A long table or card line that is real selectable text.", 100, 120 + idx * 36, 500, 138 + idx * 36)
+        for idx in range(6)
+    ]
+
+    assert extractor._image_region_contains_text_layer(rect, blocks)
+
+
+def test_overlapping_text_layer_without_centers_blocks_image_export():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    rect = extractor._rect_from_bbox((120, 100, 360, 220))
+    blocks = [
+        _block("Selectable text overlaps the raster card and should not be exported.", 40, 112 + idx * 24, 320, 130 + idx * 24)
+        for idx in range(4)
+    ]
+
+    assert extractor._image_region_contains_text_layer(rect, blocks)
+
+
+def test_sparse_caption_does_not_block_image_export():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    rect = extractor._rect_from_bbox((80, 100, 540, 360))
+    blocks = [
+        _block("Figure 1.", 210, 330, 330, 346),
+    ]
+
+    assert not extractor._image_region_contains_text_layer(rect, blocks)
+
+
 def test_extraction_diagnostics_report_lists_risks():
     report = build_extraction_diagnostics_report([
         {
@@ -233,6 +265,35 @@ class _FakePage:
 
     def get_images(self, full=True):
         return []
+
+
+class _FakeRect:
+    width = 612
+    height = 792
+
+
+class _FakeLayoutPage:
+    rect = _FakeRect()
+
+    def __init__(self, blocks):
+        self._blocks = blocks
+
+    def get_text(self, kind, flags=0):
+        return {"blocks": self._blocks}
+
+    def get_drawings(self):
+        return []
+
+    def get_images(self, full=True):
+        return []
+
+
+class _FakeDoc:
+    def __init__(self, pages):
+        self._pages = pages
+
+    def __getitem__(self, index):
+        return self._pages[index]
 
 
 def test_card_grouping_does_not_swallow_other_column_heading():
@@ -347,3 +408,14 @@ def test_markdown_table_does_not_merge_with_following_body():
     assert "| Keith Bass | Editor | Scruffy socialist |" in text
     assert "| Keith Bass | Editor | Scruffy socialist | meet them alone" not in text
     assert "\n\nmeet them alone" in text
+
+
+def test_two_column_single_line_blocks_stay_columns():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    blocks = []
+    for idx in range(8):
+        blocks.append(_block(f"Left column line {idx} keeps flowing.", 54, 110 + idx * 22, 270, 124 + idx * 22, font="Futura"))
+        blocks.append(_block(f"Right column line {idx} keeps flowing.", 330, 110 + idx * 22, 550, 124 + idx * 22, font="Futura"))
+    extractor.doc = _FakeDoc([_FakeLayoutPage(blocks)])
+
+    assert extractor.detect_page_layout(0) == "columns"

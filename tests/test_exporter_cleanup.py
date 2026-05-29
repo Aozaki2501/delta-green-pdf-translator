@@ -7,7 +7,7 @@ from exporters._shared import (
 )
 from exporters.markdown import _format_markdown_block
 from exporters.html import _html_block
-from exporters.word import _split_card_segments
+from exporters.word import _split_card_segments, _image_asset_path, _image_asset_placement
 
 
 def test_soft_wrapped_chinese_lines_are_merged():
@@ -82,8 +82,40 @@ def test_html_uses_extracted_image_asset():
         html_output="output/book.html",
     )
 
-    assert 'class="source-image"' in html
+    assert 'class="source-image source-image-full"' in html
     assert 'src="assets/page.png"' in html
+
+
+def test_html_uses_image_asset_placement():
+    html = _html_block(
+        "[IMAGE]\nIllustration placeholder\n[/IMAGE]",
+        image_paths=[{"path": "output/assets/page.png", "placement": "right"}],
+        image_cursor=[0],
+        html_output="output/book.html",
+    )
+
+    assert 'class="source-image source-image-right"' in html
+    assert 'src="assets/page.png"' in html
+
+
+def test_markdown_uses_image_asset_dict_path():
+    markdown = _format_markdown_block(
+        "[IMAGE]\nIllustration placeholder\n[/IMAGE]",
+        image_paths=[{"path": "output/assets/page.png", "placement": "left"}],
+        image_cursor=[0],
+        md_output="output/book.md",
+    )
+
+    assert "![图片](assets/page.png)" in markdown
+
+
+def test_word_image_asset_helpers_accept_dict_and_old_path():
+    asset = {"path": "output/assets/page.png", "placement": "left"}
+
+    assert _image_asset_path(asset) == "output/assets/page.png"
+    assert _image_asset_placement(asset) == "left"
+    assert _image_asset_path("output/assets/page.png") == "output/assets/page.png"
+    assert _image_asset_placement("output/assets/page.png") == "full"
 
 
 def test_word_segments_stat_and_image_blocks():

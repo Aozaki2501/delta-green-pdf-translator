@@ -176,14 +176,30 @@ def _relative_asset_path(asset_path: str, output_path: str) -> str:
         return Path(asset_path).as_posix()
 
 
-def _html_image_placeholder(lines: list[str], image_path: str = "", html_output: str = "") -> str:
+def _image_asset_path(asset) -> str:
+    if isinstance(asset, dict):
+        return str(asset.get("path") or "")
+    return str(asset or "")
+
+
+def _image_asset_placement(asset) -> str:
+    if isinstance(asset, dict):
+        placement = str(asset.get("placement") or "full").lower()
+        if placement in {"left", "right", "full"}:
+            return placement
+    return "full"
+
+
+def _html_image_placeholder(lines: list[str], image_path="", html_output: str = "") -> str:
     label = " ".join(line.strip() for line in lines if line.strip()) or "插图"
     if label.lower() == "illustration placeholder":
         label = "插图"
-    if image_path:
-        src = html.escape(_relative_asset_path(image_path, html_output))
+    asset_path = _image_asset_path(image_path)
+    if asset_path:
+        src = html.escape(_relative_asset_path(asset_path, html_output))
+        placement = _image_asset_placement(image_path)
         return (
-            '<figure class="source-image">'
+            f'<figure class="source-image source-image-{placement}">'
             f'<img src="{src}" alt="{_html_inline(label)}">'
             f'<figcaption>{_html_inline(label)}</figcaption>'
             '</figure>'
@@ -608,10 +624,28 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         text-align: center;
     }}
     .source-image {{
-        column-span: all;
         margin: 0.16in 0 0.22in;
         break-inside: avoid;
         page-break-inside: avoid;
+    }}
+    .source-image-full {{
+        column-span: all;
+    }}
+    .source-image-left,
+    .source-image-right {{
+        column-span: none;
+        width: 48%;
+        max-width: 2.8in;
+        margin-top: 0.04in;
+        margin-bottom: 0.12in;
+    }}
+    .source-image-left {{
+        float: left;
+        margin-right: 0.14in;
+    }}
+    .source-image-right {{
+        float: right;
+        margin-left: 0.14in;
     }}
     .source-image img {{
         display: block;

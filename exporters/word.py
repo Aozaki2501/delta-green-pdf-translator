@@ -128,6 +128,20 @@ def _columns_for_layout(layout: str, default_columns: int) -> int:
     return int(default_columns) if _layout_uses_columns(layout) else 1
 
 
+def _image_asset_path(asset) -> str:
+    if isinstance(asset, dict):
+        return str(asset.get("path") or "")
+    return str(asset or "")
+
+
+def _image_asset_placement(asset) -> str:
+    if isinstance(asset, dict):
+        placement = str(asset.get("placement") or "full").lower()
+        if placement in {"left", "right", "full"}:
+            return placement
+    return "full"
+
+
 def _add_word_field(paragraph, instruction: str):
     run = paragraph.add_run()
     fld_begin = OxmlElement("w:fldChar")
@@ -714,19 +728,34 @@ def _write_word_stat_block(doc, text: str):
         p_pr.append(borders)
 
 
-def _write_word_image_placeholder(doc, text: str, image_path: str = ""):
+def _write_word_image_placeholder(doc, text: str, image_path="", placement: str = "full"):
     label = " ".join(line.strip() for line in text.splitlines() if line.strip()) or "插图"
     if label.lower() == "illustration placeholder":
         label = "插图"
-    if image_path:
-        if not os.path.exists(image_path):
+    asset_path = _image_asset_path(image_path)
+    placement = placement if placement in {"left", "right", "full"} else "full"
+    if asset_path:
+        if not os.path.exists(asset_path):
             raise FileNotFoundError(f"图片资源不存在：{image_path}")
         p = doc.add_paragraph()
         p.paragraph_format.first_line_indent = Pt(0)
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.add_run().add_picture(image_path, width=Inches(6.6))
+        if placement == "left":
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            image_width = Inches(3.05)
+        elif placement == "right":
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            image_width = Inches(3.05)
+        else:
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            image_width = Inches(6.6)
+        p.add_run().add_picture(asset_path, width=image_width)
         caption = doc.add_paragraph(label)
-        caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if placement == "left":
+            caption.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        elif placement == "right":
+            caption.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        else:
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
         caption.paragraph_format.first_line_indent = Pt(0)
         caption.paragraph_format.space_before = Pt(2)
         caption.paragraph_format.space_after = Pt(8)
@@ -880,16 +909,20 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "image":
-                    image_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(image_section, columns=1)
                     source_page = block.get("source_page")
                     image_paths = (image_assets or {}).get(source_page, [])
                     cursor = image_cursors.setdefault(source_page, 0)
-                    image_path = image_paths[cursor] if cursor < len(image_paths) else ""
+                    image_asset = image_paths[cursor] if cursor < len(image_paths) else ""
                     image_cursors[source_page] = cursor + 1
-                    _write_word_image_placeholder(doc, content, image_path)
-                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=page_columns)
+                    placement = _image_asset_placement(image_asset)
+                    if placement == "full":
+                        image_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                        set_section_page_layout(image_section, columns=1)
+                        _write_word_image_placeholder(doc, content, image_asset, placement)
+                        body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                        set_section_page_layout(body_section, columns=page_columns)
+                    else:
+                        _write_word_image_placeholder(doc, content, image_asset, placement)
                 elif kind == "full_title":
                     doc.add_page_break()
                     title_section = doc.add_section(WD_SECTION.CONTINUOUS)
