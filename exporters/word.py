@@ -14,11 +14,18 @@ from typing import Optional
 
 from exporters._shared import (
     _is_plain_heading_line,
+    _is_soft_subheading_line,
+    _is_markdown_table_separator_row,
     _looks_like_stat_block,
     paginate_translated_blocks,
     _layout_uses_columns,
     _normalize_heading_markup,
     _normalize_marker_line,
+    _display_title,
+    _header_title as _shared_header_title,
+    _looks_like_markdown_table_row,
+    _strip_list_marker,
+    _strip_quote_prefix,
 )
 from core.utils import ensure_output_parent
 
@@ -143,10 +150,7 @@ def _add_page_number(paragraph):
 
 
 def _header_title(title: str) -> str:
-    clean = re.sub(r"[_]+", " ", title).strip()
-    if " - " in clean:
-        clean = clean.split(" - ", 1)[1].strip()
-    return clean[:32]
+    return _shared_header_title(title)
 
 
 def clear_header_footer_part(part):
@@ -279,8 +283,22 @@ def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1
 
 def _is_table_line(line: str) -> bool:
     """Check if a line is part of a Markdown table."""
-    stripped = line.strip()
-    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3
+    return _looks_like_markdown_table_row(line)
+
+
+def _table_cells(line: str) -> list[str]:
+    stripped = _strip_quote_prefix(line).strip().strip("|")
+    cells = [cell.strip() for cell in stripped.split("|")]
+    return [re.sub(r"^#{1,6}\s*", "", cell).strip() for cell in cells]
+
+
+def _plain_text(line: str) -> str:
+    clean = _strip_quote_prefix(line)
+    clean = _normalize_heading_markup(clean)
+    clean = _normalize_marker_line(clean)
+    clean = re.sub(r"\*\*(.+?)\*\*", r"\1", clean)
+    clean = re.sub(r"\*(.+?)\*", r"\1", clean)
+    return clean.strip()
 
 
 def _split_card_segments(text: str):
@@ -294,10 +312,12 @@ def _split_card_segments(text: str):
     image_lines = []
     full_title_lines = []
     table_lines = []
+    quote_lines = []
     in_card = False
     in_stat = False
     in_image = False
     in_full_title = False
+    in_quote = False
 
     def flush_normal():
         nonlocal normal_lines
@@ -335,14 +355,32 @@ def _split_card_segments(text: str):
             segments.append(("table", "\n".join(table_lines).strip()))
         table_lines = []
 
+    def flush_quote():
+        nonlocal quote_lines
+        if any(line.strip() for line in quote_lines):
+            segments.append(("card", "\n".join(quote_lines).strip()))
+        quote_lines = []
+
     for raw_line in text.splitlines():
         line = _normalize_marker_line(raw_line)
+        stripped = line.strip()
+        if in_quote and not stripped:
+            quote_lines.append("")
+            continue
+        if in_quote and stripped.startswith(">"):
+            quote_lines.append(_strip_quote_prefix(raw_line))
+            continue
+        if in_quote:
+            flush_quote()
+            in_quote = False
+
         if line == "[FULL_WIDTH_TITLE]":
             flush_normal()
             flush_table()
             flush_card()
             flush_stat()
             flush_image()
+            flush_quote()
             in_full_title = True
             continue
         if line == "[/FULL_WIDTH_TITLE]":
@@ -352,6 +390,7 @@ def _split_card_segments(text: str):
         if line == "[CARD]":
             flush_normal()
             flush_table()
+            flush_quote()
             in_card = True
             continue
         if line == "[/CARD]":
@@ -361,6 +400,7 @@ def _split_card_segments(text: str):
         if line == "[STAT_BLOCK]":
             flush_normal()
             flush_table()
+            flush_quote()
             in_stat = True
             continue
         if line == "[/STAT_BLOCK]":
@@ -370,6 +410,7 @@ def _split_card_segments(text: str):
         if line == "[IMAGE]":
             flush_normal()
             flush_table()
+            flush_quote()
             in_image = True
             continue
         if line == "[/IMAGE]":
@@ -387,6 +428,13 @@ def _split_card_segments(text: str):
             continue
         if in_full_title:
             full_title_lines.append(raw_line)
+            continue
+
+        if stripped.startswith(">"):
+            flush_normal()
+            flush_table()
+            in_quote = True
+            quote_lines.append(_strip_quote_prefix(raw_line))
             continue
 
         # Detect table lines
@@ -407,6 +455,8 @@ def _split_card_segments(text: str):
         flush_stat()
     elif in_image:
         flush_image()
+    elif in_quote:
+        flush_quote()
     else:
         flush_table()
         flush_normal()
@@ -423,15 +473,13 @@ def _write_word_block(doc, text: str, layout: str = "columns"):
         if centered:
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    for line in text.split("\n"):
-        line = line.strip()
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
         if not line or line == "---" or line.startswith("<!--"):
             continue
-        line = _normalize_heading_markup(line)
-        line = _normalize_marker_line(line)
-
-        clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-        clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
+        clean_line = _plain_text(raw_line)
+        if not clean_line:
+            continue
 
         if clean_line.startswith("#### "):
             p = doc.add_heading(clean_line[5:], level=4)
@@ -449,23 +497,16 @@ def _write_word_block(doc, text: str, layout: str = "columns"):
             p = doc.add_heading(clean_line[2:], level=1)
             p.paragraph_format.first_line_indent = Pt(0)
             tune_paragraph(p)
-        elif clean_line.startswith(">"):
-            card_text = clean_line.lstrip(">").strip()
-            if not card_text:
-                continue
-            p = doc.add_paragraph(card_text)
-            p.paragraph_format.left_indent = Pt(14)
-            p.paragraph_format.right_indent = Pt(8)
-            p.paragraph_format.first_line_indent = Pt(0)
-            _set_paragraph_left_rule(p)
-            _set_paragraph_shading(p)
-            tune_paragraph(p)
         elif _is_plain_heading_line(clean_line):
             p = doc.add_heading(clean_line, level=2)
             p.paragraph_format.first_line_indent = Pt(0)
             tune_paragraph(p)
-        elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
-            p = doc.add_paragraph(clean_line[2:], style="List Bullet")
+        elif _is_soft_subheading_line(clean_line):
+            p = doc.add_heading(clean_line, level=4)
+            p.paragraph_format.first_line_indent = Pt(0)
+            tune_paragraph(p)
+        elif (list_item := _strip_list_marker(clean_line)):
+            p = doc.add_paragraph(list_item, style="List Bullet")
             p.paragraph_format.first_line_indent = Pt(-8)
             tune_paragraph(p)
         else:
@@ -479,21 +520,21 @@ def _write_word_table(doc, text: str):
     if len(lines) < 2:
         # Not enough lines for a table, fall back to plain text
         for line in lines:
-            doc.add_paragraph(line.strip("| "))
+            doc.add_paragraph(_strip_quote_prefix(line).strip("| "))
         return
 
     # Parse header
-    header_cells = [cell.strip() for cell in lines[0].strip("|").split("|")]
+    header_cells = _table_cells(lines[0])
 
     # Skip separator line (e.g. |---|---|---|)
     data_start = 1
-    if len(lines) > 1 and re.fullmatch(r"\|[\s:|-]+\|", lines[1]):
+    if len(lines) > 1 and _is_markdown_table_separator_row(lines[1]):
         data_start = 2
 
     # Parse data rows
     data_rows = []
     for line in lines[data_start:]:
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        cells = _table_cells(line)
         data_rows.append(cells)
 
     col_count = len(header_cells)
@@ -532,6 +573,30 @@ def _write_word_table(doc, text: str):
     doc.add_paragraph()
 
 
+def _set_paragraph_runs(paragraph, *, font_name="宋体", font_size=10.5, bold=False):
+    for run in paragraph.runs:
+        run.font.name = font_name
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+        run.font.size = Pt(font_size)
+        if bold:
+            run.bold = True
+
+
+def _style_card_paragraph(paragraph, *, title=False, subheading=False, list_item=False):
+    paragraph.paragraph_format.left_indent = Pt(20 if list_item else 12)
+    paragraph.paragraph_format.right_indent = Pt(12)
+    paragraph.paragraph_format.first_line_indent = Pt(-12 if list_item else 0)
+    paragraph.paragraph_format.space_before = Pt(6 if title else 0)
+    paragraph.paragraph_format.space_after = Pt(3)
+    _set_paragraph_left_rule(paragraph)
+    _set_paragraph_shading(paragraph)
+    _set_paragraph_runs(
+        paragraph,
+        font_size=11 if title else (10.8 if subheading else 10.3),
+        bold=title or subheading,
+    )
+
+
 def _set_paragraph_left_rule(paragraph, color="B0891C"):
     p_pr = paragraph._p.get_or_add_pPr()
     borders = p_pr.find(qn("w:pBdr"))
@@ -558,27 +623,59 @@ def _set_paragraph_shading(paragraph, fill="FFF7D6"):
 
 
 def _write_word_card(doc, text: str):
-    for idx, line in enumerate(text.split("\n")):
-        clean_line = line.strip()
-        if not clean_line:
+    clean_lines = [_plain_text(line) for line in text.split("\n")]
+    clean_lines = [line for line in clean_lines if line]
+    if not clean_lines:
+        return
+
+    idx = 0
+    first = re.sub(r"^#{1,6}\s*", "", clean_lines[0]).strip()
+    if len(re.sub(r"\s+", "", first)) <= 80:
+        p = doc.add_paragraph(first)
+        _style_card_paragraph(p, title=True)
+        idx = 1
+
+    while idx < len(clean_lines):
+        clean_line = clean_lines[idx]
+        if _is_table_line(clean_line):
+            table_lines = [clean_line]
+            idx += 1
+            while idx < len(clean_lines):
+                peek = clean_lines[idx]
+                if _is_table_line(peek) or _is_markdown_table_separator_row(peek):
+                    table_lines.append(peek)
+                    idx += 1
+                    continue
+                break
+            _write_word_table(doc, "\n".join(table_lines))
             continue
-        clean_line = re.sub(r"^#{1,6}\s*", "", clean_line)
-        clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", clean_line)
-        clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
-        p = doc.add_paragraph(clean_line)
-        p.paragraph_format.left_indent = Pt(12)
-        p.paragraph_format.right_indent = Pt(12)
-        p.paragraph_format.first_line_indent = Pt(0)
-        p.paragraph_format.space_before = Pt(6 if idx == 0 else 0)
-        p.paragraph_format.space_after = Pt(3)
-        _set_paragraph_left_rule(p)
-        _set_paragraph_shading(p)
-        for run in p.runs:
-            run.font.name = "宋体"
-            run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-            run.font.size = Pt(10.5)
-            if idx == 0:
-                run.bold = True
+
+        list_item = _strip_list_marker(clean_line)
+        if list_item:
+            items = [list_item]
+            idx += 1
+            while idx < len(clean_lines):
+                peek = clean_lines[idx]
+                next_item = _strip_list_marker(peek)
+                if next_item:
+                    items.append(next_item)
+                    idx += 1
+                    continue
+                break
+            for item in items:
+                p = doc.add_paragraph(item, style="List Bullet")
+                _style_card_paragraph(p, list_item=True)
+            continue
+
+        if re.match(r"^#{1,6}\s+", clean_line) or _is_soft_subheading_line(clean_line):
+            p = doc.add_paragraph(re.sub(r"^#{1,6}\s*", "", clean_line).strip())
+            _style_card_paragraph(p, subheading=True)
+            idx += 1
+            continue
+
+        p = doc.add_paragraph(re.sub(r"^#{1,6}\s*", "", clean_line).strip())
+        _style_card_paragraph(p)
+        idx += 1
 
 
 def _write_word_stat_block(doc, text: str):
@@ -618,6 +715,9 @@ def _write_word_stat_block(doc, text: str):
 
 
 def _write_word_image_placeholder(doc, text: str, image_path: str = ""):
+    label = " ".join(line.strip() for line in text.splitlines() if line.strip()) or "插图"
+    if label.lower() == "illustration placeholder":
+        label = "插图"
     if image_path:
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"图片资源不存在：{image_path}")
@@ -625,6 +725,12 @@ def _write_word_image_placeholder(doc, text: str, image_path: str = ""):
         p.paragraph_format.first_line_indent = Pt(0)
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p.add_run().add_picture(image_path, width=Inches(6.6))
+        caption = doc.add_paragraph(label)
+        caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        caption.paragraph_format.first_line_indent = Pt(0)
+        caption.paragraph_format.space_before = Pt(2)
+        caption.paragraph_format.space_after = Pt(8)
+        _set_paragraph_runs(caption, font_name="宋体", font_size=9)
         return
     table = doc.add_table(rows=1, cols=1)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -640,7 +746,12 @@ def _write_word_image_placeholder(doc, text: str, image_path: str = ""):
     para.paragraph_format.space_before = Pt(0)
     para.paragraph_format.space_after = Pt(0)
     para.add_run(" ")
-    doc.add_paragraph()
+    caption = doc.add_paragraph(label)
+    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    caption.paragraph_format.first_line_indent = Pt(0)
+    caption.paragraph_format.space_before = Pt(2)
+    caption.paragraph_format.space_after = Pt(8)
+    _set_paragraph_runs(caption, font_name="宋体", font_size=9)
 
 
 def _write_word_full_title(doc, text: str):
@@ -707,26 +818,6 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
         raise ValueError("Word 行距超出支持范围")
     ensure_output_parent(docx_output)
     translated_pages = _with_missing_image_placeholders(translated_pages, source_pages_text)
-
-    doc = DocxDocument()
-    set_document_base_layout(doc, columns=1, body_font_size=body_font_size, line_spacing=line_spacing)
-
-    title_para = doc.add_heading(title.upper(), level=1)
-    title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-    if subtitle:
-        subtitle_para = doc.add_paragraph(subtitle)
-        subtitle_para.style = doc.styles["Normal"]
-        subtitle_para.paragraph_format.first_line_indent = Pt(0)
-        if subtitle_para.runs:
-            subtitle_para.runs[0].font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
-            subtitle_para.runs[0].font.bold = True
-        doc.add_paragraph()
-
-    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-    set_section_page_layout(body_section, columns=columns)
-    set_running_header_footer(doc, title, header_left=header_left, header_right=header_right)
-
     reading_pages = paginate_translated_blocks(
         translated_pages,
         min_chars,
@@ -734,6 +825,32 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
         page_layouts=page_layouts,
         split_on_layout=True,
     )
+    display_title = _display_title(title, reading_pages)
+
+    doc = DocxDocument()
+    set_document_base_layout(doc, columns=1, body_font_size=body_font_size, line_spacing=line_spacing)
+
+    title_para = doc.add_heading(display_title, level=1)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_para.paragraph_format.first_line_indent = Pt(0)
+    title_para.paragraph_format.space_before = Pt(120)
+    title_para.paragraph_format.space_after = Pt(18)
+
+    if subtitle:
+        subtitle_para = doc.add_paragraph(subtitle)
+        subtitle_para.style = doc.styles["Normal"]
+        subtitle_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        subtitle_para.paragraph_format.first_line_indent = Pt(0)
+        subtitle_para.paragraph_format.space_after = Pt(0)
+        if subtitle_para.runs:
+            subtitle_para.runs[0].font.color.rgb = RGBColor(0x2D, 0x73, 0xB9)
+            subtitle_para.runs[0].font.bold = True
+        spacer = doc.add_paragraph()
+        spacer.paragraph_format.space_after = Pt(0)
+
+    body_section = doc.add_section(WD_SECTION.NEW_PAGE)
+    set_section_page_layout(body_section, columns=columns)
+    set_running_header_footer(doc, display_title, header_left=header_left, header_right=header_right)
     current_page_columns = columns
     image_cursors = {}
     for page_idx, page in enumerate(reading_pages):

@@ -212,7 +212,7 @@ st.markdown("""
     }
 
     @media (prefers-reduced-motion: reduce) {
-        .stApp::after, .classified-hero, .section-card, .intel-tile { animation: none !important; }
+        .stApp::after, .classified-hero, .section-card, .intel-tile, .launch-panel, .terminal-cursor, .radar-fill, .radar-step::before { animation: none !important; }
         .boot-screen { display: none !important; opacity: 0 !important; visibility: hidden !important; }
     }
 
@@ -245,9 +245,9 @@ st.markdown("""
         overflow: hidden;
         border: 1px solid var(--line-hot);
         background:
-            linear-gradient(135deg, rgba(82, 255, 145, 0.13), transparent 42%),
-            linear-gradient(180deg, rgba(7, 28, 14, 0.92), rgba(3, 8, 5, 0.86));
-        padding: 26px 28px;
+            linear-gradient(120deg, rgba(82, 255, 145, 0.18), transparent 35%),
+            linear-gradient(180deg, rgba(7, 28, 14, 0.94), rgba(3, 8, 5, 0.88));
+        padding: 30px;
         margin-bottom: 18px;
         animation: panel-in 420ms ease-out, pulse-line 5s ease-in-out infinite;
     }
@@ -266,10 +266,48 @@ st.markdown("""
     }
 
     .hero-title {
-        font-size: 3rem;
+        font-size: 3.25rem;
         line-height: 0.9;
         margin-bottom: 10px;
         text-shadow: 0 0 18px rgba(82, 255, 145, 0.34);
+    }
+
+    .hero-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+        gap: 24px;
+        align-items: end;
+    }
+
+    .hero-seal {
+        min-height: 176px;
+        border: 1px solid rgba(82, 255, 145, 0.28);
+        background:
+            linear-gradient(135deg, rgba(82, 255, 145, 0.08), transparent 58%),
+            repeating-linear-gradient(0deg, rgba(82, 255, 145, 0.05) 0 1px, transparent 1px 14px),
+            rgba(1, 5, 3, 0.58);
+        padding: 18px;
+        display: grid;
+        align-content: space-between;
+    }
+
+    .hero-seal-code {
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 0.78rem;
+        line-height: 1.7;
+    }
+
+    .hero-seal-mark {
+        color: rgba(255, 77, 77, 0.78);
+        border: 1px solid rgba(255, 77, 77, 0.42);
+        display: inline-block;
+        width: fit-content;
+        padding: 6px 12px;
+        font-weight: 900;
+        transform: rotate(-3deg);
     }
 
     .hero-subtitle {
@@ -282,6 +320,80 @@ st.markdown("""
         color: var(--muted);
         margin-top: 14px;
         font-size: 0.86rem;
+    }
+
+    .status-radar {
+        width: min(520px, 100%);
+        margin-top: 16px;
+    }
+
+    .radar-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .radar-label {
+        color: var(--green-soft);
+        font-family: "Courier New", monospace;
+        font-weight: 700;
+    }
+
+    .radar-step {
+        position: relative;
+        border: 1px solid rgba(82, 255, 145, 0.24);
+        background: rgba(2, 8, 4, 0.7);
+        color: var(--muted);
+        padding: 4px 8px 4px 18px;
+        font-family: "Courier New", monospace;
+        font-size: 0.72rem;
+    }
+
+    .radar-step::before {
+        content: "";
+        position: absolute;
+        left: 7px;
+        top: 50%;
+        width: 5px;
+        height: 5px;
+        transform: translateY(-50%);
+        background: var(--green);
+        box-shadow: 0 0 10px rgba(82, 255, 145, 0.72);
+        animation: radar-pulse 1.8s ease-in-out infinite;
+    }
+
+    .radar-step:nth-child(3)::before { animation-delay: 220ms; }
+    .radar-step:nth-child(4)::before { animation-delay: 440ms; }
+
+    .radar-track {
+        height: 8px;
+        margin-top: 10px;
+        border: 1px solid rgba(82, 255, 145, 0.28);
+        background:
+            repeating-linear-gradient(90deg, rgba(82, 255, 145, 0.08) 0 8px, transparent 8px 16px),
+            rgba(1, 7, 3, 0.82);
+        overflow: hidden;
+    }
+
+    .radar-fill {
+        display: block;
+        height: 100%;
+        width: 38%;
+        background: linear-gradient(90deg, transparent, var(--green), var(--green-soft), transparent);
+        box-shadow: 0 0 18px rgba(82, 255, 145, 0.54);
+        animation: radar-sweep 2.6s ease-in-out infinite;
+    }
+
+    @keyframes radar-sweep {
+        0% { transform: translateX(-105%); }
+        48% { transform: translateX(84%); }
+        100% { transform: translateX(180%); }
+    }
+
+    @keyframes radar-pulse {
+        0%, 100% { opacity: 0.4; }
+        50% { opacity: 1; }
     }
 
     .terminal-cursor {
@@ -300,9 +412,9 @@ st.markdown("""
 
     .intel-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
-        margin-bottom: 18px;
+        grid-template-columns: 1.25fr 1fr 1fr;
+        gap: 14px;
+        margin-bottom: 20px;
     }
 
     .intel-tile, .section-card {
@@ -313,7 +425,13 @@ st.markdown("""
     }
 
     .intel-tile {
-        padding: 12px 14px;
+        min-height: 96px;
+        padding: 18px;
+        display: grid;
+        align-content: space-between;
+        background:
+            linear-gradient(160deg, rgba(82, 255, 145, 0.09), transparent 54%),
+            rgba(5, 13, 8, 0.86);
     }
 
     .intel-label {
@@ -330,8 +448,8 @@ st.markdown("""
 
     .section-card {
         position: relative;
-        padding: 20px;
-        margin: 16px 0;
+        padding: 24px;
+        margin: 18px 0;
     }
 
     .section-card::before {
@@ -342,6 +460,77 @@ st.markdown("""
         width: 4px;
         height: 100%;
         background: linear-gradient(var(--green), transparent);
+    }
+
+    .task-dock {
+        border-color: rgba(82, 255, 145, 0.42);
+        background:
+            linear-gradient(135deg, rgba(82, 255, 145, 0.1), transparent 34%),
+            linear-gradient(180deg, rgba(6, 18, 10, 0.92), rgba(3, 9, 5, 0.88));
+    }
+
+    .section-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+        margin-bottom: 18px;
+    }
+
+    .section-kicker,
+    .launch-kicker,
+    .sidebar-kicker {
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+    }
+
+    .section-title,
+    .launch-title {
+        color: var(--green);
+        font-size: 1.55rem;
+        font-weight: 900;
+        margin-top: 4px;
+    }
+
+    .section-note {
+        color: var(--green-soft);
+        max-width: 520px;
+        line-height: 1.6;
+        font-size: 0.92rem;
+    }
+
+    .launch-panel {
+        display: grid;
+        grid-template-columns: minmax(240px, 0.75fr) minmax(0, 1.25fr);
+        gap: 18px;
+        align-items: center;
+        border: 1px solid rgba(82, 255, 145, 0.46);
+        background:
+            linear-gradient(90deg, rgba(82, 255, 145, 0.14), transparent 44%),
+            rgba(4, 13, 7, 0.92);
+        padding: 20px 22px;
+        margin: 18px 0 10px;
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
+        animation: panel-in 520ms ease-out both;
+    }
+
+    .launch-status {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .launch-status span {
+        min-height: 46px;
+        display: flex;
+        align-items: center;
+        border: 1px solid var(--line);
+        background: rgba(2, 8, 4, 0.7);
+        color: var(--green-soft);
+        padding: 9px 11px;
+        font-size: 0.86rem;
     }
 
     div[data-testid="stFileUploader"] {
@@ -369,13 +558,42 @@ st.markdown("""
         font-family: "Courier Prime", monospace !important;
     }
 
+    .stMultiSelect [data-baseweb="tag"] {
+        background:
+            linear-gradient(180deg, rgba(6, 24, 11, 0.96), rgba(1, 8, 4, 0.96)) !important;
+        border: 1px solid rgba(82, 255, 145, 0.48) !important;
+        border-radius: 0 !important;
+        color: var(--green-soft) !important;
+        box-shadow: inset 0 0 0 1px rgba(157, 255, 193, 0.06);
+        min-height: 28px;
+    }
+
+    .stMultiSelect [data-baseweb="tag"] span {
+        color: var(--green-soft) !important;
+        border-radius: 0 !important;
+        font-family: "Courier Prime", "Consolas", monospace !important;
+        font-size: 0.82rem !important;
+    }
+
+    .stMultiSelect [data-baseweb="tag"] span:last-child {
+        border-left: 1px solid rgba(255, 77, 77, 0.32) !important;
+        background: rgba(255, 77, 77, 0.1) !important;
+        color: var(--red) !important;
+    }
+
     div[data-testid="stFileUploader"] button {
         font-size: 0 !important;
+    }
+
+    div[data-testid="stFileUploader"] button * {
+        font-size: 0 !important;
+        line-height: 0 !important;
     }
 
     div[data-testid="stFileUploader"] button::after {
         content: "导入";
         font-size: 0.95rem;
+        line-height: 1;
     }
 
     div[data-testid="stFileUploader"] small {
@@ -394,8 +612,8 @@ st.markdown("""
         background: linear-gradient(90deg, rgba(82, 255, 145, 0.08), rgba(82, 255, 145, 0.02)) !important;
         color: var(--green) !important;
         border: 1px solid var(--line-hot) !important;
-        border-radius: 0 !important;
-        height: 48px;
+        border-radius: 3px !important;
+        min-height: 52px;
         font-weight: bold;
         letter-spacing: 0;
         transition: all 0.18s ease;
@@ -406,6 +624,38 @@ st.markdown("""
         background: var(--green) !important;
         color: #031006 !important;
         box-shadow: 0 0 26px rgba(82, 255, 145, 0.34);
+    }
+
+    .stButton>button[kind="primary"] {
+        background:
+            linear-gradient(180deg, rgba(6, 24, 11, 0.98), rgba(1, 9, 4, 0.98)) !important;
+        color: var(--green-soft) !important;
+        border: 1px solid var(--green) !important;
+        box-shadow:
+            inset 0 0 0 1px rgba(157, 255, 193, 0.1),
+            0 0 24px rgba(82, 255, 145, 0.22);
+        font-size: 1.04rem;
+        text-shadow: 0 0 12px rgba(82, 255, 145, 0.52);
+    }
+
+    .stButton>button[kind="primary"]:hover {
+        background:
+            linear-gradient(180deg, rgba(16, 48, 25, 0.98), rgba(4, 17, 8, 0.98)) !important;
+        color: #ffffff !important;
+        border-color: var(--green-soft) !important;
+        box-shadow:
+            inset 0 0 0 1px rgba(157, 255, 193, 0.18),
+            0 0 34px rgba(82, 255, 145, 0.34);
+    }
+
+    .stButton>button[kind="primary"] p {
+        color: var(--green-soft) !important;
+        font-weight: 900 !important;
+        text-shadow: 0 0 12px rgba(82, 255, 145, 0.52);
+    }
+
+    .stButton>button[kind="primary"]:hover p {
+        color: #ffffff !important;
     }
 
     .stProgress > div > div > div {
@@ -425,9 +675,82 @@ st.markdown("""
     }
 
     [data-testid="stExpander"] {
-        background: rgba(4, 12, 7, 0.74) !important;
+        background: rgba(4, 12, 7, 0.78) !important;
         border: 1px solid var(--line) !important;
-        border-radius: 0 !important;
+        border-radius: 3px !important;
+    }
+
+    section[data-testid="stSidebar"] [data-testid="stExpander"] {
+        background: rgba(2, 8, 4, 0.84) !important;
+        border-color: rgba(82, 255, 145, 0.22) !important;
+    }
+
+    section[data-testid="stSidebar"] .block-container,
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+        gap: 0.65rem;
+    }
+
+    section[data-testid="stSidebar"] label {
+        color: var(--green-soft) !important;
+        font-size: 0.82rem !important;
+    }
+
+    .sidebar-console {
+        border: 1px solid rgba(82, 255, 145, 0.38);
+        background:
+            linear-gradient(135deg, rgba(82, 255, 145, 0.11), transparent 60%),
+            rgba(1, 6, 3, 0.72);
+        padding: 15px;
+        margin: 4px 0 12px;
+    }
+
+    .sidebar-title {
+        color: var(--green);
+        font-size: 1.15rem;
+        font-weight: 900;
+        margin-top: 3px;
+    }
+
+    .sidebar-note {
+        color: var(--muted);
+        font-size: 0.82rem;
+        line-height: 1.5;
+        margin-top: 8px;
+    }
+
+    .sidebar-help {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        border-top: 1px solid rgba(82, 255, 145, 0.18);
+        margin-top: 14px;
+        padding-top: 12px;
+        color: var(--muted);
+    }
+
+    .sidebar-help-badge {
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(82, 255, 145, 0.46);
+        color: var(--green-soft);
+        font-family: "Courier New", monospace;
+        font-weight: 900;
+    }
+
+    .sidebar-help-title {
+        color: var(--green-soft);
+        font-size: 0.82rem;
+        font-weight: 800;
+        margin-bottom: 4px;
+    }
+
+    .sidebar-help-copy {
+        color: var(--muted);
+        font-size: 0.76rem;
+        line-height: 1.45;
     }
 
     .stAlert {
@@ -449,17 +772,19 @@ st.markdown("""
         display: grid;
         place-items: center;
         background:
-            linear-gradient(rgba(82, 255, 145, 0.05) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(82, 255, 145, 0.04) 1px, transparent 1px),
-            #020503;
+            linear-gradient(rgba(82, 255, 145, 0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(82, 255, 145, 0.035) 1px, transparent 1px),
+            rgba(2, 5, 3, 0.88);
         background-size: 30px 30px;
-        animation: boot-hide 3.7s ease forwards;
+        animation: boot-hide 1.55s ease forwards;
+        contain: layout paint style;
+        will-change: opacity;
     }
 
     .boot-panel {
         width: min(680px, calc(100vw - 44px));
         border: 1px solid var(--line-hot);
-        background: rgba(3, 12, 6, 0.92);
+        background: rgba(3, 12, 6, 0.84);
         box-shadow: 0 0 52px rgba(82, 255, 145, 0.18);
         padding: 28px;
         font-family: "SimHei", "Microsoft YaHei", sans-serif;
@@ -495,7 +820,7 @@ st.markdown("""
         width: 0;
         background: var(--green);
         box-shadow: 0 0 18px rgba(82, 255, 145, 0.65);
-        animation: boot-load 2.45s steps(18) forwards;
+        animation: boot-load 0.92s steps(18) forwards;
     }
 
     .boot-stamp {
@@ -513,11 +838,16 @@ st.markdown("""
     }
 
     @keyframes boot-hide {
-        0%, 72% { opacity: 1; visibility: visible; }
+        0%, 46% { opacity: 1; visibility: visible; }
         100% { opacity: 0; visibility: hidden; }
     }
 
     @media (max-width: 760px) {
+        .hero-grid,
+        .launch-panel,
+        .launch-status {
+            grid-template-columns: 1fr;
+        }
         .intel-grid {
             grid-template-columns: 1fr;
         }
@@ -541,6 +871,10 @@ except TypeError:
     .classified-hero,
     .section-card,
     .intel-tile,
+    .launch-panel,
+    .terminal-cursor,
+    .radar-fill,
+    .radar-step::before,
     .dossier-card.loaded::after,
     .status-flow::before,
     .status-step.active,
@@ -599,17 +933,50 @@ st.markdown(
 )
 
 # === HEADER ===
-boot_screen = ""
+boot_screen = "" if reduce_motion else """
+<div class="boot-screen" aria-hidden="true">
+    <div class="boot-panel">
+        <div class="boot-title">DELTA GREEN TERMINAL</div>
+        <div class="boot-lines">
+            &gt; 装载档案协议<br>
+            &gt; 校验术语索引<br>
+            &gt; 建立隔离翻译通道
+        </div>
+        <div class="boot-bar"></div>
+        <div class="boot-stamp">AUTHORIZED ACCESS</div>
+    </div>
+</div>
+"""
 st.markdown(f"""
 {boot_screen}
 <div class="classified-hero">
-    <div class="hero-title">三角洲翻译终端</div>
-    <div class="hero-subtitle">
-        > 访问等级：黑色绝密<br>
-        > 执行协议：文本提取 / 术语锁定 / 译文编译<br>
-        > 终端状态：等待导入档案
+    <div class="hero-grid">
+        <div>
+            <div class="hero-title">三角洲翻译终端</div>
+            <div class="hero-subtitle">
+                > 访问等级：黑色绝密<br>
+                > 执行协议：文本提取 / 术语锁定 / 译文编译<br>
+                > 终端状态：等待导入档案
+            </div>
+            <div class="status-radar">
+                <div class="radar-row">
+                    <span class="radar-label">系统巡检</span>
+                    <span class="radar-step">档案通道</span>
+                    <span class="radar-step">术语索引</span>
+                    <span class="radar-step">输出协议</span>
+                </div>
+                <div class="radar-track"><span class="radar-fill"></span></div>
+            </div>
+        </div>
+        <div class="hero-seal">
+            <div class="hero-seal-code">
+                NODE: HK-26<br>
+                CHANNEL: PRIVATE REVIEW<br>
+                ARCHIVE: LOCAL OUTPUT
+            </div>
+            <div class="hero-seal-mark">BLACK FILE</div>
+        </div>
     </div>
-    <div class="terminal-line">系统就绪<span class="terminal-cursor"></span></div>
 </div>
 <div class="intel-grid">
     <div class="intel-tile">
@@ -627,7 +994,16 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 with st.sidebar:
-    st.header("任务控制台")
+    st.markdown(
+        """
+    <div class="sidebar-console">
+    <div class="sidebar-kicker">CONTROL DRAWER</div>
+    <div class="sidebar-title">任务参数</div>
+    <div class="sidebar-note">参数频道已接入。确认密钥、页码与输出协议后，终端将按当前授权执行档案编译。</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     provider = "deepseek"
     base_url = "https://api.deepseek.com"
@@ -701,14 +1077,6 @@ with st.sidebar:
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
 
-    with st.expander("断点续跑说明", expanded=False):
-        st.caption(
-            "同一个 PDF、同一个术语表、同一个模型和同一段页码会复用 progress.json。"
-            "中断后重新上传同一文件并使用相同设置，再点执行即可继续。"
-            "如果只想补失败页，勾选“只重试失败页”。"
-            "如果改过模型、术语表或页码，默认不会复用旧译文。"
-        )
-
     if "word" in formats:
         with st.expander("文档档案输出", expanded=False):
             word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
@@ -734,11 +1102,37 @@ with st.sidebar:
                 help="用于纯重绘 PDF 的中文字体。如字体不可用，将自动回退到 Source Han Serif CN 等备选字体。",
             )
 
-# === MAIN ===
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown(
+        """
+<div class="sidebar-help">
+    <div class="sidebar-help-badge">?</div>
+    <div>
+        <div class="sidebar-help-title">断点续跑</div>
+        <div class="sidebar-help-copy">
+            相同文件、术语表、模型和页码会复用进度。中断后用同样设置重新执行即可继续；只补失败页时，在高级任务控制里勾选“只重试失败页”。
+        </div>
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-st.subheader("导入机密档案")
-st.caption("上传原始文件（PDF / Markdown / Word）。默认加载本地 glossary.tsv；只有需要替换术语时再上传自定义文件。")
+# === MAIN ===
+st.markdown(
+    """
+<div class="section-card task-dock">
+    <div class="section-heading">
+        <div>
+            <div class="section-kicker">INTAKE BAY</div>
+            <div class="section-title">导入机密档案</div>
+        </div>
+        <div class="section-note">
+            上传 PDF、Markdown 或 Word。默认使用本地 glossary.tsv，只有需要替换术语时再上传自定义术语表。
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 col1, col2 = st.columns([1.2, 1])
 with col1:
@@ -791,7 +1185,26 @@ if source_file:
         ("info", "等待执行翻译任务"),
     ])
 
-render_output_history(APP_DIR / "output")
+ready_state = "档案已接收" if source_file else "等待档案"
+key_state = "密钥已录入" if api_key else "等待密钥"
+format_state = " / ".join(OUTPUT_FORMAT_LABELS[value] for value in formats) if formats else "未选择输出"
+st.markdown(
+    f"""
+<div class="launch-panel">
+    <div>
+        <div class="launch-kicker">MISSION CONTROL</div>
+        <div class="launch-title">启动翻译任务</div>
+    </div>
+    <div class="launch-status">
+        <span>{ready_state}</span>
+        <span>{key_state}</span>
+        <span>{format_state}</span>
+    </div>
+</div>
+    """,
+    unsafe_allow_html=True,
+)
+launch_pressed = st.button("执行翻译任务", type="primary", use_container_width=True)
 
 if pdf_file and show_extraction_preview:
     preview_path = save_uploaded_pdf_for_preview(pdf_file)
@@ -825,7 +1238,9 @@ if pdf_file and show_extraction_preview:
         if preview_extractor:
             preview_extractor.close()
 
-if st.button("执行翻译任务", type="primary", use_container_width=True):
+render_output_history(APP_DIR / "output")
+
+if launch_pressed:
     if not source_file:
         st.error("✗ 请上传文件（PDF / Markdown / Word）")
     elif not api_key:

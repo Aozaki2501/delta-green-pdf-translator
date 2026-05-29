@@ -32,6 +32,8 @@ MARKER_ALIASES = {
     "[/整页标题]": "[/FULL_WIDTH_TITLE]",
 }
 
+LIST_MARKER_RE = re.compile(r"^(?:[-\u2022•]\s+|(?:»\s*){1,3})(.+)$")
+
 
 # ---------------------------------------------------------------------------
 # Block splitting and cleaning
@@ -57,6 +59,37 @@ def _normalize_heading_markup(line: str) -> str:
 def _normalize_marker_line(line: str) -> str:
     stripped = line.strip()
     return MARKER_ALIASES.get(stripped, stripped)
+
+
+def _strip_list_marker(line: str) -> Optional[str]:
+    stripped = line.strip()
+    match = LIST_MARKER_RE.match(stripped)
+    if not match:
+        return None
+    item = re.sub(r"\s+", " ", match.group(1)).strip()
+    return item or None
+
+
+def _strip_quote_prefix(line: str) -> str:
+    return re.sub(r"^(?:>\s*)+", "", line.strip())
+
+
+def _looks_like_markdown_table_row(line: str) -> bool:
+    stripped = _strip_quote_prefix(line).strip()
+    if "|" not in stripped:
+        return False
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    if len(cells) < 2:
+        return False
+    return any(cell for cell in cells)
+
+
+def _is_markdown_table_separator_row(line: str) -> bool:
+    stripped = _strip_quote_prefix(line).strip()
+    if "|" not in stripped:
+        return False
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
 
 def _split_translation_chunks(text: str) -> list[str]:
     chunks = []
@@ -290,6 +323,8 @@ def _card_content_looks_like_list(lines: list[str]) -> bool:
     content = [line for line in lines if line.strip()]
     if len(content) >= 3 and content[0].lstrip().startswith(">>"):
         return True
+    if any(_strip_list_marker(line) for line in content[1:]):
+        return True
     if len(content) < 5:
         return False
     short_lines = [
@@ -345,6 +380,10 @@ def _is_structural_line(line: str) -> bool:
     ):
         return True
     if stripped.startswith(("#", "-", "\u2022", "|", ">", "```")):
+        return True
+    if _strip_list_marker(stripped):
+        return True
+    if _is_soft_subheading_line(stripped):
         return True
     visible = re.sub(r"\s+", "", stripped)
     return len(visible) <= 10 and _is_plain_heading_line(stripped)
@@ -464,6 +503,24 @@ def _is_plain_heading_line(text: str) -> bool:
     return True
 
 
+def _is_soft_subheading_line(text: str) -> bool:
+    clean = re.sub(r"\*\*(.+?)\*\*", r"\1", text.strip())
+    clean = re.sub(r"\*(.+?)\*", r"\1", clean)
+    clean = _normalize_marker_line(clean)
+    if not re.search(r"[\u4e00-\u9fff]", clean):
+        return False
+    if _strip_list_marker(clean):
+        return False
+    if clean.startswith(("[", "#", "|", ">", "`")):
+        return False
+    visible = re.sub(r"\s+", "", clean)
+    if not (5 <= len(visible) <= 28):
+        return False
+    if re.search(r"[。；：，、（）【】《》\"“”]$", clean):
+        return False
+    return clean.endswith(("？", "?", "：", ":"))
+
+
 def _format_page_ranges(page_nums):
     nums = sorted({p + 1 for p in page_nums})
     if not nums:
@@ -482,8 +539,21 @@ def _format_page_ranges(page_nums):
 
 def _header_title(title: str) -> str:
     clean = re.sub(r"[_]+", " ", title).strip()
+    clean = re.sub(
+        r"\b(?:upload|z-library(?:\.[a-z]+)?|1lib(?:\.[a-z]+)?|z-lib(?:\.[a-z]+)?|full proof \d+)\b",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    clean = re.sub(r"\bcn\b$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\b[a-f0-9]{8,}\b", "", clean, flags=re.IGNORECASE)
     if " - " in clean:
         clean = clean.split(" - ", 1)[1].strip()
+    if not re.search(r"[\u4e00-\u9fff]", clean):
+        parts = [part.strip() for part in re.split(r"[.·]", clean) if part.strip()]
+        if parts:
+            clean = parts[0]
+    clean = re.sub(r"\s+", " ", clean).strip(" ._-")
     return clean[:32]
 
 
@@ -501,6 +571,34 @@ def _heading_text_from_block(text: str) -> Optional[str]:
     return None
 
 
+def _primary_title_from_reading_pages(reading_pages) -> Optional[str]:
+    for page in reading_pages:
+        for block in page.get("blocks", []):
+            stripped = (block.get("text") or "").strip()
+            if not stripped:
+                continue
+            if _is_full_width_title_block(stripped):
+                inner = re.sub(r"^\[FULL_WIDTH_TITLE\]\s*", "", stripped)
+                inner = re.sub(r"\s*\[/FULL_WIDTH_TITLE\]$", "", inner)
+                first_line = next((line.strip() for line in inner.splitlines() if line.strip()), "")
+                title = re.sub(r"^#{1,6}\s*", "", first_line).strip()
+                if title:
+                    return title
+            first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
+            if re.match(r"^#\s+", first_line):
+                return re.sub(r"^#\s*", "", first_line).strip() or None
+    return None
+
+
+def _display_title(title: str, reading_pages) -> str:
+    primary = _primary_title_from_reading_pages(reading_pages)
+    if primary:
+        return primary
+    if re.search(r"[\u4e00-\u9fff]", title):
+        return title.strip()
+    return _header_title(title) or title.strip()
+
+
 def _looks_like_stat_block(text: str) -> bool:
     upper = text.upper()
     attributes = ("STR", "CON", "DEX", "INT", "POW", "CHA")
@@ -515,7 +613,7 @@ def _looks_like_stat_block(text: str) -> bool:
 
 
 def attach_running_headers(reading_pages, fallback_title: str):
-    current = _header_title(fallback_title)
+    current = _display_title(fallback_title, reading_pages)
     for page in reading_pages:
         for block in page.get("blocks", []):
             heading = _heading_text_from_block(block.get("text", ""))

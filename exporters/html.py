@@ -13,13 +13,19 @@ from typing import Optional
 from exporters._shared import (
     paginate_translated_blocks,
     _is_plain_heading_line,
+    _is_soft_subheading_line,
     _format_page_ranges,
     _header_title,
+    _display_title,
     attach_running_headers,
     _looks_like_stat_block,
+    _looks_like_markdown_table_row,
+    _is_markdown_table_separator_row,
     _layout_uses_columns,
     _normalize_heading_markup,
     _normalize_marker_line,
+    _strip_list_marker,
+    _strip_quote_prefix,
 )
 from core.utils import ensure_output_parent
 
@@ -36,14 +42,19 @@ def _html_inline(text: str) -> str:
 
 
 def _is_markdown_table_separator(line: str) -> bool:
-    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+    return _is_markdown_table_separator_row(line)
 
 
-def _html_table(lines: list[str]) -> str:
+def _table_cells(line: str) -> list[str]:
+    stripped = _strip_quote_prefix(line).strip().strip("|")
+    cells = [cell.strip() for cell in stripped.split("|")]
+    return [re.sub(r"^#{1,6}\s*", "", cell).strip() for cell in cells]
+
+
+def _html_table(lines: list[str], class_name: str = "aid-table") -> str:
     rows = []
     for raw_line in lines:
-        cells = [cell.strip() for cell in raw_line.strip().strip("|").split("|")]
+        cells = _table_cells(raw_line)
         if cells:
             rows.append(cells)
     if not rows:
@@ -51,7 +62,7 @@ def _html_table(lines: list[str]) -> str:
 
     header = rows[0]
     body = rows[2:] if len(rows) > 1 and _is_markdown_table_separator(lines[1]) else rows[1:]
-    parts = ['<table class="aid-table">', "<thead><tr>"]
+    parts = [f'<table class="{class_name}">', "<thead><tr>"]
     for cell in header:
         parts.append(f"<th>{_html_inline(cell)}</th>")
     parts.append("</tr></thead><tbody>")
@@ -65,24 +76,79 @@ def _html_table(lines: list[str]) -> str:
     return "".join(parts)
 
 
-def _html_handout_card(lines: list[str]) -> str:
-    clean_lines = []
-    for line in lines:
-        clean = line.strip()
+def _html_list(items: list[str], class_name: str = "") -> str:
+    class_attr = f' class="{class_name}"' if class_name else ""
+    inner = "".join(f"<li>{_html_inline(item)}</li>" for item in items if item)
+    return f"<ul{class_attr}>{inner}</ul>" if inner else ""
+
+
+def _clean_card_line(line: str) -> str:
+    clean = _strip_quote_prefix(line)
+    clean = _normalize_heading_markup(clean)
+    clean = _normalize_marker_line(clean)
+    return clean.strip()
+
+
+def _card_title_text(line: str) -> str:
+    return re.sub(r"^#{1,6}\s*", "", _clean_card_line(line)).strip()
+
+
+def _append_card_body(parts: list[str], lines: list[str]):
+    idx = 0
+    while idx < len(lines):
+        clean = _clean_card_line(lines[idx])
         if not clean:
+            idx += 1
             continue
-        clean = re.sub(r"^#{1,6}\s*", "", clean)
-        clean = re.sub(r"^>{2}\s*", "", clean)
-        clean_lines.append(clean)
+
+        if _looks_like_markdown_table_row(clean):
+            table_lines = [clean]
+            idx += 1
+            while idx < len(lines):
+                peek = _clean_card_line(lines[idx])
+                if _looks_like_markdown_table_row(peek) or _is_markdown_table_separator(peek):
+                    table_lines.append(peek)
+                    idx += 1
+                    continue
+                break
+            parts.append(_html_table(table_lines, "aid-table card-table"))
+            continue
+
+        list_item = _strip_list_marker(clean)
+        if list_item:
+            items = [list_item]
+            idx += 1
+            while idx < len(lines):
+                peek = _clean_card_line(lines[idx])
+                next_item = _strip_list_marker(peek)
+                if next_item:
+                    items.append(next_item)
+                    idx += 1
+                    continue
+                break
+            parts.append(_html_list(items, "card-list"))
+            continue
+
+        if re.match(r"^#{1,6}\s+", clean) or _is_soft_subheading_line(clean):
+            parts.append(f'<h4 class="card-subheading">{_html_inline(re.sub(r"^#{1,6}\s*", "", clean))}</h4>')
+            idx += 1
+            continue
+
+        parts.append(f"<p>{_html_inline(re.sub(r'^#{1,6}\\s*', '', clean))}</p>")
+        idx += 1
+
+
+def _html_handout_card(lines: list[str]) -> str:
+    clean_lines = [_clean_card_line(line) for line in lines if _clean_card_line(line)]
     card_class = "handout-card"
     if len(clean_lines) >= 8:
         card_class += " handout-card-long"
     parts = [f'<div class="{card_class}">']
-    for idx, clean in enumerate(clean_lines):
-        if idx == 0 and len(re.sub(r"\s+", "", clean)) <= 80:
-            parts.append(f"<h3>{_html_inline(clean)}</h3>")
-        else:
-            parts.append(f"<p>{_html_inline(clean)}</p>")
+    body_lines = clean_lines
+    if clean_lines and len(re.sub(r"\s+", "", _card_title_text(clean_lines[0]))) <= 80:
+        parts.append(f"<h3>{_html_inline(_card_title_text(clean_lines[0]))}</h3>")
+        body_lines = clean_lines[1:]
+    _append_card_body(parts, body_lines)
     parts.append("</div>")
     return "".join(parts)
 
@@ -111,7 +177,9 @@ def _relative_asset_path(asset_path: str, output_path: str) -> str:
 
 
 def _html_image_placeholder(lines: list[str], image_path: str = "", html_output: str = "") -> str:
-    label = " ".join(line.strip() for line in lines if line.strip()) or "Illustration"
+    label = " ".join(line.strip() for line in lines if line.strip()) or "插图"
+    if label.lower() == "illustration placeholder":
+        label = "插图"
     if image_path:
         src = html.escape(_relative_asset_path(image_path, html_output))
         return (
@@ -209,12 +277,30 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
             parts.append('<pre class="toc-card">' + html.escape("\n".join(toc_lines)) + "</pre>")
             continue
 
-        if clean_line.startswith("|"):
+        if _looks_like_markdown_table_row(clean_line):
             table_lines = [clean_line]
-            while idx < len(lines) and lines[idx].strip().startswith("|"):
-                table_lines.append(lines[idx].strip())
-                idx += 1
+            while idx < len(lines):
+                peek = _normalize_marker_line(lines[idx].strip())
+                if _looks_like_markdown_table_row(peek) or _is_markdown_table_separator(peek):
+                    table_lines.append(peek)
+                    idx += 1
+                    continue
+                break
             parts.append(_html_table(table_lines))
+            continue
+
+        list_item = _strip_list_marker(clean_line)
+        if list_item:
+            items = [list_item]
+            while idx < len(lines):
+                peek = _normalize_marker_line(lines[idx].strip())
+                next_item = _strip_list_marker(peek)
+                if next_item:
+                    items.append(next_item)
+                    idx += 1
+                    continue
+                break
+            parts.append(_html_list(items))
             continue
 
         if clean_line.startswith(">"):
@@ -235,8 +321,8 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
             parts.append(f"<h1>{_html_inline(clean_line[2:])}</h1>")
         elif _is_plain_heading_line(clean_line):
             parts.append(f"<h2>{_html_inline(clean_line)}</h2>")
-        elif clean_line.startswith("- ") or clean_line.startswith("\u2022 "):
-            parts.append(f"<ul><li>{_html_inline(clean_line[2:])}</li></ul>")
+        elif _is_soft_subheading_line(clean_line):
+            parts.append(f'<h4 class="soft-subheading">{_html_inline(clean_line)}</h4>')
         else:
             parts.append(f"<p>{_html_inline(clean_line)}</p>")
     return "\n".join(parts)
@@ -261,10 +347,6 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         raise ValueError("HTML 正文分栏只支持 1 或 2 栏")
 
     ensure_output_parent(html_output)
-    right_title = html.escape((header_right or _header_title(title)).strip())
-    left_title = html.escape((header_left or "绿色三角洲").strip())
-    safe_title = html.escape(title)
-    safe_subtitle = html.escape(subtitle or "")
     reading_pages = attach_running_headers(paginate_translated_blocks(
         translated_pages,
         min_chars,
@@ -272,6 +354,11 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         page_layouts=page_layouts,
         split_on_layout=True,
     ), title)
+    display_title = _display_title(title, reading_pages)
+    right_title = html.escape((header_right or _header_title(display_title)).strip())
+    left_title = html.escape((header_left or "绿色三角洲").strip())
+    safe_title = html.escape(display_title)
+    safe_subtitle = html.escape(subtitle or "")
 
     css = f"""
     :root {{
@@ -459,6 +546,27 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         text-indent: 0;
         font-size: 10.4pt;
         line-height: 1.48;
+    }}
+    .handout-card .card-subheading,
+    .soft-subheading {{
+        margin: 0.12in 0 0.05in;
+        color: var(--ink);
+        font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        font-size: 11.5pt;
+        font-weight: 700;
+        text-indent: 0;
+    }}
+    .card-list {{
+        margin: 0 0 0.08in 1.15em;
+    }}
+    .card-list li {{
+        margin-bottom: 0.045in;
+        font-size: 10.2pt;
+        line-height: 1.45;
+    }}
+    .card-table {{
+        margin: 0.08in 0 0.14in;
+        background: rgba(255, 255, 255, 0.36);
     }}
     .stat-block {{
         column-span: all;

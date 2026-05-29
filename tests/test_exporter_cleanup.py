@@ -1,5 +1,6 @@
 from exporters._shared import (
     _clean_translated_block,
+    _display_title,
     _is_plain_heading_line,
     _translation_blocks,
     paginate_translated_blocks,
@@ -167,3 +168,37 @@ def test_non_stat_marker_can_fall_back_to_card_rendering():
 
     assert 'class="handout-card"' in html
     assert 'class="stat-block"' not in html
+
+
+def test_html_renders_quote_table_inside_card():
+    html = _html_block(
+        ">> ## 特纳前进作战基地人员\n"
+        ">> | 姓名 | 职务 |\n"
+        ">> |---|---|\n"
+        ">> | 拜尔斯 | 指挥官 |"
+    )
+
+    assert 'class="handout-card"' in html
+    assert 'class="aid-table card-table"' in html
+    assert "| 姓名 | 职务 |" not in html
+
+
+def test_html_renders_guillemet_lines_as_list():
+    html = _html_block("» 第一项\n» 第二项")
+
+    assert "<ul>" in html
+    assert "<li>第一项</li>" in html
+    assert "<li>第二项</li>" in html
+
+
+def test_display_title_prefers_primary_heading_over_filename():
+    reading_pages = paginate_translated_blocks(
+        [(0, "# 《卡利山口》\n\n正文。")],
+        min_chars=1,
+        max_chars=500,
+    )
+
+    assert _display_title(
+        "Delta_Green_-_Kali_Ghati._Shane_Ivey_z-library.sk_1lib.sk_z-lib.sk",
+        reading_pages,
+    ) == "《卡利山口》"

@@ -96,9 +96,19 @@ def render_audit_grid(items: dict[str, Any]) -> None:
 def render_output_history(output_dir: Path, limit: int = 8) -> None:
     history_entries = collect_output_history(output_dir, limit=limit)
     if history_entries:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("输出历史")
-        st.caption("这里列出本机 output 目录里的旧结果，只提供查看和下载，不会重新调用翻译接口。")
+        st.markdown(
+            """
+<div class="section-card archive-vault">
+    <div class="section-heading">
+        <div>
+            <div class="section-kicker">ARCHIVE VAULT</div>
+            <div class="section-title">档案库</div>
+        </div>
+        <div class="section-note">旧输出只保留下载入口，不参与新任务。</div>
+    </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         for entry_index, entry in enumerate(history_entries):
             progress = entry["progress"]
@@ -151,7 +161,17 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
                         )
         st.markdown("</div>", unsafe_allow_html=True)
     else:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("输出历史")
-        st.caption("还没有发现历史输出。完成一次翻译后，这里会列出可下载的旧结果。")
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown(
+            """
+<div class="section-card archive-vault">
+    <div class="section-heading">
+        <div>
+            <div class="section-kicker">ARCHIVE VAULT</div>
+            <div class="section-title">档案库</div>
+        </div>
+        <div class="section-note">还没有历史输出。</div>
+    </div>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
