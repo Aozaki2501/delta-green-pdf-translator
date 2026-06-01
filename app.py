@@ -1026,6 +1026,7 @@ with st.sidebar:
     word_hard_page_breaks = False
     word_header_left = "绿色三角洲"
     word_header_right = ""
+    replica_debug_mode = False
 
     st.checkbox("低动效模式", value=False, key="reduce_motion")
     st.caption("开启后会关闭入场遮罩和主要动画，适合远程部署或低性能浏览器。")
@@ -1035,12 +1036,10 @@ with st.sidebar:
 
     formats = st.multiselect(
         "输出格式",
-        ["markdown", "html", "word", "replica_pdf", "typeset_pdf"],
+        ["markdown", "html", "word", "typeset_pdf"],
         default=["html", "word"],
         format_func=lambda value: OUTPUT_FORMAT_LABELS[value],
     )
-    if "replica_pdf" in formats:
-        st.caption("原版坐标 PDF 会单独运行，先生成原页底图和中文文本层。")
     if "typeset_pdf" in formats:
         st.caption("纯重绘 PDF 会单独运行，从 PDF 提取结构后用 HTML/CSS 重建页面并导出。")
 
@@ -1076,6 +1075,16 @@ with st.sidebar:
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
+        replica_debug_mode = st.checkbox(
+            "启用原版坐标 PDF 调试检查稿",
+            value=False,
+            help="仅用于排查坐标、遮盖和翻译块问题。开启后，本次任务只生成原版坐标 PDF。",
+        )
+        if replica_debug_mode:
+            st.caption("调试模式已开启：本次任务只生成原版坐标 PDF 检查稿。")
+
+    if replica_debug_mode:
+        formats = ["replica_pdf"]
 
     if "word" in formats:
         with st.expander("文档档案输出", expanded=False):

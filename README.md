@@ -42,7 +42,7 @@ DGtranslate/
 
 ## 环境要求
 
-- Python 3.9 或更高版本
+- Python 3.10 或更高版本
 - DeepSeek API Key，或其他 OpenAI 兼容接口的 API Key
 - 带文本层的英文 PDF
 
@@ -72,6 +72,21 @@ start_web.bat
 ```text
 http://localhost:8501
 ```
+
+### 分享给别人
+
+如果要把可运行项目直接发给别人，可以在项目根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\pack_release.ps1
+```
+
+它会在 `dist/` 生成一个 zip 包。对方只需要：
+
+1. 安装 Python 3.10+
+2. 解压 zip
+3. 双击 `start_web.bat`
+4. 在网页里填入她自己的 API Key
 
 ### 方法二：手动启动 Web
 
@@ -105,7 +120,7 @@ python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --fo
 ### 开发中：原版坐标 PDF
 
 这条链路用于开发“接近原版 PDF”的输出。它不会替代现有阅读版 HTML/Word。
-Web 界面里也可以在“输出格式”中单独选择“原版坐标 PDF”运行。
+Web 界面里需要先展开“高级任务控制”，勾选“启用原版坐标 PDF 调试检查稿”后单独运行。
 
 注意：
 
@@ -160,7 +175,7 @@ python export_replica_pdf.py "output/book.translated.layout.json" -o "output/boo
 1. 启动 Web 页面。
 2. 上传 PDF。
 3. 填入 API Key。
-4. 选择服务、接口地址、模型、并发数和输出格式。
+4. 选择模型、并发数和输出格式。
 5. 可选：上传自己的术语表，或指定页码范围。
 6. 先用提取预览检查 PDF 是否被正确读取。
 7. 点击开始翻译。
