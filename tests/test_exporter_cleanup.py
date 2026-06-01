@@ -3,6 +3,8 @@ from exporters._shared import (
     _display_title,
     _is_plain_heading_line,
     _translation_blocks,
+    _without_image_blocks,
+    attach_running_headers,
     paginate_translated_blocks,
 )
 from exporters.markdown import _format_markdown_block
@@ -62,6 +64,23 @@ def test_stat_and_image_blocks_stay_structural():
     texts = [block["text"] for block in pages[0]["blocks"]]
     assert texts[0].startswith("[STAT_BLOCK]")
     assert texts[1].startswith("[IMAGE]")
+
+
+def test_reading_outputs_can_remove_image_blocks():
+    pages = _without_image_blocks([
+        (0, "前文。\n\n[IMAGE]\nIllustration placeholder\n[/IMAGE]\n\n后文。"),
+    ])
+
+    assert pages == [(0, "前文。\n\n后文。")]
+
+
+def test_removing_image_blocks_rejects_unclosed_marker():
+    try:
+        _without_image_blocks([(0, "前文。\n\n[IMAGE]\nIllustration placeholder")])
+    except ValueError as exc:
+        assert "未结束" in str(exc)
+    else:
+        raise AssertionError("未结束的图片标记应直接报错")
 
 
 def test_html_renders_stat_and_image_blocks():
@@ -234,3 +253,39 @@ def test_display_title_prefers_primary_heading_over_filename():
         "Delta_Green_-_Kali_Ghati._Shane_Ivey_z-library.sk_1lib.sk_z-lib.sk",
         reading_pages,
     ) == "《卡利山口》"
+
+
+def test_display_title_ignores_contents_heading():
+    reading_pages = [{
+        "layout": "toc",
+        "blocks": [{"text": "[FULL_WIDTH_TITLE]\n# // 目录 // 《碎神者》 // 目录 //\n[/FULL_WIDTH_TITLE]"}],
+    }, {
+        "layout": "single",
+        "blocks": [{"text": "# 前言"}],
+    }, {
+        "layout": "columns",
+        "blocks": [{"text": "[FULL_WIDTH_TITLE]\n# // 《碎神者》 //\n[/FULL_WIDTH_TITLE]"}],
+    }]
+
+    assert _display_title(
+        "Delta_Green_-_Iconoclasts._Adam_Scott_Glancy._Z-Library",
+        reading_pages,
+    ) == "《碎神者》"
+
+
+def test_running_header_ignores_contents_heading():
+    pages = [{
+        "layout": "toc",
+        "blocks": [{"text": "# // 目录 // 《碎神者》 // 目录 //"}],
+    }, {
+        "layout": "columns",
+        "blocks": [{"text": "正文。"}],
+    }]
+
+    attach_running_headers(
+        pages,
+        "Delta_Green_-_Iconoclasts._Adam_Scott_Glancy._Z-Library",
+    )
+
+    assert pages[0]["running_header"] == "Iconoclasts"
+    assert pages[1]["running_header"] == "Iconoclasts"

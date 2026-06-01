@@ -76,6 +76,7 @@ from exporters import (
 )
 
 from exporters.word import HAS_DOCX
+from core.utils import looks_untranslated_page
 
 # Apply console output configuration at import time (preserves original behavior)
 configure_console_output()
@@ -178,18 +179,15 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
 
         print("Extracting text and analyzing chapters...")
         pages_text = {}
+        source_page_labels = {}
         page_layouts = {}
         page_diagnostics = []
-        image_assets = {}
-        asset_dir = str(Path(output_base).parent / "assets")
         for page_num in range(start_page, end_page):
+            source_page_labels[page_num] = extractor.get_page_label(page_num)
             page_layouts[page_num] = extractor.detect_page_layout(page_num)
-            text = extractor.extract_page(page_num)
+            text = extractor.extract_page(page_num, include_images=False)
             pages_text[page_num] = text
             page_diagnostics.append(extractor.get_page_diagnostics(page_num, text))
-            images = extractor.export_page_images(page_num, asset_dir, Path(output_base).stem)
-            if images:
-                image_assets[page_num] = images
 
         extractor.finalize_chapters()
         toc = extractor.chapter_detector.get_toc_markdown()
@@ -203,8 +201,6 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 "   Extraction warnings: "
                 + ", ".join(str(item["page"] + 1) for item in risky_pages[:20])
             )
-        if image_assets:
-            print(f"   Extracted images: {sum(len(v) for v in image_assets.values())}")
         print()
 
         print("Translating...")
@@ -275,6 +271,17 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         print("-" * 40)
         print()
 
+        for page_num in range(start_page, end_page):
+            translation = tracker.get_translation(page_num)
+            if not translation.strip():
+                continue
+            if looks_untranslated_page(
+                pages_text.get(page_num, ""),
+                translation,
+                page_layouts.get(page_num, ""),
+            ):
+                tracker.mark_failed(page_num, "页面疑似整页未翻译，已拦截输出")
+
         translated_pages_sorted = sorted(
             [
                 (page_num, tracker.get_translation(page_num))
@@ -312,8 +319,8 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     translated_pages_sorted,
                     html_output,
                     Path(pdf_path).stem,
+                    source_page_labels=source_page_labels,
                     page_layouts=page_layouts,
-                    image_assets=image_assets,
                 )
                 print("   ✅ HTML 输出完成")
             except Exception as e:
@@ -329,7 +336,6 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 Path(pdf_path).stem,
                 toc,
                 page_layouts=page_layouts,
-                image_assets=image_assets,
             )
             print("   ✅ Markdown 输出完成")
 
@@ -346,8 +352,8 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                         docx_output,
                         Path(pdf_path).stem,
                         source_pages_text=pages_text,
+                        source_page_labels=source_page_labels,
                         page_layouts=page_layouts,
-                        image_assets=image_assets,
                     )
                     print("   ✓ Word 输出完成")
 

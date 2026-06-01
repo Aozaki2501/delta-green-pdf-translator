@@ -67,6 +67,44 @@ def is_failed_translation(text: str) -> bool:
     return bool(text and text.lstrip().startswith(TRANSLATION_FAILURE_PREFIX))
 
 
+def count_cjk_chars(text: str) -> int:
+    return len(re.findall(r"[\u4e00-\u9fff]", text or ""))
+
+
+def count_latin_chars(text: str) -> int:
+    return len(re.findall(r"[A-Za-z]", text or ""))
+
+
+def looks_untranslated_page(source_text: str, translated_text: str, layout: str = "") -> bool:
+    if layout == "art":
+        return False
+    if is_failed_translation(translated_text):
+        return False
+
+    source = str(source_text or "").strip()
+    translated = str(translated_text or "").strip()
+    if not source or not translated or "[[TOC]]" in source:
+        return False
+
+    source_latin = count_latin_chars(source)
+    source_words = re.findall(r"[A-Za-z]{3,}", source)
+    if source_latin < 80 or len(source_words) < 20:
+        return False
+
+    translated_cjk = count_cjk_chars(translated)
+    translated_latin = count_latin_chars(translated)
+    if translated_latin < 80:
+        return False
+
+    visible_len = len(re.sub(r"\s+", "", translated))
+    cjk_floor = max(24, int(visible_len * 0.18))
+    if translated_cjk >= cjk_floor:
+        return False
+
+    latin_ratio = translated_latin / max(translated_latin + translated_cjk, 1)
+    return latin_ratio >= 0.72
+
+
 def parse_page_selection(selection: str, total_pages: int) -> set[int]:
     """Parse 1-based page specs such as '8, 12-15' into zero-based page indexes."""
     pages = set()

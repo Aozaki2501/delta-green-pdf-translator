@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 
 from core.utils import (
+    count_cjk_chars,
     is_failed_translation,
+    looks_untranslated_page,
     normalize_page_range,
     output_base_in_own_dir,
     parse_page_selection,
@@ -165,6 +167,29 @@ class TestIsFailedTranslation:
         """Prefix appearing in the middle (not at start) returns False."""
         text = f"Some text {TRANSLATION_FAILURE_PREFIX} error]"
         assert is_failed_translation(text) is False
+
+
+class TestLooksUntranslatedPage:
+    def test_flags_full_english_page(self):
+        source = " ".join(["The agents enter the chamber and study the wall."] * 8)
+        translated = " ".join(["The agents enter the chamber and study the wall."] * 8)
+
+        assert looks_untranslated_page(source, translated, "columns") is True
+
+    def test_accepts_mostly_chinese_translation(self):
+        source = " ".join(["The agents enter the chamber and study the wall."] * 8)
+        translated = "特工进入房间，检查墙壁上的痕迹，并继续向前搜索。" * 8
+
+        assert looks_untranslated_page(source, translated, "columns") is False
+
+    def test_skips_art_pages(self):
+        source = "The cover shows a ruined temple under the night sky."
+        translated = "The cover shows a ruined temple under the night sky."
+
+        assert looks_untranslated_page(source, translated, "art") is False
+
+    def test_counts_cjk_chars(self):
+        assert count_cjk_chars("中文 mixed English") == 2
 
 
 def test_output_base_uses_same_named_folder():

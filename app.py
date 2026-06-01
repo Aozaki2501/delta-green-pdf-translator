@@ -42,6 +42,7 @@ from translate_md import translate_md_file
 from translate_docx import translate_docx_file
 from core.md_extractor import MarkdownExtractor
 from core.docx_extractor import DocxExtractor, HAS_DOCX as HAS_DOCX_LIB
+from core.utils import looks_untranslated_page
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -1043,8 +1044,8 @@ with st.sidebar:
     if "typeset_pdf" in formats:
         st.caption("纯重绘 PDF 会单独运行，从 PDF 提取结构后用 HTML/CSS 重建页面并导出。")
 
-    display_start_page = st.number_input("起始页（从 1 开始）", value=1, min_value=1)
-    end_page_str = st.text_input("结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
+    display_start_page = st.number_input("PDF 文件页起始页（从 1 开始）", value=1, min_value=1)
+    end_page_str = st.text_input("PDF 文件页结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
     max_blocks_input = st.number_input(
         "翻译块数上限（MD/Word）",
         value=0, min_value=0, step=10,
@@ -1246,8 +1247,6 @@ if pdf_file and show_extraction_preview:
     finally:
         if preview_extractor:
             preview_extractor.close()
-
-render_output_history(APP_DIR / "output")
 
 if launch_pressed:
     if not source_file:
@@ -1955,17 +1954,14 @@ if launch_pressed:
         render_status_flow(active_index=1)
         st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
+        source_page_labels = {}
         page_layouts = {}
         page_diagnostics = []
-        image_assets = {}
-        asset_dir = str(document_output_dir / "assets")
         for pn in range(start_page, end_page):
+            source_page_labels[pn] = extractor.get_page_label(pn)
             page_layouts[pn] = extractor.detect_page_layout(pn)
-            pages_text[pn] = extractor.extract_page(pn)
+            pages_text[pn] = extractor.extract_page(pn, include_images=False)
             page_diagnostics.append(extractor.get_page_diagnostics(pn, pages_text[pn]))
-            images = extractor.export_page_images(pn, asset_dir, pdf_stem)
-            if images:
-                image_assets[pn] = images
         extractor.finalize_chapters()
         toc = extractor.chapter_detector.get_toc_markdown()
         risky_pages = [item for item in page_diagnostics if item.get("risks")]
@@ -1974,17 +1970,12 @@ if launch_pressed:
                 "提取诊断发现风险页："
                 + ", ".join(str(item["page"] + 1) for item in risky_pages[:30])
             )
-        extracted_image_count = sum(len(v) for v in image_assets.values())
-        if image_assets:
-            st.info(f"已裁出图片资源：{extracted_image_count} 张")
         extraction_log = [
             ("info", f"检测到 {total} 页"),
             ("info", f"本次处理第 {start_page + 1}-{end_page} 页"),
         ]
         if risky_pages:
             extraction_log.append(("warn", f"风险页 {len(risky_pages)} 个"))
-        if extracted_image_count:
-            extraction_log.append(("info", f"图片资源 {extracted_image_count} 张"))
         render_system_log(extraction_log)
 
         # Translate
@@ -2060,6 +2051,17 @@ if launch_pressed:
 
         render_progress(total_to_do, total_to_do)
         status_text.text(f"✓ 翻译完成! 总用时 {format_duration(time.time() - translation_started_at)}")
+        for pn in range(start_page, end_page):
+            translation = tracker.get_translation(pn)
+            if not translation.strip():
+                continue
+            if looks_untranslated_page(
+                pages_text.get(pn, ""),
+                translation,
+                page_layouts.get(pn, ""),
+            ):
+                tracker.mark_failed(pn, "页面疑似整页未翻译，已拦截输出")
+
         translated_pages_sorted = sorted(
             [
                 (pn, tracker.get_translation(pn))
@@ -2142,7 +2144,6 @@ if launch_pressed:
                 pdf_stem,
                 toc,
                 page_layouts=page_layouts,
-                image_assets=image_assets,
             )
             generated_files.append(md_path)
 
@@ -2153,8 +2154,8 @@ if launch_pressed:
                     translated_pages_sorted,
                     html_path,
                     pdf_stem,
+                    source_page_labels=source_page_labels,
                     page_layouts=page_layouts,
-                    image_assets=image_assets,
                 )
                 generated_files.append(html_path)
             except Exception as e:
@@ -2178,8 +2179,8 @@ if launch_pressed:
                     header_right=word_header_right or None,
                     hard_page_breaks=bool(word_hard_page_breaks),
                     source_pages_text=pages_text,
+                    source_page_labels=source_page_labels,
                     page_layouts=page_layouts,
-                    image_assets=image_assets,
                 )
                 generated_files.append(docx_path)
 
@@ -2213,3 +2214,6 @@ if launch_pressed:
         render_audit_grid(final_audit_items)
         render_downloads(generated_files)
         extractor.close()
+
+with st.expander("档案库", expanded=False):
+    render_output_history(APP_DIR / "output")

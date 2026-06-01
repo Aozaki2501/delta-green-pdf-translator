@@ -521,20 +521,97 @@ def _is_soft_subheading_line(text: str) -> bool:
     return clean.endswith(("？", "?", "：", ":"))
 
 
-def _format_page_ranges(page_nums):
-    nums = sorted({p + 1 for p in page_nums})
+def _page_label_text(page_num: int, page_labels: Optional[dict] = None) -> str:
+    if page_labels:
+        label = str(page_labels.get(page_num, "") or "").strip()
+        if label:
+            return label
+    return str(page_num + 1)
+
+
+def _page_label_key(label: str):
+    clean = str(label or "").strip()
+    if not clean:
+        return None
+    number_match = re.fullmatch(r"(.*?)(\d+)", clean)
+    if number_match:
+        return ("number", number_match.group(1), int(number_match.group(2)))
+    if re.fullmatch(r"[ivxlcdmIVXLCDM]+", clean):
+        roman_values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+        total = 0
+        prev = 0
+        for char in reversed(clean.upper()):
+            value = roman_values[char]
+            if value < prev:
+                total -= value
+            else:
+                total += value
+                prev = value
+        return ("roman", "", total)
+    return None
+
+
+def _labels_are_consecutive(left: str, right: str) -> bool:
+    left_key = _page_label_key(left)
+    right_key = _page_label_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key[:2] != right_key[:2]:
+        return False
+    return right_key[2] == left_key[2] + 1
+
+
+def _format_page_ranges(page_nums, page_labels: Optional[dict] = None):
+    nums = sorted({int(p) for p in page_nums})
     if not nums:
         return ""
     ranges = []
-    start = prev = nums[0]
+    start_num = prev_num = nums[0]
+    start_label = prev_label = _page_label_text(nums[0], page_labels)
     for num in nums[1:]:
-        if num == prev + 1:
-            prev = num
+        label = _page_label_text(num, page_labels)
+        if num == prev_num + 1 and _labels_are_consecutive(prev_label, label):
+            prev_num = num
+            prev_label = label
             continue
-        ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
-        start = prev = num
-    ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+        ranges.append(start_label if start_num == prev_num else f"{start_label}-{prev_label}")
+        start_num = prev_num = num
+        start_label = prev_label = label
+    ranges.append(start_label if start_num == prev_num else f"{start_label}-{prev_label}")
     return ", ".join(ranges)
+
+
+def _format_source_page_note(page_nums, page_labels: Optional[dict] = None) -> str:
+    label_text = _format_page_ranges(page_nums, page_labels)
+    return f"原书页 {label_text}" if label_text else ""
+
+
+def _without_image_blocks(translated_pages):
+    cleaned_pages = []
+    for page_num, text in translated_pages:
+        lines = str(text or "").splitlines()
+        kept = []
+        in_image = False
+        for line in lines:
+            marker = _normalize_marker_line(line.strip())
+            if marker == "[IMAGE]":
+                if in_image:
+                    raise ValueError(f"第 {page_num} 页存在嵌套图片标记")
+                in_image = True
+                continue
+            if marker == "[/IMAGE]":
+                if not in_image:
+                    raise ValueError(f"第 {page_num} 页存在多余的图片结束标记")
+                in_image = False
+                continue
+            if not in_image:
+                kept.append(line)
+        if in_image:
+            raise ValueError(f"第 {page_num} 页存在未结束的图片标记")
+        clean = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+        if clean:
+            cleaned_pages.append((page_num, clean))
+    return cleaned_pages
 
 
 def _header_title(title: str) -> str:
@@ -557,22 +634,36 @@ def _header_title(title: str) -> str:
     return clean[:32]
 
 
+def _clean_heading_title(text: str) -> Optional[str]:
+    clean = re.sub(r"^#{1,6}\s*", "", text.strip())
+    clean = re.sub(r"^(?:/\s*){2,}", "", clean)
+    clean = re.sub(r"(?:\s*/){2,}$", "", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean or None
+
+
+def _looks_like_contents_heading(title: str) -> bool:
+    return bool(re.search(r"(?:目录|contents)", title or "", flags=re.IGNORECASE))
+
+
 def _heading_text_from_block(text: str) -> Optional[str]:
     stripped = text.strip()
     if _is_full_width_title_block(stripped):
         inner = re.sub(r"^\[FULL_WIDTH_TITLE\]\s*", "", stripped)
         inner = re.sub(r"\s*\[/FULL_WIDTH_TITLE\]$", "", inner)
         first_line = next((line.strip() for line in inner.splitlines() if line.strip()), "")
-        return re.sub(r"^#{1,6}\s*", "", first_line).strip() or None
+        return _clean_heading_title(first_line)
 
     first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
     if re.match(r"^#{1,3}\s+", first_line):
-        return re.sub(r"^#{1,3}\s*", "", first_line).strip() or None
+        return _clean_heading_title(first_line)
     return None
 
 
 def _primary_title_from_reading_pages(reading_pages) -> Optional[str]:
     for page in reading_pages:
+        if page.get("layout") == "toc":
+            continue
         for block in page.get("blocks", []):
             stripped = (block.get("text") or "").strip()
             if not stripped:
@@ -581,12 +672,21 @@ def _primary_title_from_reading_pages(reading_pages) -> Optional[str]:
                 inner = re.sub(r"^\[FULL_WIDTH_TITLE\]\s*", "", stripped)
                 inner = re.sub(r"\s*\[/FULL_WIDTH_TITLE\]$", "", inner)
                 first_line = next((line.strip() for line in inner.splitlines() if line.strip()), "")
-                title = re.sub(r"^#{1,6}\s*", "", first_line).strip()
-                if title:
+                title = _clean_heading_title(first_line)
+                if title and not _looks_like_contents_heading(title):
                     return title
+    for page in reading_pages:
+        if page.get("layout") == "toc":
+            continue
+        for block in page.get("blocks", []):
+            stripped = (block.get("text") or "").strip()
+            if not stripped:
+                continue
             first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
             if re.match(r"^#\s+", first_line):
-                return re.sub(r"^#\s*", "", first_line).strip() or None
+                title = _clean_heading_title(first_line)
+                if title and not _looks_like_contents_heading(title):
+                    return title
     return None
 
 
@@ -615,9 +715,12 @@ def _looks_like_stat_block(text: str) -> bool:
 def attach_running_headers(reading_pages, fallback_title: str):
     current = _display_title(fallback_title, reading_pages)
     for page in reading_pages:
+        if page.get("layout") == "toc":
+            page["running_header"] = current
+            continue
         for block in page.get("blocks", []):
             heading = _heading_text_from_block(block.get("text", ""))
-            if heading:
+            if heading and not _looks_like_contents_heading(heading):
                 current = heading[:48]
                 break
         page["running_header"] = current

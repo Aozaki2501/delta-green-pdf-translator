@@ -296,6 +296,11 @@ class _FakeDoc:
         return self._pages[index]
 
 
+class _NoopChapterDetector:
+    def analyze_page(self, page_num, page_dict):
+        return None
+
+
 def test_card_grouping_does_not_swallow_other_column_heading():
     extractor = PDFExtractor.__new__(PDFExtractor)
     body = _block("Body text in the left column.", 36, 64, 274, 560, font="Sabon")
@@ -419,3 +424,81 @@ def test_two_column_single_line_blocks_stay_columns():
     extractor.doc = _FakeDoc([_FakeLayoutPage(blocks)])
 
     assert extractor.detect_page_layout(0) == "columns"
+
+
+def test_contents_title_with_decorators_is_classified_as_toc():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    title = _block("// Contents // // Iconoclasts // Contents", 40, 40, 540, 70, font="Courier")
+    title["lines"] = [_line("// Contents // // Iconoclasts // Contents", 12, 40, font="Courier")]
+    toc = _block("Introduction ........ 2\nThe Cornucopia House ........ 4", 40, 100, 540, 150, font="Courier")
+    toc["lines"] = [
+        _line("Introduction ........ 2", 10, 100, font="Courier"),
+        _line("The Cornucopia House ........ 4", 10, 114, font="Courier"),
+    ]
+    extractor.doc = _FakeDoc([_FakeLayoutPage([title, toc])])
+
+    assert extractor.detect_page_layout(0) == "toc"
+
+
+def test_contents_page_does_not_require_monospace_font():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    title = _block("// Contents // // Iconoclasts // Contents", 40, 40, 540, 70, font="SourceSerif")
+    title["lines"] = [_line("// Contents // // Iconoclasts // Contents", 12, 40, font="SourceSerif")]
+    toc = _block("Introduction ........ 2\nThe Cornucopia House ........ 4", 40, 100, 540, 150, font="SourceSerif")
+    toc["lines"] = [
+        _line("Introduction ........ 2", 10, 100, font="SourceSerif"),
+        _line("The Cornucopia House ........ 4", 10, 114, font="SourceSerif"),
+    ]
+    extractor.doc = _FakeDoc([_FakeLayoutPage([title, toc])])
+
+    assert extractor.detect_page_layout(0) == "toc"
+
+
+def test_contents_continuation_title_can_sit_in_top_margin():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    title = _block("// Contents // // Iconoclasts //", 40, 10, 540, 28, font="SourceSerif")
+    title["lines"] = [_line("// Contents // // Iconoclasts //", 12, 10, font="SourceSerif")]
+    toc = _block("Appendix ........ 174\nThe Father of War ........ 178", 40, 100, 540, 150, font="SourceSerif")
+    toc["lines"] = [
+        _line("Appendix ........ 174", 10, 100, font="SourceSerif"),
+        _line("The Father of War ........ 178", 10, 114, font="SourceSerif"),
+    ]
+    extractor.doc = _FakeDoc([_FakeLayoutPage([title, toc])])
+
+    assert extractor.detect_page_layout(0) == "toc"
+
+
+def test_extract_page_keeps_full_page_art_placeholder_when_text_is_empty():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    extractor.doc = _FakeDoc([_FakeLayoutPage([])])
+    extractor.chapter_detector = _NoopChapterDetector()
+    extractor._page_body_context = {}
+    extractor._page_layout_notes = {}
+    extractor._page_image_regions = {}
+
+    page = extractor.doc[0]
+    page.get_images = lambda full=True: [(1,)]
+    page.get_drawings = lambda: []
+
+    text = extractor.extract_page(0)
+
+    assert "[IMAGE]" in text
+    assert len(extractor.get_image_regions(0)) == 1
+
+
+def test_extract_page_can_skip_full_page_art_placeholder():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    extractor.doc = _FakeDoc([_FakeLayoutPage([])])
+    extractor.chapter_detector = _NoopChapterDetector()
+    extractor._page_body_context = {}
+    extractor._page_layout_notes = {}
+    extractor._page_image_regions = {}
+
+    page = extractor.doc[0]
+    page.get_images = lambda full=True: [(1,)]
+    page.get_drawings = lambda: []
+
+    text = extractor.extract_page(0, include_images=False)
+
+    assert text == ""
+    assert extractor.get_image_regions(0) == []

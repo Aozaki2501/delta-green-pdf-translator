@@ -23,6 +23,7 @@ from exporters._shared import (
     _normalize_marker_line,
     _display_title,
     _header_title as _shared_header_title,
+    _without_image_blocks,
     _looks_like_markdown_table_row,
     _strip_list_marker,
     _strip_quote_prefix,
@@ -173,47 +174,93 @@ def clear_header_footer_part(part):
         element.remove(child)
 
 
-def set_running_header_footer(doc, title: str, header_left: str = "绿色三角洲",
-                              header_right: Optional[str] = None):
-    right_title = header_right.strip() if header_right else _header_title(title)
-    left_title = header_left.strip() if header_left else "绿色三角洲"
-    for section in doc.sections:
-        section.header.is_linked_to_previous = False
-        section.footer.is_linked_to_previous = False
+def _clear_section_chrome(section):
+    section.header.is_linked_to_previous = False
+    section.footer.is_linked_to_previous = False
+    clear_header_footer_part(section.header)
+    clear_header_footer_part(section.footer)
 
-        clear_header_footer_part(section.header)
 
-        table = section.header.add_table(rows=1, cols=2, width=Inches(7.4))
-        table.autofit = False
-        remove_table_borders(table)
-        set_cell_width(table.cell(0, 0), Inches(3.2))
-        set_cell_width(table.cell(0, 1), Inches(4.2))
+def _restart_page_numbering(section, start: int = 1):
+    sect_pr = section._sectPr
+    pg_num = sect_pr.find(qn("w:pgNumType"))
+    if pg_num is None:
+        pg_num = OxmlElement("w:pgNumType")
+        sect_pr.append(pg_num)
+    pg_num.set(qn("w:start"), str(int(start)))
 
-        left_para = table.cell(0, 0).paragraphs[0]
-        right_para = table.cell(0, 1).paragraphs[0]
-        right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        left_para.paragraph_format.space_before = Pt(0)
-        left_para.paragraph_format.space_after = Pt(0)
-        left_para.paragraph_format.line_spacing = 1.0
-        run = left_para.add_run(f"// {left_title} //")
+
+def _continue_page_numbering(section):
+    pg_num = section._sectPr.find(qn("w:pgNumType"))
+    if pg_num is not None:
+        section._sectPr.remove(pg_num)
+
+
+def _set_section_header(section, left_title: str, right_title: str):
+    clear_header_footer_part(section.header)
+    table = section.header.add_table(rows=1, cols=2, width=Inches(7.4))
+    table.autofit = False
+    remove_table_borders(table)
+    set_cell_width(table.cell(0, 0), Inches(3.2))
+    set_cell_width(table.cell(0, 1), Inches(4.2))
+
+    left_para = table.cell(0, 0).paragraphs[0]
+    right_para = table.cell(0, 1).paragraphs[0]
+    right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    for para in (left_para, right_para):
+        para.paragraph_format.space_before = Pt(0)
+        para.paragraph_format.space_after = Pt(0)
+        para.paragraph_format.line_spacing = 1.0
+
+    run = left_para.add_run(f"// {left_title} //")
+    run.font.name = "宋体"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    run.font.size = Pt(9)
+
+    run = right_para.add_run(f"// {right_title} //")
+    run.font.name = "宋体"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    run.font.size = Pt(9)
+
+
+def _set_section_footer(section, source_note: str = "", show_page_number: bool = True):
+    clear_header_footer_part(section.footer)
+    table = section.footer.add_table(rows=1, cols=2, width=Inches(7.4))
+    table.autofit = False
+    remove_table_borders(table)
+    set_cell_width(table.cell(0, 0), Inches(4.8))
+    set_cell_width(table.cell(0, 1), Inches(2.6))
+
+    left_para = table.cell(0, 0).paragraphs[0]
+    right_para = table.cell(0, 1).paragraphs[0]
+    right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    for para in (left_para, right_para):
+        para.paragraph_format.space_before = Pt(0)
+        para.paragraph_format.space_after = Pt(0)
+        para.paragraph_format.line_spacing = 1.0
+
+    if source_note:
+        run = left_para.add_run(source_note)
         run.font.name = "宋体"
         run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
         run.font.size = Pt(9)
 
-        right_para.paragraph_format.space_before = Pt(0)
-        right_para.paragraph_format.space_after = Pt(0)
-        right_para.paragraph_format.line_spacing = 1.0
-        run = right_para.add_run(f"// {right_title} //")
-        run.font.name = "宋体"
-        run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-        run.font.size = Pt(9)
+    if show_page_number:
+        _add_page_number(right_para)
 
-        clear_header_footer_part(section.footer)
-        footer_para = section.footer.add_paragraph()
-        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        footer_para.paragraph_format.space_before = Pt(0)
-        footer_para.paragraph_format.space_after = Pt(0)
-        _add_page_number(footer_para)
+
+def set_section_header_footer(section, title: str, header_left: str = "绿色三角洲",
+                              header_right: Optional[str] = None, source_note: str = "",
+                              show_header: bool = True, show_page_number: bool = True,
+                              restart_page_number: Optional[int] = None):
+    _clear_section_chrome(section)
+    if restart_page_number is not None:
+        _restart_page_numbering(section, restart_page_number)
+    if show_header:
+        right_title = header_right.strip() if header_right else _header_title(title)
+        left_title = header_left.strip() if header_left else "绿色三角洲"
+        _set_section_header(section, left_title, right_title)
+    _set_section_footer(section, source_note=source_note, show_page_number=show_page_number)
 
 
 def set_document_base_layout(doc, columns=1, body_font_size=12.0, line_spacing=1.5,
@@ -827,7 +874,8 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                       min_chars=1000, max_chars=1500, body_font_size=12.0,
                       line_spacing=1.5, columns=2, header_left="绿色三角洲",
                       header_right=None, hard_page_breaks=False,
-                      source_pages_text=None, page_layouts=None,
+                      source_pages_text=None, source_page_labels: Optional[dict] = None,
+                      page_layouts=None,
                       image_assets: Optional[dict] = None):
     """Write translated Markdown-like page content to a Word document."""
     if not HAS_DOCX:
@@ -846,7 +894,7 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
     if not 0.8 <= line_spacing <= 3.0:
         raise ValueError("Word 行距超出支持范围")
     ensure_output_parent(docx_output)
-    translated_pages = _with_missing_image_placeholders(translated_pages, source_pages_text)
+    translated_pages = _without_image_blocks(translated_pages)
     reading_pages = paginate_translated_blocks(
         translated_pages,
         min_chars,
@@ -858,6 +906,7 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
 
     doc = DocxDocument()
     set_document_base_layout(doc, columns=1, body_font_size=body_font_size, line_spacing=line_spacing)
+    set_section_header_footer(doc.sections[0], display_title, show_header=False, show_page_number=False)
 
     title_para = doc.add_heading(display_title, level=1)
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -877,65 +926,78 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
         spacer = doc.add_paragraph()
         spacer.paragraph_format.space_after = Pt(0)
 
+    if not reading_pages:
+        doc.save(docx_output)
+        return
+
+    first_layout = reading_pages[0].get("layout", "columns")
+    current_page_columns = _columns_for_layout(first_layout, columns)
+    current_show_header = first_layout != "toc"
     body_section = doc.add_section(WD_SECTION.NEW_PAGE)
-    set_section_page_layout(body_section, columns=columns)
-    set_running_header_footer(doc, display_title, header_left=header_left, header_right=header_right)
-    current_page_columns = columns
-    image_cursors = {}
+    set_section_page_layout(body_section, columns=current_page_columns)
+    set_section_header_footer(
+        body_section,
+        display_title,
+        header_left=header_left,
+        header_right=header_right,
+        show_header=current_show_header,
+        show_page_number=True,
+        restart_page_number=1,
+    )
+
     for page_idx, page in enumerate(reading_pages):
         blocks = page["blocks"]
         layout = page.get("layout", "columns")
         page_columns = _columns_for_layout(layout, columns)
+        show_header = layout != "toc"
         if hard_page_breaks and page_idx > 0:
             doc.add_page_break()
-        if page_idx == 0:
-            set_section_page_layout(body_section, columns=page_columns)
-        elif page_columns != current_page_columns:
+        if page_idx > 0 and (page_columns != current_page_columns or show_header != current_show_header):
             body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+            _continue_page_numbering(body_section)
             set_section_page_layout(body_section, columns=page_columns)
+            set_section_header_footer(
+                body_section,
+                display_title,
+                header_left=header_left,
+                header_right=header_right,
+                show_header=show_header,
+                show_page_number=True,
+            )
         current_page_columns = page_columns
+        current_show_header = show_header
         for block in blocks:
             for kind, content in _split_card_segments(block["text"]):
                 if kind == "card":
-                    card_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(card_section, columns=1)
                     _write_word_card(doc, content)
-                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "stat":
-                    stat_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(stat_section, columns=1)
                     _write_word_stat_block(doc, content)
-                    body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                    set_section_page_layout(body_section, columns=page_columns)
                 elif kind == "image":
-                    source_page = block.get("source_page")
-                    image_paths = (image_assets or {}).get(source_page, [])
-                    cursor = image_cursors.setdefault(source_page, 0)
-                    image_asset = image_paths[cursor] if cursor < len(image_paths) else ""
-                    image_cursors[source_page] = cursor + 1
-                    placement = _image_asset_placement(image_asset)
-                    if placement == "full":
-                        image_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                        set_section_page_layout(image_section, columns=1)
-                        _write_word_image_placeholder(doc, content, image_asset, placement)
-                        body_section = doc.add_section(WD_SECTION.CONTINUOUS)
-                        set_section_page_layout(body_section, columns=page_columns)
-                    else:
-                        _write_word_image_placeholder(doc, content, image_asset, placement)
+                    continue
                 elif kind == "full_title":
-                    doc.add_page_break()
                     title_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    _continue_page_numbering(title_section)
                     set_section_page_layout(title_section, columns=1)
+                    title_section.header.is_linked_to_previous = True
+                    title_section.footer.is_linked_to_previous = True
                     _write_word_full_title(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    _continue_page_numbering(body_section)
                     set_section_page_layout(body_section, columns=page_columns)
+                    body_section.header.is_linked_to_previous = True
+                    body_section.footer.is_linked_to_previous = True
                 elif kind == "table":
                     table_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    _continue_page_numbering(table_section)
                     set_section_page_layout(table_section, columns=1)
+                    table_section.header.is_linked_to_previous = True
+                    table_section.footer.is_linked_to_previous = True
                     _write_word_table(doc, content)
                     body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+                    _continue_page_numbering(body_section)
                     set_section_page_layout(body_section, columns=page_columns)
+                    body_section.header.is_linked_to_previous = True
+                    body_section.footer.is_linked_to_previous = True
                 else:
                     _write_word_block(doc, content, layout=layout)
 

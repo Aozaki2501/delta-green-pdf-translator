@@ -50,26 +50,21 @@ def infer_output_base(progress_path: str, output_base: str | None) -> str:
     return output_base_in_own_dir(str(progress.with_suffix("")))
 
 
-def detect_pdf_page_context(pdf_path: str | None, translated_pages: list[tuple[int, str]],
-                            asset_dir: str | None = None,
-                            asset_stem: str = "assets") -> tuple[dict[int, str], dict[int, str], dict[int, list[str]]]:
+def detect_pdf_page_context(pdf_path: str | None, translated_pages: list[tuple[int, str]]) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
     if not pdf_path:
         return {}, {}, {}
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF 文件不存在：{pdf_path}")
     layouts = {}
     pages_text = {}
-    image_assets = {}
+    page_labels = {}
     with PDFExtractor(pdf_path) as extractor:
         for page_num, _ in translated_pages:
             if 0 <= page_num < extractor.total_pages:
+                page_labels[page_num] = extractor.get_page_label(page_num)
                 layouts[page_num] = extractor.detect_page_layout(page_num)
-                pages_text[page_num] = extractor.extract_page(page_num)
-                if asset_dir:
-                    images = extractor.export_page_images(page_num, asset_dir, asset_stem)
-                    if images:
-                        image_assets[page_num] = images
-    return layouts, pages_text, image_assets
+                pages_text[page_num] = extractor.extract_page(page_num, include_images=False)
+    return layouts, pages_text, page_labels
 
 
 def rerender_outputs(progress_path: str, output_base: str | None = None,
@@ -86,11 +81,9 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
     base = infer_output_base(progress_path, output_base)
     ensure_output_parent(base + ".tmp")
     doc_title = title or Path(base).stem
-    page_layouts, pages_text, image_assets = detect_pdf_page_context(
+    page_layouts, pages_text, source_page_labels = detect_pdf_page_context(
         pdf_path,
         translated_pages,
-        asset_dir=str(Path(base).parent / "assets") if pdf_path else None,
-        asset_stem=Path(base).stem,
     )
 
     written = []
@@ -103,8 +96,8 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
             min_chars=html_min_chars,
             max_chars=html_max_chars,
             columns=columns,
+            source_page_labels=source_page_labels,
             page_layouts=page_layouts,
-            image_assets=image_assets,
         )
         written.append(html_path)
 
@@ -117,7 +110,6 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
             min_chars=markdown_min_chars,
             max_chars=markdown_max_chars,
             page_layouts=page_layouts,
-            image_assets=image_assets,
         )
         written.append(md_path)
 
@@ -134,8 +126,8 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
             columns=columns,
             hard_page_breaks=word_hard_page_breaks,
             source_pages_text=pages_text,
+            source_page_labels=source_page_labels,
             page_layouts=page_layouts,
-            image_assets=image_assets,
         )
         written.append(docx_path)
 

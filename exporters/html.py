@@ -15,6 +15,8 @@ from exporters._shared import (
     _is_plain_heading_line,
     _is_soft_subheading_line,
     _format_page_ranges,
+    _format_source_page_note,
+    _without_image_blocks,
     _header_title,
     _display_title,
     attach_running_headers,
@@ -351,6 +353,7 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
 def write_html_output(translated_pages, html_output: str, title: str, subtitle: str = "中文翻译",
                       min_chars=1200, max_chars=1800, columns=2,
                       header_left="绿色三角洲", header_right=None,
+                      source_page_labels: Optional[dict] = None,
                       page_layouts: Optional[dict] = None,
                       image_assets: Optional[dict] = None):
     """Write translated content as a printable dual-column HTML document."""
@@ -363,6 +366,7 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         raise ValueError("HTML 正文分栏只支持 1 或 2 栏")
 
     ensure_output_parent(html_output)
+    translated_pages = _without_image_blocks(translated_pages)
     reading_pages = attach_running_headers(paginate_translated_blocks(
         translated_pages,
         min_chars,
@@ -371,7 +375,8 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         split_on_layout=True,
     ), title)
     display_title = _display_title(title, reading_pages)
-    right_title = html.escape((header_right or _header_title(display_title)).strip())
+    default_right_title = (header_right or _header_title(display_title)).strip()
+    right_title = html.escape(default_right_title)
     left_title = html.escape((header_left or "绿色三角洲").strip())
     safe_title = html.escape(display_title)
     safe_subtitle = html.escape(subtitle or "")
@@ -534,7 +539,6 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         margin: 0 auto;
     }}
     .handout-card {{
-        column-span: all;
         margin: 0.12in 0 0.18in;
         padding: 0.10in 0.16in 0.11in;
         background: rgba(246, 224, 111, 0.24);
@@ -585,7 +589,6 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         background: rgba(255, 255, 255, 0.36);
     }}
     .stat-block {{
-        column-span: all;
         margin: 0.12in 0 0.22in;
         padding: 0.12in 0.18in;
         border-top: 2px solid var(--ink);
@@ -681,11 +684,18 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         break-inside: avoid;
         page-break-inside: avoid;
     }}
-    .source-pages {{
+    .page-meta {{
         column-span: all;
         margin-top: 0.24in;
+        padding-top: 0.06in;
+        border-top: 1px solid var(--rule);
         color: var(--muted);
         font: 8.5pt "Courier New", monospace;
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+    }}
+    .page-meta span:last-child {{
         text-align: right;
     }}
     .cover .content {{
@@ -761,10 +771,10 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         text-align: center;
         color: var(--muted);
     }}
-    .sheet.single .source-pages {{
+    .sheet.single .page-meta {{
         column-span: none;
     }}
-    .source-pages.no-span {{
+    .page-meta.no-span {{
         column-span: none;
     }}
     .cover-title {{
@@ -803,7 +813,6 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         "</head>",
         "<body>",
         '<section class="sheet cover">',
-        f'<header class="running-head"><span>// {left_title} //</span><span>// {right_title} //</span></header>',
         '<main class="content">',
         f'<h1 class="cover-title">{safe_title}</h1>',
         f'<p class="cover-subtitle">{safe_subtitle}</p>' if safe_subtitle else "",
@@ -815,12 +824,17 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     for page_idx, page in enumerate(reading_pages, 1):
         blocks = page["blocks"]
         layout = page.get("layout", "columns")
-        page_right_title = html.escape(page.get("running_header") or right_title)
-        source_pages = _format_page_ranges([b["source_page"] for b in blocks])
+        page_right_title = html.escape(page.get("running_header") or default_right_title)
+        source_pages = _format_page_ranges([b["source_page"] for b in blocks], source_page_labels)
+        source_note = html.escape(_format_source_page_note([b["source_page"] for b in blocks], source_page_labels))
         source_class = "" if _layout_uses_columns(layout) else " no-span"
         chunks.extend([
             f'<section class="sheet {html.escape(layout)}">',
-            f'<header class="running-head"><span>// {left_title} //</span><span>// {page_right_title} //</span></header>',
+            (
+                ""
+                if layout == "toc"
+                else f'<header class="running-head"><span>// {left_title} //</span><span>// {page_right_title} //</span></header>'
+            ),
             '<main class="content">',
         ])
         for block in blocks:
@@ -828,7 +842,9 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
             image_paths = (image_assets or {}).get(source_page, [])
             cursor = image_cursors.setdefault(source_page, [0])
             chunks.append(_html_block(block["text"], image_paths, cursor, html_output))
-        chunks.append(f'<div class="source-pages{source_class}">Reading Page {page_idx}; Source PDF Pages: {html.escape(source_pages)}</div>')
+        chunks.append(
+            f'<footer class="page-meta{source_class}"><span>阅读版 {page_idx}</span><span>{source_note or html.escape(source_pages)}</span></footer>'
+        )
         chunks.extend(["</main>", "</section>"])
 
     chunks.extend(["</body>", "</html>", ""])

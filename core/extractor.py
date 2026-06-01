@@ -131,6 +131,14 @@ class PDFExtractor:
     def get_image_regions(self, page_num: int) -> list:
         return list(self._page_image_regions.get(page_num, []))
 
+    def get_page_label(self, page_num: int) -> str:
+        try:
+            label = self.doc[page_num].get_label()
+        except Exception:
+            label = ""
+        label = str(label or "").strip()
+        return label or str(page_num + 1)
+
     def export_page_images(self, page_num: int, output_dir: str, stem: str,
                            zoom: float = 2.0) -> list[dict]:
         regions = self.get_image_regions(page_num)
@@ -502,13 +510,15 @@ class PDFExtractor:
         return pipe_signal or separator_signal or (keyword_signal and aligned_columns >= 2) or label_signal or multi_column_signal
 
     def _is_contents_block(self, block):
-        if not self._is_monospace_block(block):
-            return False
         text = self._extract_block_text(block)
         leader_hits = re.findall(r"\.{4,}\s*\d{1,3}", text)
         return bool(re.search(r"\bContents\b", text, re.IGNORECASE)) or (
             text.count(".") >= 20 and len(leader_hits) >= 3
         )
+
+    def _looks_like_contents_title(self, text: str) -> bool:
+        compact = re.sub(r"[^A-Za-z]", "", str(text or "")).lower()
+        return compact.startswith("contents") and len(compact) <= 32
 
     def _is_handout_block(self, block):
         if not self._is_monospace_block(block):
@@ -667,7 +677,7 @@ class PDFExtractor:
                 self._has_card_label(self._extract_block_text(block))
                 for block in inside
             )
-            if has_card_text or monospace_lines >= 2 or has_card_label:
+            if has_card_text or monospace_lines >= 4 or has_card_label:
                 accepted.append(rect)
 
         merged = []
@@ -710,6 +720,21 @@ class PDFExtractor:
                 if id(block) not in card_ids and self._rect_contains_block(rect, block, tolerance=8)
             ]
             if not group:
+                continue
+            total_lines = sum(self._block_line_count(block) for block in group)
+            group_text = "\n".join(self._extract_block_text(block) for block in group).strip()
+            group_has_label = self._has_card_label(group_text)
+            group_has_card_text = any(
+                self._is_card_text_block(block, page_width, page_height, median_size)
+                for block in group
+            )
+            monospace_lines = sum(
+                self._block_line_count(block) for block in group
+                if self._is_monospace_block(block)
+            )
+            if total_lines < 2 and not group_has_label:
+                continue
+            if not (group_has_card_text or group_has_label or monospace_lines >= 4):
                 continue
             for block in group:
                 card_ids.add(id(block))
@@ -1052,21 +1077,28 @@ class PDFExtractor:
         page_width = page.rect.width
         page_height = page.rect.height
         page_dict = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
-        content_blocks = [
+        text_blocks = [
             b for b in page_dict.get("blocks", [])
-            if b.get("type") == 0 and not self._is_header_footer(b, page_height)
+            if b.get("type") == 0
         ]
+        top_text_blocks = sorted(text_blocks, key=lambda block: (block["bbox"][1], block["bbox"][0]))
+        has_contents_title = any(
+            self._looks_like_contents_title(self._extract_block_text(block))
+            for block in top_text_blocks[:3]
+        )
+        content_blocks = [
+            b for b in text_blocks
+            if not self._is_header_footer(b, page_height)
+        ]
+        if has_contents_title:
+            return "toc"
         if not content_blocks:
-            if len(page.get_drawings()) >= 8 or len(page.get_images(full=True)) >= 4:
+            if len(page.get_drawings()) >= 8 or len(page.get_images(full=True)) >= 1:
                 return "art"
             return "columns"
 
         top_blocks = sorted(content_blocks, key=lambda block: (block["bbox"][1], block["bbox"][0]))
         top_text = self._extract_block_text(top_blocks[0]) if top_blocks else ""
-        contents_blocks = [block for block in content_blocks if self._is_contents_block(block)]
-        if contents_blocks and re.match(r"\s*Contents\b", top_text, re.IGNORECASE):
-            return "toc"
-
         handout_blocks = [
             block for block in content_blocks
             if self._is_handout_block(block)
@@ -1589,7 +1621,7 @@ class PDFExtractor:
             paragraphs.append(current_para)
         return self._clean_text("\n\n".join(paragraphs))
 
-    def extract_page(self, page_num: int) -> str:
+    def extract_page(self, page_num: int, include_images: bool = True) -> str:
         page = self.doc[page_num]
         page_width = page.rect.width
         page_height = page.rect.height
@@ -1597,8 +1629,13 @@ class PDFExtractor:
         blocks = page_dict.get("blocks", [])
         self.chapter_detector.analyze_page(page_num, page_dict)
         if not blocks:
+            layout = self.detect_page_layout(page_num)
             self._page_body_context[page_num] = ""
-            self._page_layout_notes[page_num] = ["empty page"]
+            self._page_layout_notes[page_num] = self._layout_notes_for_page(layout, [], page_width)
+            if include_images and layout == "art" and (page.get_drawings() or page.get_images(full=True)):
+                self._page_image_regions[page_num] = [page.rect]
+                self._page_layout_notes[page_num].append("full-page art preserved")
+                return self._image_placeholder_text()
             self._page_image_regions[page_num] = []
             return ""
         content_blocks = [
@@ -1606,8 +1643,13 @@ class PDFExtractor:
             if b.get("type") == 0 and not self._is_header_footer(b, page_height)
         ]
         if not content_blocks:
+            layout = self.detect_page_layout(page_num)
             self._page_body_context[page_num] = ""
-            self._page_layout_notes[page_num] = ["no content blocks"]
+            self._page_layout_notes[page_num] = self._layout_notes_for_page(layout, [], page_width)
+            if include_images and layout == "art" and (page.get_drawings() or page.get_images(full=True)):
+                self._page_image_regions[page_num] = [page.rect]
+                self._page_layout_notes[page_num].append("full-page art preserved")
+                return self._image_placeholder_text()
             self._page_image_regions[page_num] = []
             return ""
         layout = self.detect_page_layout(page_num)
@@ -1622,9 +1664,13 @@ class PDFExtractor:
             page, content_blocks, page_width, page_height
         )
         self._page_layout_notes[page_num].extend(card_notes)
-        image_regions = self._visual_image_regions(
-            page, content_blocks, card_groups, page_width, page_height
-        )
+        image_regions = []
+        if include_images:
+            image_regions = self._visual_image_regions(
+                page, content_blocks, card_groups, page_width, page_height
+            )
+            if not image_regions and layout == "art" and (page.get_drawings() or page.get_images(full=True)):
+                image_regions = [page.rect]
         self._page_image_regions[page_num] = image_regions
         if image_regions:
             self._page_layout_notes[page_num].append(f"{len(image_regions)} image placeholder(s)")
@@ -1646,7 +1692,10 @@ class PDFExtractor:
             block for block in content_blocks
             if self._is_monospace_block(block)
         ]
-        title_blocks = [block for block in toc_blocks if self._is_contents_block(block) and "Contents" in self._extract_block_text(block)]
+        title_blocks = [
+            block for block in toc_blocks
+            if self._looks_like_contents_title(self._extract_block_text(block))
+        ]
         body_blocks = [block for block in toc_blocks if block not in title_blocks]
         body_blocks = sorted(body_blocks, key=lambda b: (b["bbox"][0], b["bbox"][1]))
 
