@@ -132,11 +132,13 @@ def _append_card_body(parts: list[str], lines: list[str]):
             continue
 
         if re.match(r"^#{1,6}\s+", clean) or _is_soft_subheading_line(clean):
-            parts.append(f'<h4 class="card-subheading">{_html_inline(re.sub(r"^#{1,6}\s*", "", clean))}</h4>')
+            heading_text = re.sub(r"^#{1,6}\s*", "", clean)
+            parts.append(f'<h4 class="card-subheading">{_html_inline(heading_text)}</h4>')
             idx += 1
             continue
 
-        parts.append(f"<p>{_html_inline(re.sub(r'^#{1,6}\\s*', '', clean))}</p>")
+        paragraph_text = re.sub(r"^#{1,6}\s*", "", clean)
+        parts.append(f"<p>{_html_inline(paragraph_text)}</p>")
         idx += 1
 
 

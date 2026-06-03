@@ -321,6 +321,7 @@ class TypesetPipeline:
             progress_callback=translation_callback,
             max_workers=self.config.translation_concurrency,
         )
+        self._ensure_not_all_translation_failed(translated, progress)
 
         # Save translated content
         save_translated_content(
@@ -423,6 +424,11 @@ class TypesetPipeline:
                     "page_structure.json schema 版本不匹配，将重新提取"
                 )
                 return None
+            if not self._matches_current_source(doc.source_pdf):
+                logger.warning(
+                    "page_structure.json 来源 PDF 不匹配，将重新提取"
+                )
+                return None
             if _has_browser_incompatible_images(doc):
                 logger.warning(
                     "page_structure.json 包含浏览器不支持的图片格式，将重新提取"
@@ -445,6 +451,11 @@ class TypesetPipeline:
                     "page_content.json schema 版本不匹配，将重新分析"
                 )
                 return None
+            if not self._matches_current_source(doc.source_pdf):
+                logger.warning(
+                    "page_content.json 来源 PDF 不匹配，将重新分析"
+                )
+                return None
             return doc
         except (json.JSONDecodeError, ValueError, KeyError) as exc:
             logger.warning(f"page_content.json 加载失败：{exc}")
@@ -463,6 +474,8 @@ class TypesetPipeline:
             text = self._page_content_translated_path.read_text(encoding="utf-8")
             doc = PageContentDocument.from_json(text)
             if doc.schema_version != PAGE_CONTENT_SCHEMA_VERSION:
+                return None
+            if not self._matches_current_source(doc.source_pdf):
                 return None
             # Check if all translatable blocks have translations
             for page in doc.pages:
@@ -565,6 +578,36 @@ class TypesetPipeline:
         if candidate.exists():
             return candidate.resolve()
         return None
+
+    def _matches_current_source(self, source_pdf: str) -> bool:
+        """Return whether an intermediate JSON belongs to this uploaded PDF."""
+        return Path(source_pdf).name == Path(self.pdf_path).name
+
+    def _ensure_not_all_translation_failed(
+        self,
+        content: PageContentDocument,
+        progress,
+    ) -> None:
+        translatable = [
+            block
+            for page in content.pages
+            for block in page.blocks
+            if block.translatable
+        ]
+        if not translatable:
+            return
+        translated_count = sum(1 for block in translatable if block.translated_text)
+        if translated_count > 0:
+            return
+
+        sample_error = ""
+        failed_blocks = getattr(progress, "failed_blocks", {}) or {}
+        if failed_blocks:
+            sample_error = next(iter(failed_blocks.values()))
+        detail = f"；首个错误：{sample_error}" if sample_error else ""
+        raise RuntimeError(
+            f"纯重绘 PDF 翻译全部失败：0/{len(translatable)} 个区域成功{detail}"
+        )
 
     def _get_page_dimensions(self) -> tuple[float, float]:
         """Get page dimensions from the source PDF (first page).

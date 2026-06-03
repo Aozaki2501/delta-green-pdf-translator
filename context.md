@@ -1,5 +1,39 @@
 # 当前进度
 
+- 目标：更新到最新仓库，查看纯重绘 PDF 功能，并补充 README 使用说明。
+- 已完成：执行 `git pull --ff-only`，当前 `main` 已快进到远端最新提交 `be361f9`。
+- 已确认：纯重绘 PDF 已在 Web 输出格式中开放；可手动填写 `layout_hints.json`，也可勾选 Gemini 自动生成 hints。
+- 已调整：README 新增“纯重绘 PDF”说明，明确单独运行、输出 `_typeset.pdf`、hints 用途和错误处理方式。
+- 已修复：远端最新代码里 `exporters/html.py` 有一处 f-string 语法错误，会导致项目无法导入；已改成先计算文本再生成 HTML。
+- 已验证：重绘和导入相关测试 65 个通过；全量测试 426 个通过。
+- 当前状态：项目已可启动，准备打开 Web 界面。
+- 已修复：Gemini 审稿请求体改用官方 `responseMimeType` 和 `responseSchema`，移除会触发 HTTP 400 的 `responseFormat.text.mimeType`。
+- 已验证：Gemini/重绘相关测试 21 个通过；全量测试 427 个通过；Web 服务已重启。
+- 已修复：Gemini 的 `responseSchema` 不支持 `additionalProperties`，已移除远端 schema 约束；请求只要求返回 JSON，具体 layout_hints 结构继续由本地严格校验。
+- 已验证：Gemini/重绘相关测试 21 个通过；全量测试 427 个通过；Web 服务已重启。
+- 已调整：Gemini 默认模型改为官方稳定的 `gemini-2.5-flash`；HTTP 503 会提示模型繁忙和当前模型名，不再输出整段接口 JSON。
+- 已验证：Gemini/重绘相关测试 23 个通过；全量测试 429 个通过；Web 服务已重启。
+- 已调整：Gemini 审稿提示词现在明确要求 `pages` 只返回当前 0 基页码键，并给出精确 JSON 示例；缺页错误会显示 Gemini 实际返回的页码键。
+- 已验证：Gemini/重绘相关测试 24 个通过；全量测试 430 个通过；Web 服务已重启。
+- 已调整：Gemini 审稿提示词明确 `skip_blocks`、`columns`、`special_regions` 必须返回对象数组，不允许返回字符串数组；模型输出格式错误会显示为 Gemini 输出错误。
+- 已验证：Gemini/重绘相关测试 25 个通过；全量测试 431 个通过；Web 服务已重启。
+- 已重查：官方 Gemini Python 示例使用 `google-genai` SDK；当前手写 `urllib` 在 Windows 下暴露了不稳定的 URL/HTTPS 错误。
+- 已调整：Gemini 审稿调用改为官方 SDK，图片用 `types.Part.from_bytes` 传入，JSON 输出用 `GenerateContentConfig(response_mime_type="application/json")`。
+- 已验证：`.venv` 已安装 `google-genai`；Gemini/重绘相关测试 24 个通过；全量测试 430 个通过；Web 服务已重启。
+- 已调整：Gemini 审稿遇到超时、503、UNAVAILABLE、429/5xx 会对同一请求自动重试 3 次；模型返回 JSON 但结构错误仍直接失败。
+- 已验证：Gemini/重绘相关测试 25 个通过；全量测试 431 个通过；Web 服务已重启。
+- 已调整：Gemini 审稿将 SSL EOF、协议中断、`_ssl` 相关错误也视为临时网络错误，纳入同一套自动重试。
+- 已验证：Gemini/重绘相关测试 26 个通过；全量测试 432 个通过；Web 服务已重启。
+- 已排查：最新 Presence `_typeset.pdf/html` 实际复用了 5 月 28 日旧 `page_structure/page_content/page_content_translated`，旧结构来源 PDF 与本次上传文件名不一致，且文本区域没有行级 tracks。
+- 已修复：typeset 管线复用 `page_structure.json`、`page_content.json`、`page_content_translated.json` 前会校验 `source_pdf` 是否等于当前上传 PDF 文件名，不一致就重新提取/分析/翻译。
+- 已验证：新增缓存污染测试；Gemini/重绘相关测试 28 个通过；全量测试 434 个通过；Web 服务已重启。
+- 已排查：最新 Presence 重绘翻译 65 个区域全部失败，根因是正文翻译接口返回 401：API Key 无效；这与 Gemini Key 无关。
+- 已修复：typeset 翻译阶段如果可翻译区域 0 个成功，会直接停止并报告首个错误，不再继续导出全失败 PDF。
+- 已验证：新增全失败保护测试；typeset 相关测试 34 个通过；全量测试 436 个通过；Web 服务已重启。
+- 已排查：typeset HTML 图片引用为相对路径 `assets/typeset_images/...`，单独下载 HTML 时不会带上 `assets`，因此图片全不显示。
+- 已修复：纯重绘 HTML 生成后会额外生成 `*.html_assets.zip`，包含 HTML 和 `assets/`；历史下载区也把 zip 识别为成品资源包。
+- 已验证：Web 历史测试 6 个通过；全量测试 437 个通过；Web 服务已重启。
+
 - 目标：拉取仓库，整理根目录杂乱文件，保留一键启动入口。
 - 已完成：执行 `git pull --ff-only`，当前分支已经是最新。
 - 关键决定：不切换分支，不改业务逻辑；只整理文档、临时测试和缓存这类不影响运行的文件。

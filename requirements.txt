@@ -1,5 +1,6 @@
 pymupdf==1.27.2.3
 openai==2.36.0
+google-genai>=1.40.0
 python-docx==1.2.0
 streamlit==1.57.0
 pytest==9.0.3

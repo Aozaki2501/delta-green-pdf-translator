@@ -20,6 +20,7 @@
 - 失败页重试：失败页会单独记录，可只重试失败页。
 - 诊断报告：每次输出提取诊断报告，提示空页、图片、表格、乱码等风险。
 - 离线重排：已有 `.progress.json` 时，可不调用 API，重新生成 HTML、Word、Markdown。
+- 纯重绘 PDF：从 PDF 重新提取页面结构，用 HTML/CSS 重建页面，再导出 `_typeset.pdf`。
 - Token 统计：记录调用次数、token 用量和估算费用。
 
 ## 目录说明
@@ -116,6 +117,25 @@ python translate_pdf.py --config config.json
 ```powershell
 python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 32
 ```
+
+### 纯重绘 PDF
+
+纯重绘 PDF 是当前重点开发的 PDF 输出方式。它会重新提取页面结构、分析标题和正文区域、逐块翻译，再用浏览器排版导出 `_typeset.pdf`。
+
+Web 界面里这样使用：
+
+1. 上传 PDF。
+2. 输出格式只选择“纯重绘 PDF（_typeset）”。
+3. 如有需要，在“纯重绘排版配置”里填写中文字体。
+4. 如果已经有 `layout_hints.json`，填入它的路径；如果要让 Gemini 帮忙审稿，勾选“自动生成 layout hints（Gemini）”并填写 Gemini Key。
+5. 点击开始任务。
+
+注意：
+
+- 纯重绘 PDF 必须单独运行，不要和 Markdown、HTML、Word 一起勾选。
+- `layout_hints.json` 只负责修正阅读顺序、分栏和跳过块，不负责生成坐标、字号或最终译文。
+- 手动填写 `layout_hints.json` 时路径或块 ID 错误会直接失败，避免生成看似正常但实际错位的 PDF。
+- Gemini 自动审稿会调用外部 Gemini API，适合先在少量疑难页上试。
 
 ### 开发中：原版坐标 PDF
 
