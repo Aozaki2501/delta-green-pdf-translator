@@ -1,0 +1,197 @@
+import json
+
+import pytest
+
+from core.typeset_models import (
+    PAGE_CONTENT_SCHEMA_VERSION,
+    PAGE_STRUCTURE_SCHEMA_VERSION,
+    BackgroundLayer,
+    ContentBlock,
+    PageContent,
+    PageContentDocument,
+    PageStructure,
+    PageStructureDocument,
+    PageType,
+    SemanticRole,
+    StyledTextRun,
+    TextRegionBBox,
+    TypesetConfig,
+)
+from core.typeset_pipeline import TypesetPipeline
+
+
+def _content_doc():
+    return PageContentDocument(
+        schema_version=PAGE_CONTENT_SCHEMA_VERSION,
+        source_pdf="book.pdf",
+        page_count=1,
+        pages=[
+            PageContent(
+                page_index=0,
+                page_type=PageType.SINGLE,
+                columns=[],
+                blocks=[
+                    ContentBlock(
+                        id="b1",
+                        region_id="r1",
+                        role=SemanticRole.BODY_COLUMN,
+                        runs=[StyledTextRun("A", 10.9, False, False, "#000000")],
+                        source_text="A",
+                        translated_text=None,
+                        translatable=True,
+                    ),
+                    ContentBlock(
+                        id="b2",
+                        region_id="r2",
+                        role=SemanticRole.BODY_COLUMN,
+                        runs=[StyledTextRun("B", 10.9, False, False, "#000000")],
+                        source_text="B",
+                        translated_text=None,
+                        translatable=True,
+                    ),
+                ],
+            )
+        ],
+    )
+
+
+def _structure_doc():
+    return PageStructureDocument(
+        schema_version=PAGE_STRUCTURE_SCHEMA_VERSION,
+        source_pdf="book.pdf",
+        page_count=1,
+        pages=[
+            PageStructure(
+                page_index=0,
+                width=612.0,
+                height=792.0,
+                background=BackgroundLayer(),
+                images=[],
+                decorations=[],
+                text_regions=[
+                    TextRegionBBox("r1", [10.0, 20.0, 110.0, 60.0], ["t1"]),
+                    TextRegionBBox("r2", [120.0, 20.0, 220.0, 60.0], ["t2"]),
+                ],
+            )
+        ],
+    )
+
+
+def test_pipeline_uses_layout_hints_from_output_dir(tmp_path):
+    (tmp_path / "layout_hints.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "pages": {
+                "0": {
+                    "page_type": "columns",
+                    "reading_order": ["b2", "b1"],
+                    "skip_blocks": [{"id": "b2", "reason": "running_header"}],
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+
+    hinted = pipeline.apply_layout_hints(_structure_doc(), _content_doc())
+
+    assert hinted.pages[0].page_type == PageType.COLUMNS
+    assert [block.id for block in hinted.pages[0].blocks] == ["b2", "b1"]
+    assert hinted.pages[0].blocks[0].translatable is False
+    assert (tmp_path / "page_content_hinted.json").exists()
+
+
+def test_pipeline_without_layout_hints_keeps_content(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+    content = _content_doc()
+
+    assert pipeline.apply_layout_hints(_structure_doc(), content) is content
+
+
+def test_pipeline_configured_missing_layout_hints_path_fails(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+        config=TypesetConfig(layout_hints_path=str(tmp_path / "missing.json")),
+    )
+
+    with pytest.raises(FileNotFoundError):
+        pipeline.apply_layout_hints(_structure_doc(), _content_doc())
+
+
+def test_pipeline_generator_writes_hints_before_apply(tmp_path):
+    calls = []
+
+    def generator(structure, content, output_path):
+        calls.append((structure.source_pdf, content.source_pdf))
+        output_path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "pages": {
+                    "0": {
+                        "page_type": "columns",
+                        "reading_order": ["b2", "b1"],
+                        "skip_blocks": [],
+                        "columns": [],
+                        "special_regions": [],
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        return output_path
+
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+        layout_hints_generator=generator,
+    )
+    structure = _structure_doc()
+    content = _content_doc()
+
+    generated = pipeline.generate_layout_hints(structure, content)
+    hinted = pipeline.apply_layout_hints(structure, content)
+
+    assert calls == [("book.pdf", "book.pdf")]
+    assert generated == tmp_path / "layout_hints.json"
+    assert hinted.pages[0].page_type == PageType.COLUMNS
+    assert [block.id for block in hinted.pages[0].blocks] == ["b2", "b1"]
+
+
+def test_pipeline_configured_hints_path_skips_generator(tmp_path):
+    configured_path = tmp_path / "custom_hints.json"
+    configured_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "pages": {"0": {}},
+        }),
+        encoding="utf-8",
+    )
+
+    def generator(structure, content, output_path):
+        raise AssertionError("generator should not run when path is configured")
+
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+        config=TypesetConfig(layout_hints_path=str(configured_path)),
+        layout_hints_generator=generator,
+    )
+
+    assert pipeline.generate_layout_hints(_structure_doc(), _content_doc()) is None

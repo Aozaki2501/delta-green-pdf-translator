@@ -256,6 +256,7 @@ class TypesetConfig:
     subtitle_color: str = "#ed1c24"
     body_color: str = "#111111"
     translation_concurrency: int = 4
+    layout_hints_path: str | None = None
 
 
 @dataclass

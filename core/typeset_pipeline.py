@@ -59,6 +59,7 @@ class TypesetPipeline:
         translator,
         glossary: dict,
         config: TypesetConfig | None = None,
+        layout_hints_generator: Callable | None = None,
     ):
         """Initialize the typeset pipeline.
 
@@ -75,6 +76,7 @@ class TypesetPipeline:
         self.translator = translator
         self.glossary = glossary or {}
         self.config = config or TypesetConfig()
+        self.layout_hints_generator = layout_hints_generator
 
         # Derive file stem from PDF name
         self._pdf_stem = Path(self.pdf_path).stem
@@ -82,6 +84,7 @@ class TypesetPipeline:
         # Output file paths (all use _typeset suffix)
         self._page_structure_path = self.output_dir / "page_structure.json"
         self._page_content_path = self.output_dir / "page_content.json"
+        self._page_content_hinted_path = self.output_dir / "page_content_hinted.json"
         self._page_content_translated_path = (
             self.output_dir / "page_content_translated.json"
         )
@@ -143,6 +146,8 @@ class TypesetPipeline:
 
         # Phase B: Semantic analysis
         content = self.run_phase_b(structure)
+        self.generate_layout_hints(structure, content)
+        content = self.apply_layout_hints(structure, content)
         self._report_progress("pipeline", 2, 5)
 
         # Phase C: Translation
@@ -228,6 +233,45 @@ class TypesetPipeline:
         )
         self._mark_phase_completed("B")
         return content
+
+    def generate_layout_hints(
+        self,
+        structure: PageStructureDocument,
+        content: PageContentDocument,
+    ) -> Path | None:
+        """Run an optional generator that writes layout_hints.json."""
+        if self.layout_hints_generator is None:
+            return None
+        if self.config.layout_hints_path:
+            return None
+
+        output_path = self.output_dir / "layout_hints.json"
+        generated = self.layout_hints_generator(
+            structure,
+            content,
+            output_path,
+        )
+        return Path(generated) if generated else output_path
+
+    def apply_layout_hints(
+        self,
+        structure: PageStructureDocument,
+        content: PageContentDocument,
+    ) -> PageContentDocument:
+        """Apply optional layout_hints.json before translation and rendering."""
+        hints_path = self._resolve_layout_hints_path()
+        if hints_path is None:
+            return content
+
+        from core.layout_hints import LayoutHints, apply_hints_to_content
+
+        logger.info(f"应用 layout hints：{hints_path}")
+        hints = LayoutHints.from_file(hints_path)
+        hinted = apply_hints_to_content(content, hints, structure)
+        self._page_content_hinted_path.write_text(
+            hinted.to_json(), encoding="utf-8"
+        )
+        return hinted
 
     def run_phase_c(self, content: PageContentDocument) -> PageContentDocument:
         """Phase C: Translation.
@@ -411,6 +455,8 @@ class TypesetPipeline:
 
         Only reuses if all translatable blocks have translations.
         """
+        if self._resolve_layout_hints_path() is not None:
+            return None
         if not self._page_content_translated_path.exists():
             return None
         try:
@@ -506,6 +552,20 @@ class TypesetPipeline:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _resolve_layout_hints_path(self) -> Path | None:
+        """Return the configured or conventional layout hints path."""
+        configured = self.config.layout_hints_path
+        if configured:
+            path = Path(configured).expanduser()
+            if not path.exists():
+                raise FileNotFoundError(f"layout_hints 文件不存在：{path}")
+            return path.resolve()
+
+        candidate = self.output_dir / "layout_hints.json"
+        if candidate.exists():
+            return candidate.resolve()
+        return None
+
     def _get_page_dimensions(self) -> tuple[float, float]:
         """Get page dimensions from the source PDF (first page).
 
@@ -578,6 +638,7 @@ class TypesetPipeline:
                 "fallback_fonts": self.config.fallback_fonts,
                 "body_font_size_pt": self.config.body_font_size_pt,
                 "line_height": self.config.line_height,
+                "layout_hints_path": self.config.layout_hints_path,
             },
         }
         try:

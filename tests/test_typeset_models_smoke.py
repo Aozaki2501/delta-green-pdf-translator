@@ -184,6 +184,7 @@ def test_typeset_config_defaults():
     assert cfg.column_gap_pt == 30.0
     assert cfg.text_indent == "2em"
     assert cfg.subtitle_color == "#ed1c24"
+    assert cfg.layout_hints_path is None
 
 
 def test_json_format_utf8_indented():
