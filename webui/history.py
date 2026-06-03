@@ -24,6 +24,7 @@ HISTORY_SUFFIX_LABELS = (
     (".pdf", "PDF"),
     (".html", "网页"),
     (".docx", "文档"),
+    (".zip", "资源包"),
     (".md", "纯文本"),
 )
 
@@ -47,6 +48,7 @@ FINAL_OUTPUT_SUFFIXES = (
     ".pdf",
     ".html",
     ".docx",
+    ".zip",
     ".md",
 )
 

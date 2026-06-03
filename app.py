@@ -8,6 +8,7 @@ import os
 import re
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
@@ -97,6 +98,23 @@ def render_downloads(paths, label_prefix="下载"):
                 f,
                 file_name=file_path.name,
             )
+
+
+def make_html_asset_bundle(html_path: str | Path) -> str | None:
+    html_file = Path(html_path)
+    if not html_file.exists():
+        return None
+    assets_dir = html_file.parent / "assets"
+    if not assets_dir.exists():
+        return None
+
+    bundle_path = html_file.with_suffix(".html_assets.zip")
+    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(html_file, arcname=html_file.name)
+        for asset in sorted(assets_dir.rglob("*")):
+            if asset.is_file():
+                zf.write(asset, arcname=str(asset.relative_to(html_file.parent)))
+    return str(bundle_path)
 
 
 def contains_cjk(text: str) -> bool:
@@ -1107,7 +1125,7 @@ with st.sidebar:
     typeset_layout_hints_path = ""
     typeset_auto_layout_hints = False
     typeset_gemini_api_key = ""
-    typeset_gemini_model = "gemini-3.5-flash"
+    typeset_gemini_model = "gemini-2.5-flash"
     typeset_gemini_pages = ""
     if "typeset_pdf" in formats:
         with st.expander("纯重绘排版配置", expanded=False):
@@ -1908,7 +1926,7 @@ if launch_pressed:
                         page_indexes=gemini_pages,
                         output_path=output_path,
                         api_key=typeset_gemini_api_key.strip(),
-                        model=typeset_gemini_model.strip() or "gemini-3.5-flash",
+                        model=typeset_gemini_model.strip() or "gemini-2.5-flash",
                         progress_callback=lambda done, total_count, page_index: update_typeset_progress(
                             "layout_hints",
                             done,
@@ -1936,6 +1954,9 @@ if launch_pressed:
                 generated_files.append(result.pdf_path)
             if result.html_path:
                 generated_files.append(result.html_path)
+                html_bundle_path = make_html_asset_bundle(result.html_path)
+                if html_bundle_path:
+                    generated_files.append(html_bundle_path)
             if result.page_structure_path:
                 generated_files.append(result.page_structure_path)
             if result.page_content_path:

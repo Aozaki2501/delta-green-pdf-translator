@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -116,6 +117,77 @@ def test_pipeline_without_layout_hints_keeps_content(tmp_path):
     content = _content_doc()
 
     assert pipeline.apply_layout_hints(_structure_doc(), content) is content
+
+
+def test_pipeline_does_not_reuse_structure_from_different_upload(tmp_path):
+    (tmp_path / "page_structure.json").write_text(
+        _structure_doc().to_json(),
+        encoding="utf-8",
+    )
+    pipeline = TypesetPipeline(
+        pdf_path="new_upload.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+
+    assert pipeline._load_existing_structure() is None
+
+
+def test_pipeline_does_not_reuse_content_from_different_upload(tmp_path):
+    (tmp_path / "page_content.json").write_text(
+        _content_doc().to_json(),
+        encoding="utf-8",
+    )
+    (tmp_path / "page_content_translated.json").write_text(
+        _content_doc().to_json(),
+        encoding="utf-8",
+    )
+    pipeline = TypesetPipeline(
+        pdf_path="new_upload.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+
+    assert pipeline._load_existing_content() is None
+    assert pipeline._load_existing_translated_content() is None
+
+
+def test_pipeline_stops_when_all_typeset_translations_fail(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+    progress = type("Progress", (), {
+        "failed_blocks": {"b1": "401 invalid key"},
+    })()
+
+    with pytest.raises(RuntimeError, match="翻译全部失败"):
+        pipeline._ensure_not_all_translation_failed(_content_doc(), progress)
+
+
+def test_pipeline_allows_partial_typeset_translation_success(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+    content = _content_doc()
+    blocks = list(content.pages[0].blocks)
+    blocks[0] = replace(blocks[0], translated_text="已翻译")
+    content = replace(
+        content,
+        pages=[
+            replace(content.pages[0], blocks=blocks),
+        ],
+    )
+    progress = type("Progress", (), {"failed_blocks": {"b2": "timeout"}})()
+
+    pipeline._ensure_not_all_translation_failed(content, progress)
 
 
 def test_pipeline_configured_missing_layout_hints_path_fails(tmp_path):

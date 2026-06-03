@@ -47,6 +47,14 @@ def test_collect_output_history_reads_audit_and_progress(tmp_path):
     assert history[0]["download_files"] == [html]
 
 
+def test_zip_asset_bundle_is_final_output(tmp_path):
+    bundle = tmp_path / "book_typeset.html_assets.zip"
+    bundle.write_bytes(b"zip")
+
+    assert history_file_label(bundle) == "资源包"
+    assert is_final_output_file(bundle) is True
+
+
 def test_collect_output_history_reads_replica_outputs(tmp_path):
     output_dir = tmp_path / "output"
     folder = output_dir / "book_cn"

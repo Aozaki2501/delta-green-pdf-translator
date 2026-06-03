@@ -11,9 +11,7 @@ import argparse
 import base64
 import json
 import os
-import urllib.error
-import urllib.parse
-import urllib.request
+import time
 from pathlib import Path
 
 try:
@@ -25,12 +23,9 @@ from core.layout_hints import LAYOUT_HINTS_SCHEMA_VERSION, LayoutHints
 from core.typeset_models import PageContentDocument, PageStructureDocument
 
 
-DEFAULT_MODEL = "gemini-3.5-flash"
-GEMINI_GENERATE_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-)
-
-
+DEFAULT_MODEL = "gemini-2.5-flash"
+GEMINI_RETRY_ATTEMPTS = 3
+GEMINI_RETRY_DELAY_SECONDS = 3
 def render_page_png_base64(pdf_path: Path, page_index: int, dpi: int) -> str:
     doc = pymupdf.open(str(pdf_path))
     try:
@@ -150,11 +145,40 @@ def layout_hints_response_schema() -> dict:
 
 
 def build_prompt(source_pdf: str, page_summary: dict) -> str:
+    page_key = str(page_summary["page_index"])
+    response_example = {
+        "schema_version": LAYOUT_HINTS_SCHEMA_VERSION,
+        "source_pdf": source_pdf,
+        "pages": {
+            page_key: {
+                "page_type": "columns",
+                "reading_order": ["<block_id>", "<block_id>"],
+                "skip_blocks": [
+                    {"id": "<block_id>", "reason": "running_header"}
+                ],
+                "columns": [
+                    {"id": "left", "blocks": ["<block_id>"]},
+                    {"id": "right", "blocks": ["<block_id>"]},
+                ],
+                "special_regions": [
+                    {"type": "sidebar", "blocks": ["<block_id>"]}
+                ],
+            }
+        },
+    }
     return (
         "You are reviewing a TRPG PDF page layout for a Chinese re-typeset PDF.\n"
         "Use the image for visual judgement, but use only the provided block IDs.\n"
         "Do not invent IDs, coordinates, or text.\n"
         "Return layout_hints JSON only.\n\n"
+        f"The pages object must contain exactly one key: {json.dumps(page_key)}.\n"
+        "Use zero-based page indexes. Do not convert the page key to one-based numbering.\n\n"
+        "Required JSON types:\n"
+        "- reading_order must be an array of block ID strings.\n"
+        "- skip_blocks must be an array of objects: {\"id\": block_id, \"reason\": reason}.\n"
+        "- columns must be an array of objects: {\"id\": \"left\" or \"right\", \"blocks\": [block_id]}.\n"
+        "- special_regions must be an array of objects: {\"type\": region_type, \"blocks\": [block_id]}.\n"
+        "- Never return skip_blocks, columns, or special_regions as plain strings.\n\n"
         "Decide:\n"
         "- page_type: columns, single, cover, art, or mixed.\n"
         "- reading_order: block IDs in the natural reading order.\n"
@@ -163,6 +187,7 @@ def build_prompt(source_pdf: str, page_summary: dict) -> str:
         "- special_regions: sidebars, tables, captions, or stat blocks.\n\n"
         f"schema_version must be {LAYOUT_HINTS_SCHEMA_VERSION}.\n"
         f"source_pdf: {source_pdf}\n"
+        f"Return shape example:\n{json.dumps(response_example, ensure_ascii=False, indent=2)}\n"
         f"Page facts:\n{json.dumps(page_summary, ensure_ascii=False, indent=2)}"
     )
 
@@ -174,49 +199,83 @@ def call_gemini_layout_review(
     image_base64: str,
     timeout: int,
 ) -> dict:
-    quoted_model = urllib.parse.quote(model, safe="")
-    url = GEMINI_GENERATE_URL.format(model=quoted_model)
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/png",
-                        "data": image_base64,
-                    }
-                },
-            ]
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "responseFormat": {
-                "text": {
-                    "mimeType": "application/json",
-                    "schema": layout_hints_response_schema(),
-                }
-            },
-        },
-    }
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        },
-        method="POST",
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise RuntimeError(
+            "缺少 Gemini 官方 SDK：请先安装依赖 google-genai。"
+        ) from exc
+
+    client = genai.Client(api_key=api_key)
+    image_bytes = base64.b64decode(image_base64)
+
+    response = None
+    for attempt in range(1, GEMINI_RETRY_ATTEMPTS + 1):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/png",
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    response_mime_type="application/json",
+                    http_options=types.HttpOptions(timeout=timeout * 1000),
+                ),
+            )
+            break
+        except Exception as exc:
+            if attempt >= GEMINI_RETRY_ATTEMPTS or not is_retryable_gemini_error(exc):
+                raise make_gemini_sdk_error(exc, model, attempt) from exc
+            time.sleep(GEMINI_RETRY_DELAY_SECONDS * attempt)
+
+    text = getattr(response, "text", None)
+    if not text:
+        raise RuntimeError("Gemini API 没有返回 JSON 文本")
+    return json.loads(text)
+
+
+def is_retryable_gemini_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return (
+        code in {429, 500, 502, 503, 504}
+        or "timeout" in message
+        or "timed out" in message
+        or "eof occurred" in message
+        or "violation of protocol" in message
+        or "_ssl" in message
+        or "ssl" in message
+        or "temporarily unavailable" in message
+        or "unavailable" in message
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini API 请求失败：HTTP {exc.code}: {body}") from exc
 
-    text = _extract_response_text(data)
-    return json.loads(text)
+def make_gemini_sdk_error(
+    exc: Exception,
+    model: str,
+    attempts: int = GEMINI_RETRY_ATTEMPTS,
+) -> RuntimeError:
+    message = str(exc)
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code == 503 or "503" in message or "UNAVAILABLE" in message:
+        return RuntimeError(
+            f"Gemini 模型当前繁忙：{model}。"
+            "这是 Gemini 服务端返回的 503，不是本地排版错误。"
+            f"已自动重试 {attempts} 次，仍然失败。"
+            "请稍后重试，或在页面里手动换一个可用 Gemini 模型。"
+        )
+    if is_retryable_gemini_error(exc):
+        return RuntimeError(
+            f"Gemini API 临时请求失败：{message}。"
+            f"已自动重试 {attempts} 次，仍然失败。"
+        )
+    return RuntimeError(f"Gemini API 请求失败：{message}")
 
 
 def generate_layout_hints_for_pages(
@@ -252,10 +311,17 @@ def generate_layout_hints_for_pages(
             image_base64=image_base64,
             timeout=timeout,
         )
-        hints = LayoutHints.from_json(json.dumps(hints_data, ensure_ascii=False))
+        try:
+            hints = LayoutHints.from_json(json.dumps(hints_data, ensure_ascii=False))
+        except ValueError as exc:
+            raise ValueError(f"Gemini 输出 layout_hints 格式错误：{exc}") from exc
         page_hint = hints.get_page_hint(page_index)
         if page_hint is None:
-            raise ValueError(f"Gemini 输出缺少第 {page_index} 页 hints")
+            returned_keys = sorted((hints_data.get("pages") or {}).keys())
+            raise ValueError(
+                f"Gemini 输出缺少第 {page_index} 页 hints；"
+                f"实际返回页码键：{returned_keys}"
+            )
         pages[str(page_index)] = _page_hint_to_dict(page_hint)
         if progress_callback:
             progress_callback(done, total, page_index)
