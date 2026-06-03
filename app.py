@@ -1104,6 +1104,11 @@ with st.sidebar:
 
     # Typeset PDF font configuration
     typeset_font_family = "Noto Serif SC"
+    typeset_layout_hints_path = ""
+    typeset_auto_layout_hints = False
+    typeset_gemini_api_key = ""
+    typeset_gemini_model = "gemini-3.5-flash"
+    typeset_gemini_pages = ""
     if "typeset_pdf" in formats:
         with st.expander("纯重绘排版配置", expanded=False):
             typeset_font_family = st.text_input(
@@ -1111,6 +1116,33 @@ with st.sidebar:
                 value="Noto Serif SC",
                 help="用于纯重绘 PDF 的中文字体。如字体不可用，将自动回退到 Source Han Serif CN 等备选字体。",
             )
+            typeset_layout_hints_path = st.text_input(
+                "layout_hints.json 路径",
+                value="",
+                placeholder=r"例如：E:\DG\output\book\layout_hints.json",
+                help="可选。填写后，纯重绘 PDF 会按该文件修正阅读顺序、分栏和跳过块。",
+            )
+            typeset_auto_layout_hints = st.checkbox(
+                "自动生成 layout hints（Gemini）",
+                value=False,
+                help="可选。自动让 Gemini 审稿页面布局，并把结果用于本次纯重绘 PDF。",
+            )
+            if typeset_auto_layout_hints:
+                typeset_gemini_api_key = st.text_input(
+                    "Gemini API Key",
+                    type="password",
+                    placeholder="AIza...",
+                )
+                typeset_gemini_model = st.text_input(
+                    "Gemini 模型",
+                    value=typeset_gemini_model,
+                )
+                typeset_gemini_pages = st.text_input(
+                    "Gemini 审稿页码",
+                    value="",
+                    placeholder="留空表示本次页码范围；如：1, 3-5",
+                    help="从 1 开始，建议先选少量问题页测试。",
+                )
 
     st.markdown(
         """
@@ -1263,6 +1295,14 @@ if launch_pressed:
         st.error("✗ 原版坐标 PDF 请单独运行，避免和阅读版输出重复调用接口。")
     elif source_type == "pdf" and "typeset_pdf" in formats and len(formats) > 1:
         st.error("✗ 纯重绘 PDF 请单独运行，避免和其他输出重复调用接口。")
+    elif (
+        source_type == "pdf"
+        and "typeset_pdf" in formats
+        and typeset_auto_layout_hints
+        and not typeset_layout_hints_path.strip()
+        and not typeset_gemini_api_key.strip()
+    ):
+        st.error("✗ 自动生成 layout hints 需要填写 Gemini API Key")
     elif source_type in ("markdown", "docx"):
         # ============================================================
         # MARKDOWN / DOCX TRANSLATION FLOW
@@ -1734,7 +1774,13 @@ if launch_pressed:
             from core.typeset_models import TypesetConfig
 
             # Check font availability and set up fallback
-            typeset_config = TypesetConfig(font_family=typeset_font_family)
+            layout_hints_path = typeset_layout_hints_path.strip() or None
+            if layout_hints_path and typeset_auto_layout_hints:
+                st.warning("已填写 layout_hints.json 路径，本次优先使用该文件，不再自动生成。")
+            typeset_config = TypesetConfig(
+                font_family=typeset_font_family,
+                layout_hints_path=layout_hints_path,
+            )
             _font_warning_issued = False
 
             def _check_font_available(font_name: str) -> bool:
@@ -1763,7 +1809,10 @@ if launch_pressed:
                         f"⚠️ 字体 '{typeset_font_family}' 不可用，"
                         f"已回退到 '{_fallback_used}'。"
                     )
-                    typeset_config = TypesetConfig(font_family=_fallback_used)
+                    typeset_config = TypesetConfig(
+                        font_family=_fallback_used,
+                        layout_hints_path=layout_hints_path,
+                    )
                 else:
                     _logging.getLogger(__name__).warning(
                         f"字体 '{typeset_font_family}' 及所有备选字体均不可用，将使用默认配置"
@@ -1787,6 +1836,7 @@ if launch_pressed:
 
             phase_names = {
                 "pipeline": "管线",
+                "layout_hints": "版面审稿",
                 "translation": "翻译",
             }
 
@@ -1806,7 +1856,7 @@ if launch_pressed:
                         typeset_progress_bar.progress(min(pct, 1.0))
                     typeset_status.text(f"纯重绘管线：{current_desc}")
                     typeset_phase_metric.metric("阶段", f"{done}/{total}")
-                else:
+                elif phase == "translation":
                     pct = done / total if total else 1.0
                     try:
                         typeset_progress_bar.progress(
@@ -1817,7 +1867,54 @@ if launch_pressed:
                         typeset_progress_bar.progress(min(0.4 + pct * 0.2, 1.0))
                     typeset_status.text(f"翻译中：{done}/{total} 区域")
                     typeset_phase_metric.metric("翻译区域", f"{done}/{total}")
+                else:
+                    pct = done / total if total else 1.0
+                    try:
+                        typeset_progress_bar.progress(
+                            min(0.3 + pct * 0.1, 1.0),
+                            text=f"{phase_label} {done}/{total}",
+                        )
+                    except TypeError:
+                        typeset_progress_bar.progress(min(0.3 + pct * 0.1, 1.0))
+                    typeset_status.text(f"{phase_label}：{done}/{total}")
+                    typeset_phase_metric.metric(phase_label, f"{done}/{total}")
                 typeset_elapsed_metric.metric("已用时", format_duration(elapsed))
+
+            layout_hints_generator = None
+            if typeset_auto_layout_hints and not layout_hints_path:
+                try:
+                    if typeset_gemini_pages.strip():
+                        gemini_pages = parse_page_selection(typeset_gemini_pages, total)
+                    else:
+                        gemini_pages = set(range(start_page, end_page))
+                except ValueError as e:
+                    st.error(f"Gemini 审稿页码格式错误：{e}")
+                    extractor.close()
+                    st.stop()
+                gemini_pages = sorted(p for p in gemini_pages if start_page <= p < end_page)
+                if not gemini_pages:
+                    st.error("Gemini 审稿页码不在本次 PDF 页码范围内。")
+                    extractor.close()
+                    st.stop()
+
+                def layout_hints_generator(structure, content, output_path):
+                    from experiments.gemini_layout_review import generate_layout_hints_for_pages
+
+                    st.info(f"正在生成 layout hints：{len(gemini_pages)} 页")
+                    return generate_layout_hints_for_pages(
+                        pdf_path=pdf_path,
+                        structure=structure,
+                        content=content,
+                        page_indexes=gemini_pages,
+                        output_path=output_path,
+                        api_key=typeset_gemini_api_key.strip(),
+                        model=typeset_gemini_model.strip() or "gemini-3.5-flash",
+                        progress_callback=lambda done, total_count, page_index: update_typeset_progress(
+                            "layout_hints",
+                            done,
+                            total_count,
+                        ),
+                    )
 
             pipeline = TypesetPipeline(
                 pdf_path=pdf_path,
@@ -1825,6 +1922,7 @@ if launch_pressed:
                 translator=translator,
                 glossary=glossary,
                 config=typeset_config,
+                layout_hints_generator=layout_hints_generator,
             )
 
             result = pipeline.run(
@@ -1842,6 +1940,12 @@ if launch_pressed:
                 generated_files.append(result.page_structure_path)
             if result.page_content_path:
                 generated_files.append(result.page_content_path)
+            hints_path = document_output_dir / "layout_hints.json"
+            hinted_path = document_output_dir / "page_content_hinted.json"
+            if hints_path.exists():
+                generated_files.append(str(hints_path))
+            if hinted_path.exists():
+                generated_files.append(str(hinted_path))
 
             # Report results
             elapsed_total = time.time() - typeset_started_at

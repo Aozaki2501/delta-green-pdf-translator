@@ -108,6 +108,7 @@ class TestCoreModuleImports:
         "core.layout_model",
         "core.layout_extractor",
         "core.layout_translation",
+        "core.layout_hints",
         "core.translator",
         "core.progress",
         "core.dispatcher",

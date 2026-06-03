@@ -104,3 +104,28 @@
 - 已完成：Word 只在封面后重置一次页码，后续分节连续计数；前端档案库折叠到任务区后方。
 - 已验证：Iconoclasts 已离线重排；Word 从旧版 53 页降到 33 页，图片为 0，页码从 1 连续到 32；HTML 图片为 0，卡片保留 9 个。
 - 关键决定：旧 progress 里少数已粘连的目录文本不做猜测拆分；新翻译会使用新版目录提取规则。
+
+# PDF 多模态重绘调研
+
+- 目标：评估引入多模态 API 改善纯重绘 PDF 排版。
+- 已确认：当前 `main` 与 `origin/main` 一致，工作区开始时干净；最新提交是 `f288458 修改排版`。
+- 已确认：纯重绘已具备 PyMuPDF 结构提取、语义分析、逐块翻译、HTML/CSS 重建、Playwright 导出。
+- 关键判断：不要让多模态模型直接生成精确坐标；PyMuPDF 继续负责几何事实，多模态只负责阅读顺序、页眉页脚、栏、标题、边栏、表格等语义提示。
+- 推荐方向：先新增严格校验的 `layout_hints.json` 中间层，再做 Gemini/marker/Docling/MinerU 实验脚本；验证稳定后才接入 `typeset_pdf`。
+- 已完成：新增 `core/layout_hints.py`，支持读取 hints、按页查询，并校验 hints 引用的 block id 是否存在。
+- 已完成：新增最小单元测试，覆盖缺省字段、完整 hints、非法 page_type、不存在 block id 和不存在页面。
+- 已验证：全量测试 413 个通过。
+- 关键决定：第一阶段只建立中间层，不接主流程，不调用外部 API。
+- 已完成：`layout_hints.json` 已可选接入纯重绘管线；应用位置在语义分析之后、翻译之前。
+- 已完成：hints 现在可影响 page_type、阅读顺序、跳过翻译块和左右栏分组，并输出 `page_content_hinted.json` 便于检查。
+- 已完成：网页端“纯重绘排版配置”新增 `layout_hints.json 路径`，填入路径即可生成受 hints 影响的 `_typeset.pdf`。
+- 已验证：新增管线测试；全量测试 418 个通过。
+- 关键决定：没有 hints 时旧流程不变；有 hints 但路径或 ID 错误时直接失败。
+- 已完成：新增 `experiments/gemini_layout_review.py`，可把单页 PDF 截图和本地 block 简表发送给 Gemini，生成 `layout_hints.json` 片段。
+- 已完成：Gemini 输出仍会经过本地 `LayoutHints` 校验；脚本不接主流程，不默认调用外部 API。
+- 已验证：新增 Gemini 实验脚本本地测试；全量测试 423 个通过。
+- 关键决定：多模态只做语义审稿，不生成坐标、字号或最终 PDF。
+- 已完成：网页端已整合 Gemini 自动生成 layout hints；勾选后填写 Gemini Key 和审稿页码即可自动生成并应用到本次 `_typeset.pdf`。
+- 已完成：管线新增可选 `layout_hints_generator`，生成器运行在语义分析之后、翻译之前；手动 hints 路径优先于自动生成。
+- 已验证：新增网页接入相关测试；全量测试 426 个通过。
+- 剩余内容：真实 Gemini 联调、疑难页批量选择体验、原页与重绘页视觉对比报告、表格/边栏更细的 hints 应用。
