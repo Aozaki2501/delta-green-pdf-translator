@@ -129,3 +129,9 @@
 - 已完成：管线新增可选 `layout_hints_generator`，生成器运行在语义分析之后、翻译之前；手动 hints 路径优先于自动生成。
 - 已验证：新增网页接入相关测试；全量测试 426 个通过。
 - 剩余内容：真实 Gemini 联调、疑难页批量选择体验、原页与重绘页视觉对比报告、表格/边栏更细的 hints 应用。
+
+# Gemini layout hints 联调修复
+
+- 已定位：Gemini 400 不是 API Key 问题，是 REST 请求里的 JSON 输出配置字段写错。
+- 已修复：改用官方 REST 字段 `responseMimeType: application/json` 和 `responseJsonSchema`。
+- 已验证：相关测试 11 个通过。

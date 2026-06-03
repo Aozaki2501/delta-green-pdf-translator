@@ -190,12 +190,8 @@ def call_gemini_layout_review(
         }],
         "generationConfig": {
             "temperature": 0,
-            "responseFormat": {
-                "text": {
-                    "mimeType": "application/json",
-                    "schema": layout_hints_response_schema(),
-                }
-            },
+            "responseMimeType": "application/json",
+            "responseJsonSchema": layout_hints_response_schema(),
         },
     }
     request = urllib.request.Request(
