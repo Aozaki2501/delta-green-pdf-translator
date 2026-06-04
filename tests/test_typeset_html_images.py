@@ -132,7 +132,15 @@ def test_chinese_text_uses_source_line_tracks_when_available():
         width=612.0,
         height=792.0,
         background=BackgroundLayer(),
-        images=[],
+        images=[
+            ImageElement(
+                id="p0001_img0001",
+                bbox=[72.0, 96.0, 180.0, 150.0],
+                image_path="assets/typeset_images/p0001_img0001.png",
+                width_px=200,
+                height_px=100,
+            )
+        ],
         decorations=[],
         text_regions=[
             TextRegionBBox(
@@ -191,6 +199,90 @@ def test_chinese_text_uses_source_line_tracks_when_available():
     assert 'class="typeset-line-track-flow"' in html
     assert 'class="typeset-line-slot"' in html
     assert "left:96.000px;top:130.667px" in html
+
+
+def test_chinese_text_uses_natural_column_flow_without_foreground_images():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[
+            ImageElement(
+                id="p0001_img0001",
+                bbox=[0.0, 0.0, 612.0, 792.0],
+                image_path="assets/typeset_images/p0001_img0001.png",
+                width_px=1224,
+                height_px=1584,
+            )
+        ],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(
+                id="p0001_r0001",
+                bbox=[36.0, 80.0, 270.0, 140.0],
+                block_ids=["p0001_t0001"],
+                lines=[
+                    TextLineBBox([36.0, 80.0, 270.0, 93.0], "Line one", 10.9, False, False, "#000000"),
+                    TextLineBBox([36.0, 98.0, 270.0, 111.0], "Line two", 10.9, False, False, "#000000"),
+                    TextLineBBox([36.0, 116.0, 270.0, 129.0], "Line three", 10.9, False, False, "#000000"),
+                ],
+            ),
+            TextRegionBBox(
+                id="p0001_r0002",
+                bbox=[306.0, 80.0, 540.0, 140.0],
+                block_ids=["p0001_t0002"],
+                lines=[
+                    TextLineBBox([306.0, 80.0, 540.0, 93.0], "Right one", 10.9, False, False, "#000000"),
+                    TextLineBBox([306.0, 98.0, 540.0, 111.0], "Right two", 10.9, False, False, "#000000"),
+                    TextLineBBox([306.0, 116.0, 540.0, 129.0], "Right three", 10.9, False, False, "#000000"),
+                ],
+            ),
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.COLUMNS,
+        columns=[
+            ColumnInfo(side="left", bbox=[36.0, 80.0, 270.0, 140.0], block_ids=["p0001_r0001_b0001"]),
+            ColumnInfo(side="right", bbox=[306.0, 80.0, 540.0, 140.0], block_ids=["p0001_r0002_b0001"]),
+        ],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Left", 10.9, False, False, "#000000")],
+                source_text="Left",
+                translated_text="左栏正文应该自然重排，不再硬塞进英文原始行轨道。",
+                translatable=True,
+            ),
+            ContentBlock(
+                id="p0001_r0002_b0001",
+                region_id="p0001_r0002",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Right", 10.9, False, False, "#000000")],
+                source_text="Right",
+                translated_text="右栏正文也应该自然重排。",
+                translatable=True,
+            ),
+        ],
+    )
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert 'class="typeset-region-flow"' in html
+    assert 'class="typeset-line-track-flow"' not in html
+
+
+def test_source_region_flow_titles_have_spacing():
+    rebuilder = TypesetHTMLRebuilder()
+
+    css = rebuilder._build_global_css(8.5, 11.0)
+
+    assert ".typeset-region-flow .typeset-reflow-title" in css
+    assert "margin: 13.333px 0 13.333px 0" in css
 
 
 def test_fixed_source_text_renders_span_geometry():
@@ -252,3 +344,99 @@ def test_fixed_source_text_renders_span_geometry():
     assert 'class="typeset-source-span"' in html
     assert "font-style:italic" in html
     assert "// Delta" in html
+
+
+def test_positioned_translated_title_preserves_light_source_color():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(
+                id="p0001_r0001",
+                bbox=[300.0, 460.0, 500.0, 486.0],
+                block_ids=["p0001_t0001"],
+                lines=[
+                    TextLineBBox(
+                        [300.0, 460.0, 500.0, 486.0],
+                        "If They Miss Indian Rocks",
+                        15.0,
+                        True,
+                        False,
+                        "#ffffff",
+                    )
+                ],
+            )
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.MIXED,
+        columns=[],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.TITLE,
+                runs=[
+                    StyledTextRun(
+                        "If They Miss Indian Rocks",
+                        15.0,
+                        True,
+                        False,
+                        "#ffffff",
+                    )
+                ],
+                source_text="If They Miss Indian Rocks",
+                translated_text="如果错失印第安岩",
+                translatable=True,
+            )
+        ],
+    )
+
+    html = rebuilder._render_source_positioned_block(
+        content.blocks[0],
+        structure,
+        structure.text_regions[0].bbox,
+    )
+
+    assert "color:#ffffff" in html
+    assert "如果错失印第安岩" in html
+
+
+def test_missing_translatable_text_does_not_render_source_english():
+    rebuilder = TypesetHTMLRebuilder()
+    block = ContentBlock(
+        id="p0001_r0001_b0001",
+        region_id="p0001_r0001",
+        role=SemanticRole.BODY_COLUMN,
+        runs=[StyledTextRun("Untranslated English sentence", 10.9, False, False, "#000000")],
+        source_text="Untranslated English sentence",
+        translated_text=None,
+        translatable=True,
+    )
+
+    assert rebuilder._render_block(block) == ""
+
+
+def test_mixed_light_source_colors_prefer_readable_light_text():
+    rebuilder = TypesetHTMLRebuilder()
+    block = ContentBlock(
+        id="p0001_r0001_b0001",
+        region_id="p0001_r0001",
+        role=SemanticRole.BODY_COLUMN,
+        runs=[
+            StyledTextRun("Dark duplicate", 9.0, False, False, "#141314"),
+            StyledTextRun("Light original", 9.0, False, False, "#ffffff"),
+            StyledTextRun("Light original", 9.0, False, False, "#ffffff"),
+        ],
+        source_text="Light original",
+        translated_text="浅色文字",
+        translatable=True,
+    )
+
+    assert rebuilder._block_text_color(block) == "#ffffff"

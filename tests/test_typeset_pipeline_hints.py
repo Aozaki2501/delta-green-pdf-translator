@@ -154,7 +154,7 @@ def test_pipeline_does_not_reuse_content_from_different_upload(tmp_path):
     assert pipeline._load_existing_translated_content() is None
 
 
-def test_pipeline_stops_when_all_typeset_translations_fail(tmp_path):
+def test_pipeline_stops_when_any_typeset_translation_fails(tmp_path):
     pipeline = TypesetPipeline(
         pdf_path="book.pdf",
         output_dir=str(tmp_path),
@@ -165,11 +165,11 @@ def test_pipeline_stops_when_all_typeset_translations_fail(tmp_path):
         "failed_blocks": {"b1": "401 invalid key"},
     })()
 
-    with pytest.raises(RuntimeError, match="翻译全部失败"):
-        pipeline._ensure_not_all_translation_failed(_content_doc(), progress)
+    with pytest.raises(RuntimeError, match="翻译未完成"):
+        pipeline._ensure_no_translation_failed(_content_doc(), progress)
 
 
-def test_pipeline_allows_partial_typeset_translation_success(tmp_path):
+def test_pipeline_rejects_partial_typeset_translation_success(tmp_path):
     pipeline = TypesetPipeline(
         pdf_path="book.pdf",
         output_dir=str(tmp_path),
@@ -187,7 +187,8 @@ def test_pipeline_allows_partial_typeset_translation_success(tmp_path):
     )
     progress = type("Progress", (), {"failed_blocks": {"b2": "timeout"}})()
 
-    pipeline._ensure_not_all_translation_failed(content, progress)
+    with pytest.raises(RuntimeError):
+        pipeline._ensure_no_translation_failed(content, progress)
 
 
 def test_pipeline_configured_missing_layout_hints_path_fails(tmp_path):

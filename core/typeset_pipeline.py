@@ -321,7 +321,7 @@ class TypesetPipeline:
             progress_callback=translation_callback,
             max_workers=self.config.translation_concurrency,
         )
-        self._ensure_not_all_translation_failed(translated, progress)
+        self._ensure_no_translation_failed(translated, progress)
 
         # Save translated content
         save_translated_content(
@@ -583,7 +583,7 @@ class TypesetPipeline:
         """Return whether an intermediate JSON belongs to this uploaded PDF."""
         return Path(source_pdf).name == Path(self.pdf_path).name
 
-    def _ensure_not_all_translation_failed(
+    def _ensure_no_translation_failed(
         self,
         content: PageContentDocument,
         progress,
@@ -596,17 +596,18 @@ class TypesetPipeline:
         ]
         if not translatable:
             return
-        translated_count = sum(1 for block in translatable if block.translated_text)
-        if translated_count > 0:
+        missing = [block for block in translatable if not block.translated_text]
+        if not missing:
             return
 
         sample_error = ""
         failed_blocks = getattr(progress, "failed_blocks", {}) or {}
         if failed_blocks:
-            sample_error = next(iter(failed_blocks.values()))
+            first_missing = missing[0].id
+            sample_error = failed_blocks.get(first_missing) or next(iter(failed_blocks.values()))
         detail = f"；首个错误：{sample_error}" if sample_error else ""
         raise RuntimeError(
-            f"纯重绘 PDF 翻译全部失败：0/{len(translatable)} 个区域成功{detail}"
+            f"纯重绘 PDF 翻译未完成：{len(missing)}/{len(translatable)} 个区域失败{detail}"
         )
 
     def _get_page_dimensions(self) -> tuple[float, float]:

@@ -214,11 +214,14 @@ function typesetFitPositionedBlocks() {
     }
   }
   const reflowAreas = document.querySelectorAll(
-    '.typeset-reflow-area[data-fit="reflow"], .typeset-region-flow[data-fit="reflow"]'
+    '.typeset-reflow-area[data-fit="reflow"], .typeset-region-flow[data-fit="reflow"], .typeset-rotated-flow[data-fit="reflow"], .typeset-timeline-flow'
   );
   for (const area of reflowAreas) {
     let size = parseFloat(getComputedStyle(area).fontSize) || 14;
-    const minSize = 11;
+    const minSize = (
+      area.classList.contains('typeset-rotated-flow') ||
+      area.classList.contains('typeset-timeline-flow')
+    ) ? 8 : 11;
     let guard = 0;
     while (
       guard < 80 &&
@@ -406,6 +409,48 @@ body {{
 }}
 .typeset-region-flow .typeset-reflow-body {{
     line-height: {line_height};
+}}
+.typeset-region-flow .typeset-reflow-title {{
+    margin: {_pt_to_px(10.0):.3f}px 0 {_pt_to_px(10.0):.3f}px 0;
+}}
+.typeset-rotated-flow {{
+    position: absolute;
+    overflow: hidden;
+    font-size: {body_font_px:.3f}px;
+    line-height: 1.35;
+}}
+.typeset-rotated-flow .typeset-reflow-title {{
+    font-size: 1.7em;
+    margin-bottom: {_pt_to_px(5.0):.3f}px;
+}}
+.typeset-rotated-flow .typeset-reflow-subtitle {{
+    font-size: 1.28em;
+    margin: 0 0 {_pt_to_px(4.0):.3f}px 0;
+}}
+.typeset-rotated-flow .typeset-reflow-body {{
+    line-height: 1.35;
+    margin-bottom: 0.25em;
+    text-indent: 0;
+}}
+.typeset-timeline-intro {{
+    position: absolute;
+    overflow: hidden;
+    font-size: {body_font_px:.3f}px;
+    line-height: 1.35;
+    color: {self.config.body_color};
+}}
+.typeset-timeline-flow {{
+    position: absolute;
+    overflow: hidden;
+    column-gap: {_pt_to_px(18.0):.3f}px;
+    font-size: {_pt_to_px(8.8):.3f}px;
+    line-height: 1.28;
+    color: {self.config.body_color};
+}}
+.typeset-timeline-event {{
+    break-inside: avoid;
+    margin: 0 0 {_pt_to_px(6.0):.3f}px 0;
+    text-indent: 0;
 }}
 .typeset-line-track-flow {{
     position: absolute;
@@ -794,6 +839,7 @@ body {{
         """Render translated Chinese like a typeset text page."""
         region_map = {region.id: region.bbox for region in page_structure.text_regions}
         fixed_parts: list[str] = []
+        rotated_blocks: list[ContentBlock] = []
         content_blocks: list[ContentBlock] = []
 
         for block in page_content.blocks:
@@ -801,7 +847,8 @@ body {{
             if bbox is None:
                 continue
             if abs(self._region_angle(block.region_id, page_structure)) >= 1.0:
-                fixed_parts.append(self._render_positioned_single_block(block, page_structure, bbox))
+                if self._display_text_for_block(block):
+                    rotated_blocks.append(block)
                 continue
             if self._is_running_header(block):
                 fixed_parts.append(self._render_running_header(block, page_structure, bbox))
@@ -811,15 +858,31 @@ body {{
                 continue
             if block.role == SemanticRole.FOOTER:
                 continue
-            if not ((block.translated_text or "").strip() or (block.source_text or "").strip()):
+            if not self._display_text_for_block(block):
                 continue
             content_blocks.append(block)
 
+        fixed_parts.extend(
+            self._render_rotated_reflow_groups(rotated_blocks, page_structure, region_map)
+        )
         content_blocks = self._dedupe_content_blocks(content_blocks, region_map)
         content_blocks = sorted(
             content_blocks,
             key=lambda block: (region_map[block.region_id][1], region_map[block.region_id][0]),
         )
+        if self._is_timeline_page(content_blocks):
+            return "\n".join([
+                *fixed_parts,
+                self._render_timeline_page(content_blocks, region_map, page_structure),
+            ])
+        if self._is_centered_stack_page(content_blocks, region_map, page_structure):
+            return "\n".join([
+                *fixed_parts,
+                *[
+                    self._render_source_positioned_block(block, page_structure, region_map[block.region_id])
+                    for block in content_blocks
+                ],
+            ])
         flow_items = self._build_reflow_items(content_blocks)
         if not flow_items:
             return "\n".join(fixed_parts)
@@ -886,7 +949,7 @@ body {{
             bbox = region_map.get(block.region_id)
             if region is None or bbox is None:
                 continue
-            if self._is_source_positioned_heading(block, region, page_structure):
+            if self._is_source_positioned_heading(block, region, page_structure, page_content):
                 parts.append(self._render_source_positioned_block(block, page_structure, bbox))
                 consumed.add(block.id)
 
@@ -898,6 +961,16 @@ body {{
                 for block_id in column.block_ids
                 if block_id in block_by_id and block_id in text_by_id
             ]
+            column_blocks.extend(
+                block
+                for block in block_by_id.values()
+                if (
+                    block.id not in column.block_ids
+                    and block.id not in consumed
+                    and block.id in text_by_id
+                    and self._block_center_in_bbox(block, column.bbox, region_map)
+                )
+            )
             if not column_blocks:
                 continue
             column_parts.append(self._render_source_column_flow(
@@ -906,6 +979,7 @@ body {{
                 column_blocks,
                 text_by_id,
                 region_map,
+                page_structure,
             ))
             consumed.update(block.id for block in column_blocks)
 
@@ -922,6 +996,74 @@ body {{
             return ""
         return "\n".join([*parts, *column_parts])
 
+    def _block_center_in_bbox(
+        self,
+        block: ContentBlock,
+        bbox: list[float],
+        region_map: dict[str, list[float]],
+    ) -> bool:
+        block_bbox = region_map.get(block.region_id)
+        if block_bbox is None:
+            return False
+        x0, y0, x1, y1 = bbox
+        bx0, by0, bx1, by1 = block_bbox
+        center_x = (bx0 + bx1) / 2
+        center_y = (by0 + by1) / 2
+        return x0 <= center_x <= x1 and y0 - 8.0 <= center_y <= y1 + 8.0
+
+    def _render_rotated_reflow_groups(
+        self,
+        blocks: list[ContentBlock],
+        page_structure: PageStructure,
+        region_map: dict[str, list[float]],
+    ) -> list[str]:
+        """Render a tilted source page/card as one readable text flow."""
+        groups: dict[float, list[ContentBlock]] = {}
+        singles: list[ContentBlock] = []
+        for block in blocks:
+            angle = self._region_angle(block.region_id, page_structure)
+            if abs(angle) < 1.0:
+                singles.append(block)
+                continue
+            groups.setdefault(round(angle * 2.0) / 2.0, []).append(block)
+
+        rendered: list[str] = []
+        for angle, group in groups.items():
+            if len(group) < 3:
+                singles.extend(group)
+                continue
+            ordered = sorted(group, key=lambda block: (region_map[block.region_id][1], region_map[block.region_id][0]))
+            bboxes = [region_map[block.region_id] for block in ordered]
+            x0 = min(bbox[0] for bbox in bboxes)
+            y0 = min(bbox[1] for bbox in bboxes)
+            x1 = max(bbox[2] for bbox in bboxes)
+            y1 = max(bbox[3] for bbox in bboxes)
+            pad_x = 4.0
+            pad_y = 4.0
+            left = _pt_to_px(max(0.0, x0 - pad_x))
+            top = _pt_to_px(max(0.0, y0 - pad_y))
+            width = _pt_to_px(min(page_structure.width, x1 + pad_x) - max(0.0, x0 - pad_x))
+            height = _pt_to_px(min(page_structure.height, y1 + pad_y) - max(0.0, y0 - pad_y))
+            inner = "\n".join(
+                self._render_reflow_block(block, self._display_text_for_block(block))
+                for block in ordered
+            )
+            rendered.append(
+                f'<div class="typeset-rotated-flow" '
+                f'data-fit="reflow" '
+                f'style="left:{_px(left)};top:{_px(top)};'
+                f'width:{_px(width)};height:{_px(height)};'
+                f'color:{html.escape(self._group_text_color(ordered))};'
+                f'transform-origin:0 0;transform:rotate({angle:.3f}deg)">'
+                f"{inner}</div>"
+            )
+
+        for block in singles:
+            bbox = region_map.get(block.region_id)
+            if bbox is not None:
+                rendered.append(self._render_positioned_single_block(block, page_structure, bbox))
+        return rendered
+
     def _render_source_column_flow(
         self,
         side: str,
@@ -929,10 +1071,15 @@ body {{
         blocks: list[ContentBlock],
         text_by_id: dict[str, str],
         region_map: dict[str, list[float]],
+        page_structure: PageStructure,
     ) -> str:
         template = getattr(self, "_current_template", None)
         line_flow = self._render_source_column_line_flow(side, blocks, text_by_id, region_map)
-        if line_flow and (template is None or template.use_line_tracks):
+        if (
+            line_flow
+            and (template is None or template.use_line_tracks)
+            and self._column_needs_line_tracks(bbox, page_structure)
+        ):
             return line_flow
 
         x0, y0, x1, y1 = self._expanded_column_bbox(bbox)
@@ -951,9 +1098,142 @@ body {{
             f'data-column="{html.escape(side)}" '
             f'data-fit="reflow" '
             f'style="left:{_px(left)};top:{_px(top)};'
-            f'width:{_px(width)};height:{_px(height)}">'
+            f'width:{_px(width)};height:{_px(height)};'
+            f'color:{html.escape(self._group_text_color(ordered))}">'
             f"{inner}</div>"
         )
+
+    def _is_timeline_page(self, blocks: list[ContentBlock]) -> bool:
+        date_blocks = [block for block in blocks if self._looks_like_timeline_event(block)]
+        return len(date_blocks) >= 5
+
+    def _looks_like_timeline_event(self, block: ContentBlock) -> bool:
+        text = (block.source_text or block.translated_text or "").strip()
+        return bool(re.match(r"^\d{1,2}\s+[A-Z][A-Z]+\s+\d{4}\b", text))
+
+    def _render_timeline_page(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+        page_structure: PageStructure,
+    ) -> str:
+        date_blocks = [block for block in blocks if self._looks_like_timeline_event(block)]
+        first_date_y = min(region_map[block.region_id][1] for block in date_blocks)
+        intro_blocks = [
+            block
+            for block in blocks
+            if (
+                block not in date_blocks
+                and region_map[block.region_id][1] < first_date_y
+                and region_map[block.region_id][2] - region_map[block.region_id][0]
+                >= page_structure.width * 0.55
+            )
+        ]
+        event_blocks = [block for block in blocks if block not in intro_blocks]
+
+        parts: list[str] = []
+        if intro_blocks:
+            intro_boxes = [region_map[block.region_id] for block in intro_blocks]
+            x0 = min(bbox[0] for bbox in intro_boxes)
+            y0 = min(bbox[1] for bbox in intro_boxes)
+            x1 = max(bbox[2] for bbox in intro_boxes)
+            y1 = max(bbox[3] for bbox in intro_boxes)
+            intro = "".join(
+                f'<p class="typeset-timeline-event">{self._format_text(self._display_text_for_block(block))}</p>'
+                for block in intro_blocks
+            )
+            parts.append(
+                f'<div class="typeset-timeline-intro" '
+                f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
+                f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)}">'
+                f"{intro}</div>"
+            )
+
+        boxes = [region_map[block.region_id] for block in event_blocks]
+        x0 = max(42.0, min(bbox[0] for bbox in boxes))
+        y0 = min(bbox[1] for bbox in boxes)
+        x1 = min(page_structure.width - 42.0, max(bbox[2] for bbox in boxes))
+        y1 = min(page_structure.height - 50.0, max(bbox[3] for bbox in boxes))
+        columns = 3 if x1 - x0 >= page_structure.width * 0.65 else 2
+        column_width = max(1.0, (x1 - x0) / columns)
+        ordered = sorted(
+            event_blocks,
+            key=lambda block: (
+                int((((region_map[block.region_id][0] + region_map[block.region_id][2]) / 2) - x0) / column_width),
+                region_map[block.region_id][1],
+            ),
+        )
+        events = "".join(
+            f'<p class="typeset-timeline-event">{self._format_text(self._display_text_for_block(block))}</p>'
+            for block in ordered
+            if self._display_text_for_block(block)
+        )
+        parts.append(
+            f'<div class="typeset-timeline-flow" '
+            f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
+            f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)};'
+            f'column-count:{columns}">{events}</div>'
+        )
+        return "\n".join(parts)
+
+    def _is_centered_stack_page(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+        page_structure: PageStructure,
+    ) -> bool:
+        body_blocks = [
+            block for block in blocks
+            if block.role == SemanticRole.BODY_COLUMN
+            and region_map[block.region_id][1] > page_structure.height * 0.22
+        ]
+        if len(body_blocks) < 4:
+            return False
+        page_center = page_structure.width / 2
+        centered = [
+            block for block in body_blocks
+            if abs(((region_map[block.region_id][0] + region_map[block.region_id][2]) / 2) - page_center)
+            <= page_structure.width * 0.18
+        ]
+        return len(centered) >= 4 and len(centered) / len(body_blocks) >= 0.6
+
+    def _column_needs_line_tracks(
+        self,
+        column_bbox: list[float],
+        page_structure: PageStructure,
+    ) -> bool:
+        for image in page_structure.images:
+            if self._is_full_page_image(image.bbox, page_structure):
+                continue
+            if self._overlap_ratio(column_bbox, image.bbox) >= 0.08:
+                return True
+        return False
+
+    def _is_full_page_image(
+        self,
+        bbox: list[float],
+        page_structure: PageStructure,
+    ) -> bool:
+        if len(bbox) != 4:
+            return False
+        x0, y0, x1, y1 = bbox
+        width = max(0.0, x1 - x0)
+        height = max(0.0, y1 - y0)
+        return (
+            width >= page_structure.width * 0.9
+            and height >= page_structure.height * 0.9
+        )
+
+    def _overlap_ratio(self, a: list[float], b: list[float]) -> float:
+        if len(a) != 4 or len(b) != 4:
+            return 0.0
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        overlap_width = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        overlap_height = max(0.0, min(ay1, by1) - max(ay0, by0))
+        overlap_area = overlap_width * overlap_height
+        column_area = max(1.0, max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0))
+        return overlap_area / column_area
 
     def _render_source_column_line_flow(
         self,
@@ -1043,7 +1323,13 @@ body {{
         block: ContentBlock,
         region: TextRegionBBox,
         page_structure: PageStructure,
+        page_content: PageContent | None = None,
     ) -> bool:
+        if page_content and (
+            self._block_belongs_to_column(block, page_content)
+            or self._region_center_in_any_column(region.bbox, page_content)
+        ):
+            return False
         if block.role in (SemanticRole.HEADER, SemanticRole.TITLE, SemanticRole.SUBTITLE):
             return True
         if self._get_block_font_size(block) >= self.config.body_font_size_pt * 1.45:
@@ -1051,6 +1337,27 @@ body {{
         x0, _, x1, _ = region.bbox
         width_ratio = (x1 - x0) / max(1.0, page_structure.width)
         return width_ratio >= 0.65 and self._looks_like_subtitle(block)
+
+    def _block_belongs_to_column(
+        self,
+        block: ContentBlock,
+        page_content: PageContent,
+    ) -> bool:
+        return any(block.id in column.block_ids for column in page_content.columns)
+
+    def _region_center_in_any_column(
+        self,
+        region_bbox: list[float],
+        page_content: PageContent,
+    ) -> bool:
+        bx0, by0, bx1, by1 = region_bbox
+        center_x = (bx0 + bx1) / 2
+        center_y = (by0 + by1) / 2
+        for column in page_content.columns:
+            x0, y0, x1, y1 = column.bbox
+            if x0 <= center_x <= x1 and y0 - 8.0 <= center_y <= y1 + 8.0:
+                return True
+        return False
 
     def _render_source_positioned_block(
         self,
@@ -1151,7 +1458,7 @@ body {{
         seen_text = ""
 
         for block in blocks:
-            original_text = (block.translated_text or block.source_text or "").strip()
+            original_text = self._display_text_for_block(block)
             if not original_text:
                 continue
 
@@ -1349,7 +1656,7 @@ body {{
         return width >= flow_width * 0.65 or (bbox[0] < mid < bbox[2])
 
     def _render_reflow_block(self, block: ContentBlock, text: str | None = None) -> str:
-        text = (text if text is not None else (block.translated_text or block.source_text or "")).strip()
+        text = (text if text is not None else self._display_text_for_block(block)).strip()
         if not text:
             return ""
         escaped = self._format_text(text)
@@ -1687,19 +1994,58 @@ body {{
 
     def _block_text_color(self, block: ContentBlock) -> str:
         """Pick the source text color that should carry over to translated text."""
+        source_color = self._source_text_color(block)
+        if source_color and self._is_light_color(source_color):
+            return source_color
         if block.role == SemanticRole.TITLE:
             return self.config.title_color
         if block.role == SemanticRole.SUBTITLE or self._looks_like_subtitle(block):
             return self.config.subtitle_color
-        for run in block.runs:
-            if run.text.strip() and run.color:
-                return run.color
+        if source_color:
+            return source_color
         return "#000000"
+
+    def _source_text_color(self, block: ContentBlock) -> str:
+        colors = [
+            run.color
+            for run in block.runs
+            if run.text.strip() and run.color
+        ]
+        if not colors:
+            return ""
+        light_count = sum(1 for color in colors if self._is_light_color(color))
+        if light_count and light_count >= len(colors) / 3:
+            return next(color for color in colors if self._is_light_color(color))
+        for color in colors:
+            if not self._is_light_color(color):
+                return color
+        return colors[0]
+
+    def _group_text_color(self, blocks: list[ContentBlock]) -> str:
+        colors = [self._source_text_color(block) for block in blocks]
+        colors = [color for color in colors if color]
+        if not colors:
+            return self.config.body_color
+        light_count = sum(1 for color in colors if self._is_light_color(color))
+        if light_count and light_count >= len(colors) / 2:
+            return next(color for color in colors if self._is_light_color(color))
+        return self.config.body_color
+
+    def _is_light_color(self, color: str) -> bool:
+        match = re.fullmatch(r"#?([0-9a-fA-F]{6})", (color or "").strip())
+        if not match:
+            return False
+        value = match.group(1)
+        red = int(value[0:2], 16)
+        green = int(value[2:4], 16)
+        blue = int(value[4:6], 16)
+        luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        return luminance >= 180
 
     def _render_block(self, block: ContentBlock, is_cover: bool = False) -> str:
         """Render a single content block as HTML."""
         # Determine the text to display
-        text = block.translated_text if block.translated_text else block.source_text
+        text = self._display_text_for_block(block)
         if not text:
             return ""
 
@@ -1722,6 +2068,11 @@ body {{
         if not sizes:
             return self.config.body_font_size_pt
         return sizes[len(sizes) // 2]
+
+    def _display_text_for_block(self, block: ContentBlock) -> str:
+        if block.translatable:
+            return (block.translated_text or "").strip()
+        return (block.translated_text or block.source_text or "").strip()
 
     def _render_heading_block(
         self, block: ContentBlock, text: str, font_size_pt: float
