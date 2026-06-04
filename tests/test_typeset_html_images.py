@@ -505,7 +505,15 @@ def test_positioned_translated_title_preserves_light_source_color():
         width=612.0,
         height=792.0,
         background=BackgroundLayer(),
-        images=[],
+        images=[
+            ImageElement(
+                id="p0001_img0001",
+                bbox=[290.0, 450.0, 510.0, 500.0],
+                image_path="assets/typeset_images/p0001_img0001.png",
+                width_px=440,
+                height_px=100,
+            )
+        ],
         decorations=[],
         text_regions=[
             TextRegionBBox(
@@ -557,7 +565,33 @@ def test_positioned_translated_title_preserves_light_source_color():
     )
 
     assert "color:#ffffff" in html
+    assert "background:#f4eedc" not in html
     assert "如果错失印第安岩" in html
+
+
+def test_positioned_title_uses_source_bold_weight():
+    rebuilder = TypesetHTMLRebuilder()
+    normal = ContentBlock(
+        id="p0001_r0001_b0001",
+        region_id="p0001_r0001",
+        role=SemanticRole.TITLE,
+        runs=[StyledTextRun("Introduction", 18.0, False, False, "#000000")],
+        source_text="Introduction",
+        translated_text="引言",
+        translatable=True,
+    )
+    bold = ContentBlock(
+        id="p0001_r0002_b0001",
+        region_id="p0001_r0002",
+        role=SemanticRole.TITLE,
+        runs=[StyledTextRun("If They Miss Indian Rocks", 15.0, True, False, "#ffffff")],
+        source_text="If They Miss Indian Rocks",
+        translated_text="如果他们错过了印第安岩",
+        translatable=True,
+    )
+
+    assert "font-weight:400" in rebuilder._render_block(normal)
+    assert "font-weight:700" in rebuilder._render_block(bold)
 
 
 def test_missing_translatable_text_does_not_render_source_english():

@@ -1473,7 +1473,7 @@ body {{
             self._block_text_color(block),
             inner,
             self._region_angle(block.region_id, page_structure),
-            self._positioned_mask_style(page_structure, bbox),
+            self._positioned_mask_style(page_structure, bbox, block),
         )
 
     def _render_source_span_block(
@@ -1858,7 +1858,7 @@ body {{
             parts.append(self._positioned_block_html(
                 block.region_id, left, top, width, height, color, inner,
                 self._region_angle(block.region_id, page_structure),
-                self._positioned_mask_style(page_structure, bbox),
+                self._positioned_mask_style(page_structure, bbox, block),
             ))
             consumed.add(block.id)
         return "\n".join(parts)
@@ -1886,7 +1886,7 @@ body {{
             self._block_text_color(block),
             inner,
             self._region_angle(block.region_id, page_structure),
-            self._positioned_mask_style(page_structure, bbox),
+            self._positioned_mask_style(page_structure, bbox, block),
         )
 
     def _positioned_block_html(
@@ -1914,7 +1914,14 @@ body {{
             f"{inner}</div>"
         )
 
-    def _positioned_mask_style(self, page_structure: PageStructure, bbox: list[float]) -> str:
+    def _positioned_mask_style(
+        self,
+        page_structure: PageStructure,
+        bbox: list[float],
+        block: ContentBlock | None = None,
+    ) -> str:
+        if block is not None and self._is_light_color(self._block_text_color(block)):
+            return ""
         for image in page_structure.images:
             if self._is_full_page_image(image.bbox, page_structure):
                 continue
@@ -1992,7 +1999,7 @@ body {{
             f'style="left:{_px(left)};top:{_px(top)};'
             f'width:{_px(width)};height:{_px(height)};'
             f'color:{html.escape(color)};'
-            f'{self._positioned_mask_style(page_structure, [x0, y0, x1, y1])}">'
+            f'{self._positioned_mask_style(page_structure, [x0, y0, x1, y1], blocks[0])}">'
             f"{inner}</div>"
         )
 
@@ -2251,7 +2258,8 @@ body {{
         return (
             f'<{tag} class="typeset-heading" '
             f'data-block-id="{html.escape(block.id)}" '
-            f'style="font-size:{_px(font_size_px)}">'
+            f'style="font-size:{_px(font_size_px)};'
+            f'font-weight:{self._source_font_weight(block)}">'
             f"{escaped_text}"
             f"</{tag}>"
         )
@@ -2264,9 +2272,13 @@ body {{
         return (
             f'<h3 class="typeset-heading typeset-source-subtitle" '
             f'data-block-id="{html.escape(block.id)}" '
-            f'style="font-size:{_px(font_size_px)}">'
+            f'style="font-size:{_px(font_size_px)};'
+            f'font-weight:{self._source_font_weight(block)}">'
             f"{escaped_text}</h3>"
         )
+
+    def _source_font_weight(self, block: ContentBlock) -> str:
+        return "700" if any(run.bold for run in block.runs if run.text.strip()) else "400"
 
     def _render_body_block(
         self, block: ContentBlock, text: str, font_size_pt: float
