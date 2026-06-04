@@ -406,16 +406,28 @@ def _translate_typeset_unit(
 ) -> dict[str, str]:
     source_text = _build_marked_text(pending_blocks)
     pending_ids = {block.id for block in pending_blocks}
-    translation = _translate_with_retry(
-        translator,
-        source_text,
-        page_num=page_index,
-        prev_context="",
-        cache=None,
-    )
-    if translation and translation.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
-        raise RuntimeError(translation)
-    return _parse_marked_translations(translation, pending_ids)
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        translation = _translate_with_retry(
+            translator,
+            source_text,
+            page_num=page_index,
+            prev_context="",
+            cache=None,
+        )
+        if translation and translation.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
+            last_error = RuntimeError(translation)
+        else:
+            try:
+                return _parse_marked_translations(translation, pending_ids)
+            except ValueError as exc:
+                last_error = exc
+        if attempt < MAX_RETRIES - 1:
+            delay = RETRY_BASE_DELAY * (2 ** attempt)
+            time.sleep(delay)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"{TRANSLATION_FAILURE_PREFIX} empty translation]")
 
 
 def _translate_typeset_content_sequential_legacy(

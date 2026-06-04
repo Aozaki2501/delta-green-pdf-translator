@@ -33,6 +33,34 @@ def test_transformed_image_uses_pdf_matrix():
     assert 'data-image-id="p0001_img0001"' in html
 
 
+def test_format_text_keeps_soft_newlines_soft():
+    rebuilder = TypesetHTMLRebuilder()
+
+    html = rebuilder._format_text("第一行\n第二行\n\n第三段")
+
+    assert "第一行\n第二行" in html
+    assert "第一行<br>第二行" not in html
+    assert "第二行<br><br>第三段" in html
+
+
+def test_timeline_text_breaks_at_timestamps():
+    rebuilder = TypesetHTMLRebuilder()
+    block = ContentBlock(
+        id="p0001_r0001_b0001",
+        region_id="p0001_r0001",
+        role=SemanticRole.BODY_COLUMN,
+        runs=[StyledTextRun("Timeline", 10.0, False, False, "#000000")],
+        source_text="02:03 First. 03:07 Second. 04:09 Third. 07:36 Fourth.",
+        translated_text="02:03 第一。03:07 第二。04:09 第三。07:36 第四。",
+        translatable=True,
+    )
+
+    html = rebuilder._render_body_block(block, block.translated_text, 10.0)
+
+    assert "typeset-timeline-text" in html
+    assert "02:03 第一。<br>03:07 第二。" in html
+
+
 def test_rotated_text_region_uses_source_angle():
     rebuilder = TypesetHTMLRebuilder()
     structure = PageStructure(
@@ -123,6 +151,130 @@ def test_chinese_text_uses_source_column_flows():
     assert 'data-column="left"' in html
     assert 'data-column="right"' in html
     assert "typeset-reflow-columns" not in html
+
+
+def test_chinese_page_keeps_main_title_positioned():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[
+            ImageElement(
+                id="p0001_img0001",
+                bbox=[0.0, 238.0, 320.0, 249.0],
+                image_path="assets/typeset_images/p0001_img0001.png",
+                width_px=640,
+                height_px=22,
+            )
+        ],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(id="p0001_r0001", bbox=[200.0, 220.0, 310.0, 245.0], block_ids=["p0001_t0001"]),
+            TextRegionBBox(id="p0001_r0002", bbox=[70.0, 260.0, 310.0, 680.0], block_ids=["p0001_t0002"]),
+            TextRegionBBox(id="p0001_r0003", bbox=[330.0, 120.0, 560.0, 680.0], block_ids=["p0001_t0003"]),
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.COLUMNS,
+        columns=[
+            ColumnInfo(side="left", bbox=[70.0, 260.0, 310.0, 680.0], block_ids=["p0001_r0002_b0001"]),
+            ColumnInfo(side="right", bbox=[330.0, 120.0, 560.0, 680.0], block_ids=["p0001_r0003_b0001"]),
+        ],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.TITLE,
+                runs=[StyledTextRun("Introduction", 18.0, False, False, "#000000")],
+                source_text="Introduction",
+                translated_text="\u5f15\u8a00",
+                translatable=True,
+            ),
+            ContentBlock(
+                id="p0001_r0002_b0001",
+                region_id="p0001_r0002",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Left body", 10.0, False, False, "#000000")],
+                source_text="Left body",
+                translated_text="\u5de6\u680f\u6b63\u6587",
+                translatable=True,
+            ),
+            ContentBlock(
+                id="p0001_r0003_b0001",
+                region_id="p0001_r0003",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Right body", 10.0, False, False, "#000000")],
+                source_text="Right body",
+                translated_text="\u53f3\u680f\u6b63\u6587",
+                translatable=True,
+            ),
+        ],
+    )
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert 'data-region-id="p0001_r0001"' in html
+    assert 'data-column="left"' in html
+    assert 'data-column="right"' in html
+    assert html.index('data-region-id="p0001_r0001"') > html.index('data-column="right"')
+    assert "background:#f4eedc;" in html
+    assert '<h2 class="typeset-reflow-title">\u5f15\u8a00</h2>' not in html
+
+
+def test_overwide_source_column_keeps_blocks_separate():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(id="p0001_r0001", bbox=[80.0, 110.0, 560.0, 190.0], block_ids=["p0001_t0001"]),
+            TextRegionBBox(id="p0001_r0002", bbox=[340.0, 230.0, 560.0, 520.0], block_ids=["p0001_t0002"]),
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.COLUMNS,
+        columns=[
+            ColumnInfo(side="right", bbox=[80.0, 100.0, 570.0, 540.0], block_ids=[
+                "p0001_r0001_b0001",
+                "p0001_r0002_b0001",
+            ]),
+            ColumnInfo(side="left", bbox=[70.0, 230.0, 300.0, 520.0], block_ids=[]),
+        ],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Credits", 10.0, False, True, "#000000")],
+                source_text="Credits",
+                translated_text="\u7248\u6743\u8bf4\u660e",
+                translatable=True,
+            ),
+            ContentBlock(
+                id="p0001_r0002_b0001",
+                region_id="p0001_r0002",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Right body", 10.0, False, False, "#000000")],
+                source_text="Right body",
+                translated_text="\u53f3\u680f\u6b63\u6587",
+                translatable=True,
+            ),
+        ],
+    )
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert html.count('data-column="right"') == 2
+    assert "width:640.000px" in html
+    assert "width:293.333px" in html
 
 
 def test_chinese_text_uses_source_line_tracks_when_available():

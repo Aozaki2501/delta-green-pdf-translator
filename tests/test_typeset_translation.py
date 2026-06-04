@@ -22,6 +22,7 @@ from core.typeset_translation import (
     _build_marked_text,
     _parse_marked_translations,
     _source_text_hash,
+    _translate_typeset_unit,
     translate_typeset_content,
     save_translated_content,
 )
@@ -120,6 +121,14 @@ class SlowMockTranslator(MockTranslator):
         finally:
             with self._lock:
                 self.active -= 1
+
+
+class MissingMarkerOnceTranslator(MockTranslator):
+    def translate_chunk(self, text: str, page_num=None, prev_context="", cache=None):
+        if self.call_count == 0:
+            self.call_count += 1
+            return "translated text without block markers"
+        return super().translate_chunk(text, page_num=page_num, prev_context=prev_context, cache=cache)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +355,15 @@ class TestTranslateTypesetContent:
         page = result.pages[0]
         b1 = next(b for b in page.blocks if b.id == "b1")
         assert b1.translated_text is None  # failed, no translation
+
+    def test_missing_marker_is_retried(self):
+        block = _make_block("b1", "Hello world")
+        translator = MissingMarkerOnceTranslator()
+
+        parsed = _translate_typeset_unit(translator, 0, [block])
+
+        assert parsed == {"b1": "翻译：Hello world"}
+        assert translator.call_count == 2
 
     def test_glossary_applied(self, tmp_path):
         """Glossary is set on translator."""

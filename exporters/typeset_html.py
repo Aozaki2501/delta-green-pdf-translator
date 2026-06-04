@@ -208,8 +208,10 @@ function typesetFitPositionedBlocks() {
       (box.scrollHeight > box.clientHeight + 1 || box.scrollWidth > box.clientWidth + 1)
     ) {
       size = Math.max(minSize, size - 0.5);
-      child.style.fontSize = size + 'px';
-      child.style.lineHeight = '1.1';
+      for (const item of box.children) {
+        item.style.fontSize = size + 'px';
+        item.style.lineHeight = '1.1';
+      }
       guard += 1;
     }
   }
@@ -841,14 +843,20 @@ body {{
         fixed_parts: list[str] = []
         rotated_blocks: list[ContentBlock] = []
         content_blocks: list[ContentBlock] = []
+        page_blocks = self._dedupe_content_blocks(
+            [block for block in page_content.blocks if block.region_id in region_map],
+            region_map,
+        )
+        rotated_flow_count = sum(
+            1
+            for block in page_blocks
+            if self._is_flow_body_block(block)
+            and abs(self._region_angle(block.region_id, page_structure)) >= 1.0
+        )
 
-        for block in page_content.blocks:
+        for block in page_blocks:
             bbox = region_map.get(block.region_id)
             if bbox is None:
-                continue
-            if abs(self._region_angle(block.region_id, page_structure)) >= 1.0:
-                if self._display_text_for_block(block):
-                    rotated_blocks.append(block)
                 continue
             if self._is_running_header(block):
                 fixed_parts.append(self._render_running_header(block, page_structure, bbox))
@@ -858,7 +866,25 @@ body {{
                 continue
             if block.role == SemanticRole.FOOTER:
                 continue
-            if not self._display_text_for_block(block):
+            if block.role == SemanticRole.TITLE:
+                fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+                continue
+            if self._is_bottom_credit_block(block, bbox, page_structure):
+                fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+                continue
+            if self._should_position_light_foreground_block(block, bbox, page_structure):
+                fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+                continue
+            if abs(self._region_angle(block.region_id, page_structure)) >= 1.0:
+                if self._is_flow_body_block(block) and rotated_flow_count >= 3:
+                    if self._display_text_for_block(block):
+                        rotated_blocks.append(block)
+                elif self._display_text_for_block(block):
+                    fixed_parts.append(self._render_positioned_single_block(block, page_structure, bbox))
+                continue
+            if (
+                not self._display_text_for_block(block)
+            ):
                 continue
             content_blocks.append(block)
 
@@ -872,16 +898,16 @@ body {{
         )
         if self._is_timeline_page(content_blocks):
             return "\n".join([
-                *fixed_parts,
                 self._render_timeline_page(content_blocks, region_map, page_structure),
+                *fixed_parts,
             ])
         if self._is_centered_stack_page(content_blocks, region_map, page_structure):
             return "\n".join([
-                *fixed_parts,
                 *[
                     self._render_source_positioned_block(block, page_structure, region_map[block.region_id])
                     for block in content_blocks
                 ],
+                *fixed_parts,
             ])
         flow_items = self._build_reflow_items(content_blocks)
         if not flow_items:
@@ -921,10 +947,40 @@ body {{
             f'<div class="typeset-reflow-area" '
             f'data-fit="reflow" '
             f'style="left:{_px(left)};top:{_px(top)};'
-            f'width:{_px(width)};height:{_px(height)}">'
+            f'width:{_px(width)};height:{_px(height)};'
+            f'{self._flow_mask_style(page_structure, flow_area)}">'
             f"{inner}</div>"
         )
-        return "\n".join([*fixed_parts, flow])
+        return "\n".join([flow, *fixed_parts])
+
+    def _is_bottom_credit_block(
+        self,
+        block: ContentBlock,
+        bbox: list[float],
+        page_structure: PageStructure,
+    ) -> bool:
+        text = (block.source_text or "") + " " + (block.translated_text or "")
+        if bbox[1] < page_structure.height * 0.72:
+            return False
+        return any(marker in text for marker in ("ISBN", "Publishing", "APU", "delta-green.com"))
+
+    def _should_position_light_foreground_block(
+        self,
+        block: ContentBlock,
+        bbox: list[float],
+        page_structure: PageStructure,
+    ) -> bool:
+        if not self._is_light_color(self._source_text_color(block)):
+            return False
+        return self._overlaps_foreground_image(bbox, page_structure)
+
+    def _flow_mask_style(self, page_structure: PageStructure, flow_area: list[float]) -> str:
+        for image in page_structure.images:
+            if self._is_full_page_image(image.bbox, page_structure):
+                continue
+            if self._boxes_overlap(flow_area, image.bbox):
+                return "background:#f4eedc;"
+        return ""
 
     def _render_source_region_flows(
         self,
@@ -959,19 +1015,32 @@ body {{
             column_blocks = [
                 block_by_id[block_id]
                 for block_id in column.block_ids
-                if block_id in block_by_id and block_id in text_by_id
+                if block_id in block_by_id and block_id in text_by_id and block_id not in consumed
             ]
-            column_blocks.extend(
-                block
-                for block in block_by_id.values()
-                if (
-                    block.id not in column.block_ids
-                    and block.id not in consumed
-                    and block.id in text_by_id
-                    and self._block_center_in_bbox(block, column.bbox, region_map)
+            if not self._is_overwide_column_bbox(column.bbox, page_structure):
+                column_blocks.extend(
+                    block
+                    for block in block_by_id.values()
+                    if (
+                        block.id not in column.block_ids
+                        and block.id not in consumed
+                        and block.id in text_by_id
+                        and self._block_center_in_bbox(block, column.bbox, region_map)
+                    )
                 )
-            )
             if not column_blocks:
+                continue
+            if self._is_overwide_column_bbox(column.bbox, page_structure):
+                for block in column_blocks:
+                    column_parts.append(self._render_source_column_flow(
+                        column.side,
+                        region_map[block.region_id],
+                        [block],
+                        text_by_id,
+                        region_map,
+                        page_structure,
+                    ))
+                consumed.update(block.id for block in column_blocks)
                 continue
             column_parts.append(self._render_source_column_flow(
                 column.side,
@@ -994,7 +1063,14 @@ body {{
 
         if not column_parts:
             return ""
-        return "\n".join([*parts, *column_parts])
+        return "\n".join([*column_parts, *parts])
+
+    def _is_overwide_column_bbox(
+        self,
+        bbox: list[float],
+        page_structure: PageStructure,
+    ) -> bool:
+        return (bbox[2] - bbox[0]) >= page_structure.width * 0.6
 
     def _block_center_in_bbox(
         self,
@@ -1045,8 +1121,8 @@ body {{
             width = _pt_to_px(min(page_structure.width, x1 + pad_x) - max(0.0, x0 - pad_x))
             height = _pt_to_px(min(page_structure.height, y1 + pad_y) - max(0.0, y0 - pad_y))
             inner = "\n".join(
-                self._render_reflow_block(block, self._display_text_for_block(block))
-                for block in ordered
+                self._render_rotated_reflow_block(block, text, index == 0)
+                for index, (block, text) in enumerate(self._build_reflow_items(ordered))
             )
             rendered.append(
                 f'<div class="typeset-rotated-flow" '
@@ -1205,6 +1281,8 @@ body {{
         for image in page_structure.images:
             if self._is_full_page_image(image.bbox, page_structure):
                 continue
+            if self._is_thin_decoration_image(image.bbox):
+                continue
             if self._overlap_ratio(column_bbox, image.bbox) >= 0.08:
                 return True
         return False
@@ -1223,6 +1301,14 @@ body {{
             width >= page_structure.width * 0.9
             and height >= page_structure.height * 0.9
         )
+
+    def _is_thin_decoration_image(self, bbox: list[float]) -> bool:
+        if len(bbox) != 4:
+            return False
+        x0, y0, x1, y1 = bbox
+        width = max(0.0, x1 - x0)
+        height = max(0.0, y1 - y0)
+        return height <= 14.0 and width >= 80.0
 
     def _overlap_ratio(self, a: list[float], b: list[float]) -> float:
         if len(a) != 4 or len(b) != 4:
@@ -1325,12 +1411,14 @@ body {{
         page_structure: PageStructure,
         page_content: PageContent | None = None,
     ) -> bool:
+        if block.role == SemanticRole.TITLE:
+            return True
         if page_content and (
             self._block_belongs_to_column(block, page_content)
             or self._region_center_in_any_column(region.bbox, page_content)
         ):
             return False
-        if block.role in (SemanticRole.HEADER, SemanticRole.TITLE, SemanticRole.SUBTITLE):
+        if block.role in (SemanticRole.HEADER, SemanticRole.SUBTITLE):
             return True
         if self._get_block_font_size(block) >= self.config.body_font_size_pt * 1.45:
             return True
@@ -1385,6 +1473,7 @@ body {{
             self._block_text_color(block),
             inner,
             self._region_angle(block.region_id, page_structure),
+            self._positioned_mask_style(page_structure, bbox),
         )
 
     def _render_source_span_block(
@@ -1543,7 +1632,9 @@ body {{
         y0 = max(64.0, min(bbox[1] for bbox in bboxes))
         x1 = min(page_structure.width - 34.0, max(bbox[2] for bbox in bboxes))
         y1 = min(page_structure.height - 54.0, max(bbox[3] for bbox in bboxes))
-        if x1 - x0 < page_structure.width * 0.55:
+        max_block_width = max((bbox[2] - bbox[0]) for bbox in bboxes)
+        is_narrow_source_flow = max_block_width < page_structure.width * 0.45
+        if x1 - x0 < page_structure.width * 0.55 and not is_narrow_source_flow:
             x0 = 54.0
             x1 = page_structure.width - 54.0
         if y1 - y0 < page_structure.height * 0.35:
@@ -1659,12 +1750,53 @@ body {{
         text = (text if text is not None else self._display_text_for_block(block)).strip()
         if not text:
             return ""
-        escaped = self._format_text(text)
         if block.role in (SemanticRole.TITLE, SemanticRole.HEADER):
+            escaped = self._format_text(text)
             return f'<h2 class="typeset-reflow-title">{escaped}</h2>'
         if block.role == SemanticRole.SUBTITLE or self._looks_like_subtitle(block):
+            escaped = self._format_text(text)
             return f'<h3 class="typeset-reflow-subtitle">{escaped}</h3>'
-        return f'<p class="typeset-reflow-body">{escaped}</p>'
+        escaped = self._format_body_text(block, text)
+        class_name = "typeset-reflow-body"
+        if self._looks_like_timeline_text(block, text):
+            class_name += " typeset-timeline-text"
+        return f'<p class="{class_name}">{escaped}</p>'
+
+    def _render_rotated_reflow_block(
+        self,
+        block: ContentBlock,
+        text: str,
+        is_first: bool,
+    ) -> str:
+        if not (is_first and self._source_starts_with_display_heading(block)):
+            return self._render_reflow_block(block, text)
+        title, body = self._split_leading_title_text(text)
+        if not title:
+            return self._render_reflow_block(block, text)
+        parts = [
+            f'<h2 class="typeset-reflow-title">{self._format_text(title)}</h2>'
+        ]
+        if body:
+            parts.append(
+                f'<p class="typeset-reflow-body">{self._format_body_text(block, body)}</p>'
+            )
+        return "".join(parts)
+
+    def _source_starts_with_display_heading(self, block: ContentBlock) -> bool:
+        source = (block.source_text or "").strip()
+        match = re.match(r"^[A-Z0-9][A-Z0-9 '\-:,.]{10,}", source)
+        if not match:
+            return False
+        heading = match.group(0).strip()
+        return len(heading) >= 10 and sum(ch.isalpha() for ch in heading) >= 8
+
+    def _split_leading_title_text(self, text: str) -> tuple[str, str]:
+        cleaned = text.strip()
+        for separator in ("。", "！", "？", "；", "，"):
+            index = cleaned.find(separator)
+            if 1 <= index <= 16:
+                return cleaned[:index].strip(), cleaned[index + 1:].strip()
+        return "", cleaned
 
     def _looks_like_subtitle(self, block: ContentBlock) -> bool:
         text = (block.source_text or block.translated_text or "").strip()
@@ -1684,7 +1816,11 @@ body {{
         region_map = {region.id: region.bbox for region in page_structure.text_regions}
         parts: list[str] = []
         consumed: set[str] = set()
-        blocks = page_content.blocks
+        blocks_with_regions = [
+            block for block in page_content.blocks
+            if block.region_id in region_map
+        ]
+        blocks = self._dedupe_content_blocks(blocks_with_regions, region_map)
         for index, block in enumerate(blocks):
             if block.id in consumed:
                 continue
@@ -1705,7 +1841,7 @@ body {{
             if self._is_flow_body_block(block):
                 group = self._collect_flow_group(blocks, index, region_map, consumed)
                 if len(group) > 1:
-                    parts.append(self._render_positioned_flow_group(group, region_map))
+                    parts.append(self._render_positioned_flow_group(group, region_map, page_structure))
                     consumed.update(item.id for item in group)
                     continue
 
@@ -1722,6 +1858,7 @@ body {{
             parts.append(self._positioned_block_html(
                 block.region_id, left, top, width, height, color, inner,
                 self._region_angle(block.region_id, page_structure),
+                self._positioned_mask_style(page_structure, bbox),
             ))
             consumed.add(block.id)
         return "\n".join(parts)
@@ -1749,6 +1886,7 @@ body {{
             self._block_text_color(block),
             inner,
             self._region_angle(block.region_id, page_structure),
+            self._positioned_mask_style(page_structure, bbox),
         )
 
     def _positioned_block_html(
@@ -1761,6 +1899,7 @@ body {{
         color: str,
         inner: str,
         angle: float = 0.0,
+        extra_style: str = "",
     ) -> str:
         transform = ""
         if abs(angle) >= 1.0:
@@ -1771,8 +1910,27 @@ body {{
             f'data-fit="text" '
             f'style="left:{_px(left)};top:{_px(top)};'
             f'width:{_px(width)};height:{_px(height)};'
-            f'color:{html.escape(color)};{transform}">'
+            f'color:{html.escape(color)};{transform}{extra_style}">'
             f"{inner}</div>"
+        )
+
+    def _positioned_mask_style(self, page_structure: PageStructure, bbox: list[float]) -> str:
+        for image in page_structure.images:
+            if self._is_full_page_image(image.bbox, page_structure):
+                continue
+            if self._boxes_overlap(bbox, image.bbox):
+                return "background:#f4eedc;"
+        return ""
+
+    def _overlaps_foreground_image(
+        self,
+        bbox: list[float],
+        page_structure: PageStructure,
+    ) -> bool:
+        return any(
+            self._boxes_overlap(bbox, image.bbox)
+            for image in page_structure.images
+            if not self._is_full_page_image(image.bbox, page_structure)
         )
 
     def _is_flow_body_block(self, block: ContentBlock) -> bool:
@@ -1809,6 +1967,7 @@ body {{
         self,
         blocks: list[ContentBlock],
         region_map: dict[str, list[float]],
+        page_structure: PageStructure,
     ) -> str:
         bboxes = [region_map[block.region_id] for block in blocks]
         x0 = min(bbox[0] for bbox in bboxes)
@@ -1820,7 +1979,11 @@ body {{
         width = _pt_to_px(max(0.0, x1 - x0))
         height = _pt_to_px(max(0.0, y1 - y0))
         color = self._block_text_color(blocks[0])
-        inner = "\n".join(self._render_block(block) for block in blocks)
+        flow_items = self._build_reflow_items(blocks)
+        inner = "\n".join(
+            self._render_body_block(block, text, self._get_block_font_size(block))
+            for block, text in flow_items
+        )
         ids = " ".join(block.id for block in blocks)
         return (
             f'<div class="typeset-positioned-block" '
@@ -1828,7 +1991,8 @@ body {{
             f'data-fit="text" '
             f'style="left:{_px(left)};top:{_px(top)};'
             f'width:{_px(width)};height:{_px(height)};'
-            f'color:{html.escape(color)}">'
+            f'color:{html.escape(color)};'
+            f'{self._positioned_mask_style(page_structure, [x0, y0, x1, y1])}">'
             f"{inner}</div>"
         )
 
@@ -2111,25 +2275,46 @@ body {{
         font_size_px = _pt_to_px(font_size_pt)
         # Enforce minimum font size
         font_size_px = max(font_size_px, self._min_font_size_px())
-        escaped_text = self._format_text(text)
+        escaped_text = self._format_body_text(block, text)
 
         style_parts: list[str] = []
         # Only add font-size if different from body default
         body_px = self._body_font_size_px()
         if abs(font_size_px - body_px) > 0.1:
             style_parts.append(f"font-size:{_px(font_size_px)}")
+        if self._looks_like_timeline_text(block, text):
+            style_parts.append("text-indent:0")
+            style_parts.append("line-height:1.25")
 
         style_attr = f' style="{";".join(style_parts)}"' if style_parts else ""
+        class_name = "typeset-body-text"
+        if self._looks_like_timeline_text(block, text):
+            class_name += " typeset-timeline-text"
 
         return (
-            f'<p class="typeset-body-text" '
+            f'<p class="{class_name}" '
             f'data-block-id="{html.escape(block.id)}"'
             f"{style_attr}>"
             f"{escaped_text}"
             f"</p>"
         )
 
+    def _format_body_text(self, block: ContentBlock, text: str) -> str:
+        if self._looks_like_timeline_text(block, text):
+            return "<br>".join(
+                html.escape(part.strip())
+                for part in re.split(r"(?=\b\d{2}:\d{2}\s+)", text)
+                if part.strip()
+            )
+        return self._format_text(text)
+
+    def _looks_like_timeline_text(self, block: ContentBlock, text: str) -> bool:
+        source = block.source_text or ""
+        combined = f"{source}\n{text}"
+        return len(re.findall(r"\b\d{2}:\d{2}\s+", combined)) >= 4
+
     def _format_text(self, text: str) -> str:
-        """Format text for HTML output, preserving line breaks."""
-        lines = text.splitlines() or [text]
-        return "<br>".join(html.escape(line) for line in lines)
+        """Format text for HTML output, preserving only paragraph breaks."""
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        paragraphs = re.split(r"\n{2,}", normalized)
+        return "<br><br>".join(html.escape(paragraph) for paragraph in paragraphs)
