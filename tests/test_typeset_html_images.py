@@ -2,6 +2,7 @@ from core.typeset_models import (
     BackgroundLayer,
     ColumnInfo,
     ContentBlock,
+    DecorationElement,
     ImageElement,
     PageContent,
     PageStructure,
@@ -220,7 +221,7 @@ def test_chinese_page_keeps_main_title_positioned():
     assert 'data-column="left"' in html
     assert 'data-column="right"' in html
     assert html.index('data-region-id="p0001_r0001"') > html.index('data-column="right"')
-    assert "background:#f4eedc;" in html
+    assert "background:#f4eedc;" not in html
     assert '<h2 class="typeset-reflow-title">\u5f15\u8a00</h2>' not in html
 
 
@@ -594,6 +595,47 @@ def test_positioned_title_uses_source_bold_weight():
     assert "font-weight:700" in rebuilder._render_block(bold)
 
 
+def test_positioned_title_does_not_use_foreground_mask():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[
+            ImageElement(
+                id="p0001_img0001",
+                bbox=[100.0, 100.0, 360.0, 140.0],
+                image_path="assets/typeset_images/rule.png",
+                width_px=520,
+                height_px=80,
+            )
+        ],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(id="p0001_r0001", bbox=[120.0, 105.0, 300.0, 135.0], block_ids=["t1"]),
+        ],
+    )
+    block = ContentBlock(
+        id="p0001_r0001_b0001",
+        region_id="p0001_r0001",
+        role=SemanticRole.TITLE,
+        runs=[StyledTextRun("Personal Reactions", 18.0, True, False, "#000000")],
+        source_text="Personal Reactions",
+        translated_text="个人反应",
+        translatable=True,
+    )
+
+    html = rebuilder._render_source_positioned_block(
+        block,
+        structure,
+        structure.text_regions[0].bbox,
+    )
+
+    assert "background:#f4eedc" not in html
+    assert "个人反应" in html
+
+
 def test_missing_translatable_text_does_not_render_source_english():
     rebuilder = TypesetHTMLRebuilder()
     block = ContentBlock(
@@ -626,3 +668,183 @@ def test_mixed_light_source_colors_prefer_readable_light_text():
     )
 
     assert rebuilder._block_text_color(block) == "#ffffff"
+
+
+def test_rebuild_splits_full_page_images_under_decorations():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[
+            ImageElement(
+                id="p0001_img0001",
+                bbox=[0.0, 0.0, 612.0, 792.0],
+                image_path="assets/typeset_images/page.png",
+                width_px=1224,
+                height_px=1584,
+            ),
+            ImageElement(
+                id="p0001_img0002",
+                bbox=[72.0, 600.0, 180.0, 680.0],
+                image_path="assets/typeset_images/logo.png",
+                width_px=216,
+                height_px=160,
+            ),
+        ],
+        decorations=[],
+        text_regions=[],
+    )
+
+    html = rebuilder.render_image_layer(structure.images, structure)
+
+    assert 'class="typeset-page-image-layer"' in html
+    assert 'class="typeset-image-layer"' in html
+    assert html.index("p0001_img0001") < html.index("p0001_img0002")
+
+
+def test_invalid_image_bbox_is_not_rendered():
+    rebuilder = TypesetHTMLRebuilder()
+    html = rebuilder.render_image_layer([
+        ImageElement(
+            id="bad",
+            bbox=[620.0, 100.0, 612.0, 120.0],
+            image_path="bad.png",
+            width_px=10,
+            height_px=10,
+        )
+    ])
+
+    assert "bad.png" not in html
+
+
+def test_art_page_keeps_source_visual_without_text_overlay():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(id="p0001_r0001", bbox=[200.0, 200.0, 400.0, 230.0], block_ids=["t1"]),
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.ART,
+        columns=[],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.TITLE,
+                runs=[StyledTextRun("MERIDIAN", 30.0, True, False, "#ffffff")],
+                source_text="MERIDIAN",
+                translated_text="子午线",
+                translatable=True,
+            )
+        ],
+    )
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert "子午线" not in html
+
+
+def test_table_block_uses_source_line_slots():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(
+                id="p0001_r0001",
+                bbox=[36.0, 100.0, 540.0, 120.0],
+                block_ids=["t1"],
+                lines=[
+                    TextLineBBox([40.0, 102.0, 60.0, 114.0], "1", 9.0, False, False, "#000000"),
+                    TextLineBBox([78.0, 102.0, 160.0, 114.0], "Fallen trees", 9.0, False, False, "#000000"),
+                    TextLineBBox([170.0, 102.0, 300.0, 114.0], "-10%", 9.0, False, False, "#000000"),
+                ],
+            )
+        ],
+    )
+    block = ContentBlock(
+        id="p0001_r0001_b0001",
+        region_id="p0001_r0001",
+        role=SemanticRole.TABLE,
+        runs=[StyledTextRun("1Fallen trees-10%", 9.0, False, False, "#000000")],
+        source_text="1Fallen trees-10%",
+        translated_text="1倒下的树木下次检定-10%",
+        translatable=True,
+    )
+
+    html = rebuilder._render_table_line_track_block(block, structure)
+
+    assert "typeset-table-line-flow" in html
+    assert html.count('class="typeset-line-slot"') == 3
+    assert "1倒下的树木下次检定-10%" in html
+
+
+def test_dense_line_grid_page_keeps_rotated_blocks_positioned():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[
+            DecorationElement(
+                id=f"d{i}",
+                element_type="line",
+                bbox=[40.0 + i * 2.0, 90.0, 40.0 + i * 2.0, 720.0],
+                stroke_color="#000000",
+                fill_color=None,
+                stroke_width=1.0,
+            )
+            for i in range(80)
+        ],
+        text_regions=[
+            TextRegionBBox(
+                id="p0001_r0001",
+                bbox=[106.0, 537.0, 375.0, 747.0],
+                block_ids=["t1"],
+                angle=-90.0,
+                lines=[
+                    TextLineBBox([106.0, 537.0, 125.0, 747.0], "You should be ascending", 9.0, False, False, "#000000", -90.0),
+                ],
+            )
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.MIXED,
+        columns=[],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("You should be ascending", 9.0, False, False, "#000000")],
+                source_text="You should be ascending",
+                translated_text="你本应步步高升，登上调查局的顶峰。",
+                translatable=True,
+            )
+        ],
+    )
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert "typeset-rotated-flow" not in html
+    assert "typeset-positioned-block" in html
+    assert "rotate(-90.000deg)" in html
+    assert "You should be ascending" in html
+    assert "你本应步步高升" not in html
