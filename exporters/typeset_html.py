@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,9 +37,10 @@ CSS_PX_PER_PT = 96.0 / 72.0
 
 # z-index layer constants
 Z_BACKGROUND = 1
-Z_DECORATIONS = 2
-Z_IMAGES = 3
-Z_TEXT = 4
+Z_PAGE_IMAGES = 2
+Z_DECORATIONS = 3
+Z_IMAGES = 4
+Z_TEXT = 5
 
 
 def _pt_to_px(value: float) -> float:
@@ -327,6 +329,12 @@ body {{
     z-index: {Z_IMAGES};
     pointer-events: none;
 }}
+.typeset-page-image-layer {{
+    position: absolute;
+    inset: 0;
+    z-index: {Z_PAGE_IMAGES};
+    pointer-events: none;
+}}
 .typeset-image {{
     position: absolute;
     display: block;
@@ -592,7 +600,7 @@ body {{
 
         # Render layers in z-order
         parts.append(self.render_background_layer(page_structure.background))
-        parts.append(self.render_image_layer(page_structure.images))
+        parts.append(self.render_image_layer(page_structure.images, page_structure))
         parts.append(self.render_decoration_layer(page_structure.decorations))
         parts.append(self.render_text_layer(page_content, page_structure))
 
@@ -620,7 +628,11 @@ body {{
             return f'<div class="typeset-bg-layer" style="{style_attr}"></div>'
         return '<div class="typeset-bg-layer"></div>'
 
-    def render_image_layer(self, images: list[ImageElement]) -> str:
+    def render_image_layer(
+        self,
+        images: list[ImageElement],
+        page_structure: PageStructure | None = None,
+    ) -> str:
         """
         Render the image layer HTML, placing images at original coordinates.
 
@@ -630,10 +642,32 @@ body {{
         Returns:
             HTML string for the image layer.
         """
+        images = [image for image in images if self._is_valid_image_bbox(image.bbox)]
         if not images:
             return '<div class="typeset-image-layer"></div>'
 
-        parts: list[str] = ['<div class="typeset-image-layer">']
+        if page_structure is not None:
+            page_images = [
+                image for image in images
+                if self._is_full_page_image(image.bbox, page_structure)
+            ]
+            foreground_images = [
+                image for image in images
+                if not self._is_full_page_image(image.bbox, page_structure)
+            ]
+            return "\n".join([
+                self._render_image_layer_div(page_images, "typeset-page-image-layer"),
+                self._render_image_layer_div(foreground_images, "typeset-image-layer"),
+            ])
+
+        return self._render_image_layer_div(images, "typeset-image-layer")
+
+    def _render_image_layer_div(
+        self,
+        images: list[ImageElement],
+        class_name: str,
+    ) -> str:
+        parts: list[str] = [f'<div class="{class_name}">']
         for img in images:
             if img.transform:
                 parts.append(self._render_transformed_image(img))
@@ -788,6 +822,9 @@ body {{
 
         if page_structure is not None:
             self._current_template = select_typeset_template(page_content, page_structure)
+            if page_content.page_type in (PageType.ART, PageType.COVER):
+                parts.append("</div>")
+                return "\n".join(parts)
             if self._should_reflow_chinese_page(page_content):
                 parts.append(self._render_chinese_reflow_page(page_content, page_structure))
             else:
@@ -807,6 +844,12 @@ body {{
 
         parts.append("</div>")
         return "\n".join(parts)
+
+    def _is_valid_image_bbox(self, bbox: list[float]) -> bool:
+        if len(bbox) != 4:
+            return False
+        x0, y0, x1, y1 = bbox
+        return x1 > x0 and y1 > y0
 
     def _render_transformed_image(self, img: ImageElement) -> str:
         """Render an image with the original PDF transform matrix."""
@@ -847,6 +890,17 @@ body {{
             [block for block in page_content.blocks if block.region_id in region_map],
             region_map,
         )
+        dense_line_grid_page = self._is_dense_line_grid_page(page_structure)
+        if dense_line_grid_page:
+            return "\n".join(
+                self._render_positioned_single_block(
+                    self._source_text_block(block),
+                    page_structure,
+                    region_map[block.region_id],
+                )
+                for block in page_blocks
+                if self._display_text_for_block(self._source_text_block(block))
+            )
         rotated_flow_count = sum(
             1
             for block in page_blocks
@@ -866,6 +920,9 @@ body {{
                 continue
             if block.role == SemanticRole.FOOTER:
                 continue
+            if block.role == SemanticRole.TABLE:
+                fixed_parts.append(self._render_table_line_track_block(block, page_structure))
+                continue
             if block.role == SemanticRole.TITLE:
                 fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
                 continue
@@ -876,6 +933,15 @@ body {{
                 fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
                 continue
             if abs(self._region_angle(block.region_id, page_structure)) >= 1.0:
+                if dense_line_grid_page:
+                    fixed_parts.append(
+                        self._render_positioned_single_block(
+                            self._source_text_block(block),
+                            page_structure,
+                            bbox,
+                        )
+                    )
+                    continue
                 if self._is_flow_body_block(block) and rotated_flow_count >= 3:
                     if self._display_text_for_block(block):
                         rotated_blocks.append(block)
@@ -1310,6 +1376,22 @@ body {{
         height = max(0.0, y1 - y0)
         return height <= 14.0 and width >= 80.0
 
+    def _is_dense_line_grid_page(self, page_structure: PageStructure) -> bool:
+        grid_lines = [
+            decoration
+            for decoration in page_structure.decorations
+            if self._is_table_grid_line(decoration)
+        ]
+        return len(grid_lines) >= 80
+
+    def _is_table_grid_line(self, decoration: DecorationElement) -> bool:
+        if decoration.element_type != "line" or len(decoration.bbox) != 4:
+            return False
+        if (decoration.stroke_color or "").lower() != "#000000":
+            return False
+        x0, y0, x1, y1 = decoration.bbox
+        return abs(x1 - x0) >= 8.0 or abs(y1 - y0) >= 8.0
+
     def _overlap_ratio(self, a: list[float], b: list[float]) -> float:
         if len(a) != 4 or len(b) != 4:
             return 0.0
@@ -1399,6 +1481,45 @@ body {{
     def _join_line_flow_text(self, texts) -> str:
         parts = [str(text).strip() for text in texts if str(text).strip()]
         return "".join(parts)
+
+    def _render_table_line_track_block(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+    ) -> str:
+        region = {item.id: item for item in page_structure.text_regions}.get(block.region_id)
+        if region is None or not getattr(region, "lines", None):
+            bbox = region.bbox if region is not None else [0.0, 0.0, 0.0, 0.0]
+            return self._render_positioned_single_block(block, page_structure, bbox)
+
+        slots: list[str] = []
+        for index, line in enumerate(region.lines):
+            bbox = list(getattr(line, "bbox", []))
+            if len(bbox) != 4:
+                continue
+            x0, y0, x1, y1 = bbox
+            font_size_pt = float(getattr(line, "font_size", 9.0) or 9.0)
+            font_size = _pt_to_px(max(7.0, min(font_size_pt, self.config.body_font_size_pt)))
+            source_color = str(getattr(line, "color", "#000000") or "#000000")
+            text_color = "#ffffff" if source_color.lower() == "#ffffff" else self.config.body_color
+            slots.append(
+                f'<span class="typeset-line-slot" '
+                f'data-line-index="{index}" '
+                f'data-bold="{str(bool(getattr(line, "bold", False))).lower()}" '
+                f'data-italic="{str(bool(getattr(line, "italic", False))).lower()}" '
+                f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
+                f'width:{_pt_to_px_str(max(0.0, x1 - x0))};'
+                f'height:{_pt_to_px_str(max(8.0, y1 - y0))};'
+                f'font-size:{_px(font_size)};color:{html.escape(text_color)}"></span>'
+            )
+        text = self._display_text_for_block(block)
+        if not slots or not text:
+            return ""
+        return (
+            f'<div class="typeset-line-track-flow typeset-table-line-flow" '
+            f'data-table-block="{html.escape(block.id)}" '
+            f'data-flow-text="{html.escape(text)}">{"".join(slots)}</div>'
+        )
 
     def _expanded_column_bbox(self, bbox: list[float]) -> list[float]:
         x0, y0, x1, y1 = bbox
@@ -1889,6 +2010,9 @@ body {{
             self._positioned_mask_style(page_structure, bbox, block),
         )
 
+    def _source_text_block(self, block: ContentBlock) -> ContentBlock:
+        return replace(block, translated_text=block.source_text, translatable=False)
+
     def _positioned_block_html(
         self,
         region_id: str,
@@ -1920,6 +2044,8 @@ body {{
         bbox: list[float],
         block: ContentBlock | None = None,
     ) -> str:
+        if block is not None and self._block_renders_as_heading(block):
+            return ""
         if block is not None and self._is_light_color(self._block_text_color(block)):
             return ""
         for image in page_structure.images:
@@ -1928,6 +2054,13 @@ body {{
             if self._boxes_overlap(bbox, image.bbox):
                 return "background:#f4eedc;"
         return ""
+
+    def _block_renders_as_heading(self, block: ContentBlock) -> bool:
+        return (
+            block.role in (SemanticRole.TITLE, SemanticRole.SUBTITLE)
+            or self._is_heading(self._get_block_font_size(block))
+            or self._looks_like_subtitle(block)
+        )
 
     def _overlaps_foreground_image(
         self,

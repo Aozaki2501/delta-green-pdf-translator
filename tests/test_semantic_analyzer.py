@@ -11,6 +11,7 @@ from core.semantic_analyzer import (
     PageContext,
     SemanticAnalyzer,
     _bbox_area,
+    _region_inside_table_grid,
     _looks_like_list,
     _looks_like_table,
     _weighted_avg_font_size,
@@ -19,6 +20,7 @@ from core.typeset_models import (
     BackgroundLayer,
     ColumnInfo,
     ContentBlock,
+    DecorationElement,
     ImageElement,
     PageStructure,
     PageType,
@@ -89,6 +91,46 @@ class TestLooksLikeTable:
 
     def test_too_few_lines(self):
         assert _looks_like_table("a\tb\n1\t2") is False
+
+    def test_detects_dg_shaded_table_grid(self):
+        page = _make_page_structure(
+            text_regions=[
+                TextRegionBBox(id="p0001_r0001", bbox=[40, 104, 250, 114], block_ids=["t0"]),
+            ]
+        )
+        page.decorations.extend([
+            DecorationElement(
+                id=f"d{i}",
+                element_type="rect",
+                bbox=[36.0, 100.0 + i * 16.0, 540.0, 114.0 + i * 16.0],
+                stroke_color=None,
+                fill_color="#d1d2d4" if i else "#000000",
+                stroke_width=0.0,
+            )
+            for i in range(6)
+        ])
+
+        assert _region_inside_table_grid(page.text_regions[0], page) is True
+
+    def test_detects_dense_line_table_grid(self):
+        page = _make_page_structure(
+            text_regions=[
+                TextRegionBBox(id="p0001_r0001", bbox=[40, 104, 250, 114], block_ids=["t0"]),
+            ]
+        )
+        page.decorations.extend([
+            DecorationElement(
+                id=f"v{i}",
+                element_type="line",
+                bbox=[40.0 + i * 2.0, 90.0, 40.0 + i * 2.0, 720.0],
+                stroke_color="#000000",
+                fill_color=None,
+                stroke_width=1.0,
+            )
+            for i in range(80)
+        ])
+
+        assert _region_inside_table_grid(page.text_regions[0], page) is True
 
 
 class TestLooksLikeList:

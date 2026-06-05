@@ -25,6 +25,7 @@ from core.typeset_models import (
     PAGE_CONTENT_SCHEMA_VERSION,
     ColumnInfo,
     ContentBlock,
+    DecorationElement,
     PageContent,
     PageContentDocument,
     PageStructure,
@@ -146,14 +147,19 @@ class SemanticAnalyzer:
 
         # Classify each region and build content blocks
         blocks: list[ContentBlock] = []
+        dense_line_grid_page = _page_has_dense_line_grid(page_structure)
         for region in page_structure.text_regions:
             runs = region_runs[region.id]
             if not runs:
                 continue
 
             role = self.classify_region(region, context, runs)
+            if _region_inside_table_grid(region, page_structure):
+                role = SemanticRole.TABLE
             source_text = "".join(run.text for run in runs)
             translatable = not _is_fixed_nontranslatable_text(source_text, role)
+            if dense_line_grid_page and role == SemanticRole.TABLE:
+                translatable = False
 
             block_id = f"{region.id}_b0001"
             blocks.append(ContentBlock(
@@ -370,8 +376,12 @@ class SemanticAnalyzer:
                     span_bbox = span.get("bbox", [0, 0, 0, 0])
                     span_rect = pymupdf.Rect(span_bbox)
 
-                    # Check if span is within the region
-                    if not span_rect.intersects(region_rect):
+                    # Use the span center, not any intersection. Adjacent PDF
+                    # regions often touch; intersection duplicated whole
+                    # paragraphs across neighboring boxes.
+                    center_x = (span_rect.x0 + span_rect.x1) / 2
+                    center_y = (span_rect.y0 + span_rect.y1) / 2
+                    if not region_rect.contains(pymupdf.Point(center_x, center_y)):
                         continue
 
                     text = span.get("text", "")
@@ -650,6 +660,90 @@ def _looks_like_table(text: str) -> bool:
         return True
 
     return False
+
+
+def _region_inside_table_grid(
+    region: TextRegionBBox,
+    page_structure: PageStructure,
+) -> bool:
+    """Return True when a text region sits on a DG-style shaded table grid."""
+    if _page_has_dense_line_grid(page_structure):
+        return _region_center_inside_decoration_bounds(region, page_structure.decorations)
+
+    table_rects = [
+        decoration
+        for decoration in page_structure.decorations
+        if _is_table_grid_decoration(decoration)
+    ]
+    if len(table_rects) < 6:
+        return False
+
+    grid_x0 = min(decoration.bbox[0] for decoration in table_rects)
+    grid_y0 = min(decoration.bbox[1] for decoration in table_rects)
+    grid_x1 = max(decoration.bbox[2] for decoration in table_rects)
+    grid_y1 = max(decoration.bbox[3] for decoration in table_rects)
+
+    return _region_center_inside_bounds(region, [grid_x0, grid_y0, grid_x1, grid_y1], 4.0)
+
+
+def _region_center_inside_decoration_bounds(
+    region: TextRegionBBox,
+    decorations: list[DecorationElement],
+) -> bool:
+    if not decorations:
+        return False
+    grid_x0 = min(decoration.bbox[0] for decoration in decorations)
+    grid_y0 = min(decoration.bbox[1] for decoration in decorations)
+    grid_x1 = max(decoration.bbox[2] for decoration in decorations)
+    grid_y1 = max(decoration.bbox[3] for decoration in decorations)
+    return _region_center_inside_bounds(region, [grid_x0, grid_y0, grid_x1, grid_y1], 4.0)
+
+
+def _region_center_inside_bounds(
+    region: TextRegionBBox,
+    bounds: list[float],
+    tolerance: float,
+) -> bool:
+    x0, y0, x1, y1 = region.bbox
+    center_x = (x0 + x1) / 2
+    center_y = (y0 + y1) / 2
+    grid_x0, grid_y0, grid_x1, grid_y1 = bounds
+    return (
+        grid_x0 - tolerance <= center_x <= grid_x1 + tolerance
+        and grid_y0 - tolerance <= center_y <= grid_y1 + tolerance
+    )
+
+
+def _page_has_dense_line_grid(page_structure: PageStructure) -> bool:
+    grid_lines = [
+        decoration
+        for decoration in page_structure.decorations
+        if _is_table_grid_line(decoration)
+    ]
+    return len(grid_lines) >= 80
+
+
+def _is_table_grid_line(decoration: DecorationElement) -> bool:
+    if decoration.element_type != "line" or len(decoration.bbox) != 4:
+        return False
+    if (decoration.stroke_color or "").lower() != "#000000":
+        return False
+    x0, y0, x1, y1 = decoration.bbox
+    width = abs(x1 - x0)
+    height = abs(y1 - y0)
+    return width >= 8.0 or height >= 8.0
+
+
+def _is_table_grid_decoration(decoration: DecorationElement) -> bool:
+    if decoration.element_type != "rect" or len(decoration.bbox) != 4:
+        return False
+    fill = (decoration.fill_color or "").lower()
+    if fill not in {"#d1d2d4", "#000000"}:
+        return False
+    x0, y0, x1, y1 = decoration.bbox
+    width = x1 - x0
+    height = y1 - y0
+    return width >= 20.0 and 8.0 <= height <= 32.0
 
 
 def _looks_like_list(text: str) -> bool:
