@@ -1,5 +1,26 @@
 # 当前进度
 
+- 目标：修复 `aemeath-mini` 安装后不出现在宠物列表的问题。
+- 已定位：安装目录存在，图集正确；问题是 `pet.json` 带 UTF-8 BOM，Codex 桌面端会跳过该配置。
+- 已修复：`C:\Users\cytd\.codex\pets\aemeath-mini\pet.json` 已重写为无 BOM 合法 JSON，并补齐 `kind/source/sourceId` 字段。
+- 已验证：配置读取通过；`spritesheet.webp` 存在，尺寸为 `1536x1872`，格式为 RGBA。
+- 当前状态：点击宠物面板里的“刷新”，或重启 Codex 后应显示 `Aemeath Mini`。
+# 当前进度
+
+- 目标：更新仓库并打开本地 Web 项目。
+- 已完成：`main` 已快进到 `origin/main` 最新提交 `bcaffda`。
+- 已完成：已启动本地 Web，地址为 `http://localhost:8501`。
+- 已验证：页面 HTTP 200，浏览器标题为“三角洲翻译终端”。
+- 关键决定：只执行拉取、启动和记录；不修改业务代码。
+- 目标：安装公开宠物包 `ameath`。
+- 已完成：`npx codex-pet-installer add ameath` 因本机到 Supabase 的 HTTPS 握手失败而无法完成；已改用公开页面里的准确资源地址手动安装。
+- 已验证：`C:\Users\cytd\.codex\pets\ameath` 已包含 `pet.json` 和 `spritesheet.webp`；清单 id 为 `ameath`，图片尺寸为 `1536x1872`。
+- 关键决定：不修改项目代码；只结束旧终端里卡住的 `codex-pet-installer add ameath` 进程。
+
+- 目标：安装 Codex skill `hatch-pet`。
+- 已完成：已从官方 `openai/skills` curated 列表安装到 `C:\Users\cytd\.codex\skills\hatch-pet`。
+- 已验证：本地目录包含 `SKILL.md`、`scripts/`、`references/` 和 `agents/`。
+- 关键决定：只安装指定 skill，不改项目代码；需要重启 Codex 后才能加载新 skill。
 - 目标：处理深色背景上的标题译文仍显示黑字的问题�?
 - 已确认：�?PDF 已提取到该标题原始颜色为 `#ffffff`，不是识别不到，而是渲染阶段把标题强制套成主题黑/红色�?
 - 已修复：固定定位标题/小标题如果源文字是浅色，会保留源浅色；普通标题仍沿用主题色�?
@@ -259,3 +280,57 @@
 - 已修复：浅色文字不再加浅色遮罩，黑底说明框恢复黑底白字。
 - 已修复：固定标题按源文字 bold 标记输出字重，不再所有标题统一强制粗体。
 - 已验证：重新生成 `_debug_after_style_mask_typeset.pdf`，第 12/22 页黑底框恢复；第 3/4 页标题字重更接近原版；PDF 导出失败 0 个；全量测试 448 个通过。
+
+# Meridian 重绘继续
+
+- 当前目标：修复 Meridian 最新重绘里封面叠字、整页图层、正文重复吸入和特殊表格页压字问题。
+- 已修复：整页图片独立放到底图层，装饰和前景图片不再被整页图盖住。
+- 已修复：艺术页/封面不再叠加翻译文字，避免封面标题和底部说明被中文覆盖。
+- 已修复：相邻文本框只按 span 中心归属，避免同一段被多个区域重复吸入。
+- 已修复：灰底表格和密集线框表可识别为表格；密集角色表页不再强塞中文翻译。
+- 已验证：Meridian HTML/PDF 重新导出 34 页成功、0 页失败；全量测试 455 个通过。
+- 关键决定：最后几页角色表不是正常阅读内容，不继续追求中文化，只避免生成明显坏页。
+
+# Meridian 输出重新生成
+
+- 目标：用户反馈只有封面页变化，要求重新生成 PDF 和 HTML。
+- 已完成：基于现有 `page_structure.json` 重新跑语义分析，并按块 ID 合回已有译文，未重新调用翻译接口。
+- 已完成：重新生成 `_upload_Delta_Green_Meridian_8adbbcc9_typeset.html`、`_typeset.pdf` 和 `_typeset.html_assets.zip`。
+- 已修正：密集角色表页标记为不翻译，不再计入失败翻译块。
+- 已验证：PDF 导出 34 页成功、0 页失败；报告 `failed_regions=0`；全量测试 455 个通过。
+- 关键决定：最后几页角色表不追求中文化，只保证不把输出做坏。
+
+# Meridian 标题遮罩调整
+
+- 目标：去掉标题/小标题背后的浅色遮罩，避免标题像贴了一块白膏药。
+- 已完成：凡是按标题样式渲染的块，都不再添加前景遮罩。
+- 已确认：封面/艺术页没有额外文字层；封面底部糊字来自原 PDF 图像本身，不是重绘层新增。
+- 已生成：重新刷新 Meridian `_typeset.html`、`_typeset.pdf` 和 `_typeset.html_assets.zip`。
+- 已验证：PDF 导出 34 页成功、0 页失败；报告 `failed_regions=0`；全量测试 456 个通过。
+- 关键决定：遮罩只保留给正文/地图这类需要防止文字压图的区域，标题不再使用。
+
+# Kali Ghati typeset check
+
+- Goal: explain why latest `_typeset.html/pdf` has tilted text overflow, beige masks, page overlap, and table failures.
+- Confirmed: report says 12 pages exported, 0 failed translation regions; this is not a stale refresh issue.
+- Confirmed: renderer rebuilds pages from original PDF coordinates; complex tilted, image-heavy, and table pages relied only on automatic rules, with no `layout_hints.json` correction.
+- Decision: fix by failing visible bad layout first, then narrowing rules for tilted flows, masks, columns, and tables; no silent fallback.
+# Gemini role in typeset workflow
+
+- Goal: explain whether Gemini helps Kali Ghati layout issues.
+- Decision: Gemini is useful as a visual/layout reviewer that outputs validated `layout_hints.json`; it is not the renderer, translator, or PDF fix itself.
+- Key point: use Gemini to classify special pages, reading order, skipped decorative text, columns, and table-like regions before translation/rendering.
+# Kali Ghati local renderer fixes
+
+- Goal: fix deterministic issues that multimodal API should not handle.
+- Done: long translated fixed text no longer keeps source tilt; long translated headings use smaller fixed-box font.
+- Done: beige foreground mask is blocked for large text areas and long translated body blocks.
+- Done: typeset PDF export now runs browser layout checks before PDF output; overflow is reported instead of silently exporting bad pages.
+- Verified: rebuilt Kali Ghati debug HTML/PDF from existing JSON; 12 pages exported, 0 layout issues. Full test suite: 462 passed.
+- Decision: remaining special-page choices such as line-crossed cover text and dark image regions should be handled by validated Gemini `layout_hints.json`, not local guessing.
+# Kali Ghati tilted card small text fix
+
+- User clarified: the lower small text on page 2 should use the blank card space instead of staying as a separate tilted fixed box.
+- Done: tilted Chinese card blocks are grouped into one readable flow when at least three related tilted blocks are present.
+- Result: page 2 title/body/small note now flow together; the small note moves into the main card text flow and no longer leaves the large blank gap above it.
+- Verified: rebuilt `_debug_local_fix_typeset.pdf`; 12 pages exported, 0 layout issues. Full test suite: 462 passed.

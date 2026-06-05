@@ -21,6 +21,7 @@ class ExportResult:
     success_pages: int = 0
     failed_pages: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    layout_issues: list[dict] = field(default_factory=list)
 
 
 def _file_url(path: str) -> str:
@@ -82,9 +83,8 @@ class TypesetPDFExporter:
             page.goto(_file_url(html_path), wait_until="load")
             # Wait for all fonts to be loaded (ensures embedding)
             page.evaluate("document.fonts ? document.fonts.ready : Promise.resolve()")
-            page.evaluate(
-                "window.typesetFitPositionedBlocks ? window.typesetFitPositionedBlocks() : undefined"
-            )
+            result.layout_issues = self._fit_and_collect_layout_issues(page)
+            self._raise_for_layout_issues(result.layout_issues)
 
             page.pdf(
                 path=pdf_output,
@@ -108,10 +108,10 @@ class TypesetPDFExporter:
         page_height_pt: float,
     ) -> ExportResult:
         """
-        Export PDF with per-page fallback: if a page fails, skip it and continue.
+        Export PDF strictly.
 
-        This method first attempts a full export. If that fails, it falls back
-        to rendering pages individually, skipping any that cause errors.
+        The old public method name is kept for callers, but failures are
+        reported instead of silently skipping pages.
 
         Args:
             html_path: Path to the typeset HTML file.
@@ -149,9 +149,8 @@ class TypesetPDFExporter:
             try:
                 page.goto(_file_url(html_path), wait_until="load")
                 page.evaluate("document.fonts ? document.fonts.ready : Promise.resolve()")
-                page.evaluate(
-                    "window.typesetFitPositionedBlocks ? window.typesetFitPositionedBlocks() : undefined"
-                )
+                result.layout_issues = self._fit_and_collect_layout_issues(page)
+                self._raise_for_layout_issues(result.layout_issues)
 
                 # Get total page count from the HTML (count .typeset-page sections)
                 total_pages = page.evaluate(
@@ -170,19 +169,38 @@ class TypesetPDFExporter:
                     )
                     result.success_pages = total_pages if total_pages > 0 else self._count_pdf_pages(pdf_output)
                 except Exception as e:
-                    # Full export failed — attempt per-page rendering
-                    error_msg = f"完整导出失败，尝试逐页渲染：{e}"
+                    error_msg = f"完整导出失败：{e}"
                     result.errors.append(error_msg)
-                    self._export_pages_individually(
-                        page, pdf_output, page_width_pt, page_height_pt,
-                        total_pages, result,
-                    )
             except Exception as e:
                 result.errors.append(f"页面加载失败：{e}")
             finally:
                 browser.close()
 
         return result
+
+    def _fit_and_collect_layout_issues(self, page) -> list[dict]:
+        page.evaluate(
+            "window.typesetFitPositionedBlocks ? window.typesetFitPositionedBlocks() : undefined"
+        )
+        issues = page.evaluate(
+            "window.typesetCollectLayoutIssues ? window.typesetCollectLayoutIssues() : []"
+        )
+        return issues if isinstance(issues, list) else []
+
+    def _raise_for_layout_issues(self, issues: list[dict]) -> None:
+        if not issues:
+            return
+        preview: list[str] = []
+        for issue in issues[:5]:
+            page = issue.get("page") or "?"
+            kind = issue.get("kind") or "unknown"
+            item_id = issue.get("id") or ""
+            preview.append(f"page {page} {kind} {item_id}".strip())
+        raise RuntimeError(
+            "typeset layout overflow: "
+            f"{len(issues)} issue(s); "
+            + "; ".join(preview)
+        )
 
     def _export_pages_individually(
         self,
@@ -200,7 +218,7 @@ class TypesetPDFExporter:
         export to a temporary PDF, then merge. If a single page fails,
         record the failure and continue.
         """
-        import tempfile
+        raise RuntimeError("per-page fallback is disabled for typeset PDF export")
 
         temp_pdfs: list[str] = []
         temp_dir = Path(tempfile.mkdtemp(prefix="typeset_pdf_"))
@@ -261,11 +279,7 @@ class TypesetPDFExporter:
         try:
             import fitz  # PyMuPDF
         except ImportError:
-            # Fallback: just copy the first PDF if PyMuPDF is not available
-            if pdf_paths:
-                import shutil
-                shutil.copy2(pdf_paths[0], output_path)
-            return
+            raise RuntimeError("PyMuPDF is required to merge typeset PDF pages")
 
         output_doc = fitz.open()
         for pdf_path in pdf_paths:

@@ -216,6 +216,7 @@ function typesetFitPositionedBlocks() {
       }
       guard += 1;
     }
+    box.dataset.overflow = typesetElementOverflows(box) ? 'true' : 'false';
   }
   const reflowAreas = document.querySelectorAll(
     '.typeset-reflow-area[data-fit="reflow"], .typeset-region-flow[data-fit="reflow"], .typeset-rotated-flow[data-fit="reflow"], .typeset-timeline-flow'
@@ -236,7 +237,28 @@ function typesetFitPositionedBlocks() {
       area.style.fontSize = size + 'px';
       guard += 1;
     }
+    area.dataset.overflow = typesetElementOverflows(area) ? 'true' : 'false';
   }
+}
+function typesetElementOverflows(el) {
+  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
+}
+function typesetCollectLayoutIssues() {
+  const issues = [];
+  const checked = document.querySelectorAll('[data-fit="text"], [data-fit="reflow"], .typeset-line-track-flow');
+  for (const el of checked) {
+    const overflow = el.dataset.overflow === 'true' || (
+      !el.classList.contains('typeset-line-track-flow') && typesetElementOverflows(el)
+    );
+    if (!overflow) continue;
+    const page = el.closest('.typeset-page');
+    issues.push({
+      page: page ? page.dataset.page : '',
+      kind: el.className || el.tagName,
+      id: el.dataset.regionId || el.dataset.flowBlocks || el.dataset.tableBlock || el.dataset.column || ''
+    });
+  }
+  return issues;
 }
 function typesetFlowLineTracks() {
   const flows = document.querySelectorAll('.typeset-line-track-flow');
@@ -361,11 +383,15 @@ body {{
     margin: 0;
     line-height: 1.15;
     text-indent: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }}
 .typeset-positioned-block .typeset-heading {{
     margin: 0;
     line-height: 1.15;
     text-indent: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }}
 .typeset-reflow-area {{
     position: absolute;
@@ -407,8 +433,8 @@ body {{
     margin: 0 0 0.18em 0;
     text-indent: 2em;
     text-align: left;
-    word-break: normal;
-    overflow-wrap: break-word;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }}
 .typeset-region-flow {{
     position: absolute;
@@ -907,6 +933,11 @@ body {{
             if self._is_flow_body_block(block)
             and abs(self._region_angle(block.region_id, page_structure)) >= 1.0
         )
+        tilted_card_count = sum(
+            1
+            for block in page_blocks
+            if self._is_tilted_card_block(block, page_structure)
+        )
 
         for block in page_blocks:
             bbox = region_map.get(block.region_id)
@@ -941,6 +972,9 @@ body {{
                             bbox,
                         )
                     )
+                    continue
+                if tilted_card_count >= 3 and self._is_tilted_card_block(block, page_structure):
+                    rotated_blocks.append(block)
                     continue
                 if self._is_flow_body_block(block) and rotated_flow_count >= 3:
                     if self._display_text_for_block(block):
@@ -1041,6 +1075,8 @@ body {{
         return self._overlaps_foreground_image(bbox, page_structure)
 
     def _flow_mask_style(self, page_structure: PageStructure, flow_area: list[float]) -> str:
+        if self._box_area_ratio(flow_area, page_structure) > 0.12:
+            return ""
         for image in page_structure.images:
             if self._is_full_page_image(image.bbox, page_structure):
                 continue
@@ -1196,7 +1232,7 @@ body {{
                 f'style="left:{_px(left)};top:{_px(top)};'
                 f'width:{_px(width)};height:{_px(height)};'
                 f'color:{html.escape(self._group_text_color(ordered))};'
-                f'transform-origin:0 0;transform:rotate({angle:.3f}deg)">'
+                f'transform-origin:0 0;transform:rotate({self._reflow_group_angle(ordered, angle):.3f}deg)">'
                 f"{inner}</div>"
             )
 
@@ -1593,7 +1629,7 @@ body {{
             height,
             self._block_text_color(block),
             inner,
-            self._region_angle(block.region_id, page_structure),
+            self._render_angle_for_block(block, page_structure),
             self._positioned_mask_style(page_structure, bbox, block),
         )
 
@@ -1978,7 +2014,7 @@ body {{
 
             parts.append(self._positioned_block_html(
                 block.region_id, left, top, width, height, color, inner,
-                self._region_angle(block.region_id, page_structure),
+                self._render_angle_for_block(block, page_structure),
                 self._positioned_mask_style(page_structure, bbox, block),
             ))
             consumed.add(block.id)
@@ -2006,7 +2042,7 @@ body {{
             height,
             self._block_text_color(block),
             inner,
-            self._region_angle(block.region_id, page_structure),
+            self._render_angle_for_block(block, page_structure),
             self._positioned_mask_style(page_structure, bbox, block),
         )
 
@@ -2044,9 +2080,13 @@ body {{
         bbox: list[float],
         block: ContentBlock | None = None,
     ) -> str:
+        if self._box_area_ratio(bbox, page_structure) > 0.12:
+            return ""
         if block is not None and self._block_renders_as_heading(block):
             return ""
         if block is not None and self._is_light_color(self._block_text_color(block)):
+            return ""
+        if block is not None and self._is_long_translated_body(block):
             return ""
         for image in page_structure.images:
             if self._is_full_page_image(image.bbox, page_structure):
@@ -2054,6 +2094,61 @@ body {{
             if self._boxes_overlap(bbox, image.bbox):
                 return "background:#f4eedc;"
         return ""
+
+    def _box_area_ratio(
+        self,
+        bbox: list[float],
+        page_structure: PageStructure,
+    ) -> float:
+        if len(bbox) != 4:
+            return 0.0
+        x0, y0, x1, y1 = bbox
+        box_area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        page_area = max(1.0, page_structure.width * page_structure.height)
+        return box_area / page_area
+
+    def _render_angle_for_block(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+    ) -> float:
+        angle = self._region_angle(block.region_id, page_structure)
+        if abs(angle) < 1.0:
+            return angle
+        if self._is_long_translated_fixed_text(block):
+            return 0.0
+        return angle
+
+    def _reflow_group_angle(
+        self,
+        blocks: list[ContentBlock],
+        angle: float,
+    ) -> float:
+        if any(self._is_long_translated_fixed_text(block) for block in blocks):
+            return 0.0
+        return angle
+
+    def _is_long_translated_fixed_text(self, block: ContentBlock) -> bool:
+        return self._is_long_translated_body(block) or self._is_long_translated_heading(block)
+
+    def _is_long_translated_body(self, block: ContentBlock) -> bool:
+        text = block.translated_text or ""
+        return (
+            block.role == SemanticRole.BODY_COLUMN
+            and _contains_cjk(text)
+            and len(_normalized_text(text)) >= 80
+        )
+
+    def _is_long_translated_heading(self, block: ContentBlock) -> bool:
+        text = block.translated_text or ""
+        return (
+            (
+                block.role in (SemanticRole.TITLE, SemanticRole.SUBTITLE)
+                or self._is_heading(self._get_block_font_size(block))
+            )
+            and _contains_cjk(text)
+            and len(_normalized_text(text)) >= 24
+        )
 
     def _block_renders_as_heading(self, block: ContentBlock) -> bool:
         return (
@@ -2077,6 +2172,18 @@ body {{
         if block.role != SemanticRole.BODY_COLUMN:
             return False
         return self._get_block_font_size(block) < self.config.body_font_size_pt * 1.25
+
+    def _is_tilted_card_block(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+    ) -> bool:
+        text = self._display_text_for_block(block)
+        return (
+            block.role in (SemanticRole.BODY_COLUMN, SemanticRole.TITLE, SemanticRole.SUBTITLE)
+            and _contains_cjk(text)
+            and abs(self._region_angle(block.region_id, page_structure)) >= 1.0
+        )
 
     def _region_angle(self, region_id: str, page_structure: PageStructure) -> float:
         for region in page_structure.text_regions:
@@ -2386,13 +2493,23 @@ body {{
         font_size_px = _pt_to_px(font_size_pt)
         # Ensure minimum font size
         font_size_px = max(font_size_px, self._min_font_size_px())
+        if self._is_long_translated_heading(block):
+            font_size_px = min(font_size_px, _pt_to_px(self.config.body_font_size_pt))
         escaped_text = self._format_text(text)
+        style_parts = [
+            f"font-size:{_px(font_size_px)}",
+            f"font-weight:{self._source_font_weight(block)}",
+        ]
+        if self._is_long_translated_heading(block):
+            style_parts.extend([
+                "white-space:nowrap",
+                "text-align:center",
+            ])
 
         return (
             f'<{tag} class="typeset-heading" '
             f'data-block-id="{html.escape(block.id)}" '
-            f'style="font-size:{_px(font_size_px)};'
-            f'font-weight:{self._source_font_weight(block)}">'
+            f'style="{";".join(style_parts)}">'
             f"{escaped_text}"
             f"</{tag}>"
         )

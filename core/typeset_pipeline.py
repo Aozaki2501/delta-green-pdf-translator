@@ -393,6 +393,8 @@ class TypesetPipeline:
             if result.failed_pages:
                 for page_num in result.failed_pages:
                     self._errors.append(f"PDF 导出第 {page_num} 页失败")
+            if result.errors or result.failed_pages or result.success_pages <= 0:
+                return None
             self._mark_phase_completed("E")
             return pdf_output
         except RuntimeError as exc:
