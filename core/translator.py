@@ -19,6 +19,7 @@ from openai import OpenAI
 
 from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
 from core.glossary import find_relevant_glossary_terms
+from core.translation_validation import ensure_no_prompt_leak
 
 
 # ============================================================
@@ -106,6 +107,7 @@ Translation rules:
 13. Preserve [CARD] and [/CARD] marker lines exactly. Text inside a card must stay inside the card and must not be merged into surrounding body text.
 14. Preserve [FULL_WIDTH_TITLE] and [/FULL_WIDTH_TITLE] marker lines exactly. Text inside marks a full-width section title; translate only the title text inside.
 15. Preserve [STAT_BLOCK], [/STAT_BLOCK], [IMAGE], and [/IMAGE] marker lines exactly. Translate stat-block labels only when they are prose; do not translate game abbreviations. Do not translate "Illustration placeholder" inside image markers.
+16. If the source contains [BLOCK id] marker lines, preserve those marker lines exactly. Return one translated block for each source block and no text outside the block markers.
 
 {glossary_section}"""
 
@@ -122,7 +124,7 @@ Translation rules:
 8. Preserve blockquotes (> lines) exactly as blockquotes.
 9. Do NOT translate image links (![...](...)). Keep them exactly as-is.
 10. Do NOT add any Markdown syntax that was not in the source.
-11. Preserve [BLOCK n] and [/BLOCK n] marker lines exactly. Return one translated block for each source block.
+11. Preserve [BLOCK n] and [/BLOCK n] marker lines exactly. Return one translated block for each source block and no text outside the block markers.
 
 {glossary_section}"""
 
@@ -136,7 +138,7 @@ Translation rules:
 5. If previous context is provided, ensure continuity. Do not re-translate previous content.
 6. If the source contains inline format markers like <b>...</b> or <i>...</i>, preserve them exactly in the translation. These markers indicate bold and italic formatting boundaries that must be maintained.
 7. Translate ONLY the text content. Do not add explanations, notes, or commentary.
-8. If the source contains [BLOCK n] and [/BLOCK n] marker lines, preserve them exactly and return one translated block for each source block.
+8. If the source contains [BLOCK n] and [/BLOCK n] marker lines, preserve them exactly. Return one translated block for each source block and no text outside the block markers.
 
 {glossary_section}"""
 
@@ -182,6 +184,22 @@ Translation rules:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
+    def _cached_translation_or_empty(self, cache, cache_key: str) -> str:
+        if cache is None:
+            return ""
+        cached_translation = cache.get_cached_prompt_translation(cache_key)
+        if not cached_translation:
+            return ""
+        try:
+            ensure_no_prompt_leak(cached_translation, "缓存译文")
+        except ValueError:
+            delete_fn = getattr(cache, "delete_cached_prompt_translation", None)
+            if callable(delete_fn):
+                delete_fn(cache_key)
+            return ""
+        self.stats.add_translation_cache_hit()
+        return cached_translation
+
     def translate_chunk(self, text: str, page_num: int = None, prev_context: str = "",
                         cache=None) -> str:
         if not text.strip():
@@ -200,11 +218,9 @@ Translation rules:
             user_prompt = f"Translate the following{page_info}:\n\n{text}"
 
         cache_key = self._translation_cache_key(system_prompt, user_prompt)
-        if cache is not None:
-            cached_translation = cache.get_cached_prompt_translation(cache_key)
-            if cached_translation:
-                self.stats.add_translation_cache_hit()
-                return cached_translation
+        cached_translation = self._cached_translation_or_empty(cache, cache_key)
+        if cached_translation:
+            return cached_translation
 
         for attempt in range(self.retry_count):
             try:
@@ -231,6 +247,7 @@ Translation rules:
                 content = content.strip()
                 if not content:
                     raise RuntimeError("API 返回空译文")
+                ensure_no_prompt_leak(content)
                 if cache is not None:
                     cache.mark_cached_prompt_translation(cache_key, content)
                 return content
@@ -278,11 +295,9 @@ Translation rules:
             user_prompt = f"Translate the following{block_info}:\n\n{text}"
 
         cache_key = self._translation_cache_key(system_prompt, user_prompt)
-        if cache is not None:
-            cached_translation = cache.get_cached_prompt_translation(cache_key)
-            if cached_translation:
-                self.stats.add_translation_cache_hit()
-                return cached_translation
+        cached_translation = self._cached_translation_or_empty(cache, cache_key)
+        if cached_translation:
+            return cached_translation
 
         # Use higher token limit for large blocks (HTML tables, stat blocks)
         token_limit = 8192 if len(text) > 2000 else 4096
@@ -312,6 +327,7 @@ Translation rules:
                 content = content.strip()
                 if not content:
                     raise RuntimeError("API 返回空译文")
+                ensure_no_prompt_leak(content)
                 if cache is not None:
                     cache.mark_cached_prompt_translation(cache_key, content)
                 return content

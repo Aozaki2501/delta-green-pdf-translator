@@ -27,6 +27,7 @@ from core.glossary import load_glossary, build_glossary_matcher
 from core.dispatcher import ConcurrentDispatcher, DispatcherConfig
 from core.utils import file_sha256, configure_console_output
 from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
+from core.translation_validation import ensure_no_prompt_leak
 from exporters.docx_inplace import write_docx_inplace
 
 configure_console_output()
@@ -54,10 +55,12 @@ def _parse_marked_docx_translation(translated: str, group: list[DocxBlock]) -> d
     For single-block groups without markers, returns the text directly.
     Raises ValueError only when NO usable translation could be extracted.
     """
+    ensure_no_prompt_leak(translated or "", "模型返回")
     if len(group) == 1 and "[BLOCK " not in (translated or ""):
         text = (translated or "").strip()
         if not text:
             raise ValueError(f"Word 翻译块为空：{group[0].index}")
+        ensure_no_prompt_leak(text)
         return {group[0].index: text}
 
     expected = [block.index for block in group]
@@ -71,11 +74,15 @@ def _parse_marked_docx_translation(translated: str, group: list[DocxBlock]) -> d
 
     # 过滤掉空译文和不在预期列表中的块
     found = {idx: text for idx, text in found.items() if idx in expected and text}
+    for idx, text in found.items():
+        ensure_no_prompt_leak(text, f"Word 译文块 {idx}")
 
     if not found:
         # 单块情况下，如果没有标记但有内容，直接使用
         if len(group) == 1 and (translated or "").strip():
-            return {group[0].index: translated.strip()}
+            text = translated.strip()
+            ensure_no_prompt_leak(text)
+            return {group[0].index: text}
         raise ValueError("Word 翻译块标记完全无法解析，未找到任何有效 [BLOCK n] 标记")
     return found
 
@@ -214,11 +221,9 @@ def translate_docx_file(
 
     missing_count = len(translatable) - len(translations)
     if missing_count > 0:
-        print(f"\n  ⚠ {missing_count} 个块未翻译（共 {len(translatable)} 个可翻译块）")
-        # 对缺失的块使用原文填充，确保输出完整
-        for block in translatable:
-            if block.index not in translations:
-                translations[block.index] = block.text
+        raise RuntimeError(
+            f"Word 翻译未完成：{missing_count}/{len(translatable)} 个块没有合格译文"
+        )
 
     # Write output
     print(f"\nWriting output to: {output_path}")

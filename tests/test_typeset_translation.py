@@ -234,6 +234,7 @@ class TestBlockMarkers:
             _make_block("b2", "Second block"),
         ]
         result = _build_marked_text(blocks)
+        assert "Translate each block below" not in result
         assert "[BLOCK b1]" in result
         assert "Hello world" in result
         assert "[/BLOCK b1]" in result
@@ -264,6 +265,14 @@ class TestBlockMarkers:
     def test_parse_marked_translations_duplicate(self):
         text = "[BLOCK b1]\n翻译1\n[/BLOCK b1]\n\n[BLOCK b1]\n翻译2\n[/BLOCK b1]"
         with pytest.raises(ValueError, match="重复"):
+            _parse_marked_translations(text, {"b1"})
+
+    def test_parse_marked_translations_rejects_prompt_leak(self):
+        text = (
+            "[BLOCK b1]\n您是专业的TRPG翻译，翻译规则包括："
+            "严格遵循术语表，输出Markdown。\n[/BLOCK b1]"
+        )
+        with pytest.raises(ValueError, match="内部翻译指令"):
             _parse_marked_translations(text, {"b1"})
 
 

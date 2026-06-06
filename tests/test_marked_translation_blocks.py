@@ -141,3 +141,23 @@ def test_docx_empty_block_filtered():
     )
     assert parsed == {1: "第一段。"}
     assert 2 not in parsed
+
+
+def test_markdown_rejects_prompt_leak():
+    group = [MdBlock(index=5, block_type="paragraph", content="Hello", text="Hello", translatable=True)]
+
+    with pytest.raises(ValueError, match="内部翻译指令"):
+        _parse_marked_md_translation(
+            "您是专业的TRPG翻译，翻译规则包括：严格遵循术语表，输出Markdown。",
+            group,
+        )
+
+
+def test_docx_rejects_prompt_leak():
+    group = [DocxBlock(index=1, block_type="paragraph", text="First.", translatable=True)]
+
+    with pytest.raises(ValueError, match="内部翻译指令"):
+        _parse_marked_docx_translation(
+            "您是专业的TRPG翻译，翻译规则包括：严格遵循术语表，输出Markdown。",
+            group,
+        )

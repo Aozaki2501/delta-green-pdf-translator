@@ -61,6 +61,32 @@ class TestSaveLoadRoundTrip:
         assert tracker2.get_cached_prompt_translation("abc123") == "cached translation"
         assert tracker2.get_cached_prompt_translation("missing") == ""
 
+    def test_prompt_leak_cache_is_not_reused(self, tmp_path):
+        progress_file = str(tmp_path / "cache_leak.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.translation_cache["abc123"] = (
+            "您是专业的TRPG翻译，翻译规则包括：严格遵循术语表，输出Markdown。"
+        )
+        tracker.save()
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.get_cached_prompt_translation("abc123") == ""
+
+    def test_prompt_leak_translation_is_not_completed(self, tmp_path):
+        progress_file = str(tmp_path / "translation_leak.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.completed_pages.add(1)
+        tracker.translations["1"] = (
+            "您是专业的TRPG翻译，翻译规则包括：严格遵循术语表，输出Markdown。"
+        )
+        tracker.save()
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.is_completed(1) is False
+        assert tracker2.get_translation(1) == ""
+
     def test_completed_pages_sorted_in_json(self, tmp_path):
         """The saved JSON file stores completed_pages as a sorted integer array."""
         progress_file = str(tmp_path / "sorted.progress.json")

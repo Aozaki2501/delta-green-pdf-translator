@@ -23,6 +23,7 @@ from typing import Callable
 
 from core.constants import TRANSLATION_FAILURE_PREFIX
 from core.glossary import find_relevant_glossary_terms
+from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
 from core.typeset_models import (
     ContentBlock,
     PageContent,
@@ -103,11 +104,16 @@ class TypesetTranslationProgress:
 
     def is_completed(self, block_id: str) -> bool:
         with self._lock:
-            return block_id in self.translations
+            if block_id not in self.translations:
+                return False
+            return not contains_prompt_leak(self.translations.get(block_id, ""))
 
     def get_translation(self, block_id: str) -> str:
         with self._lock:
-            return self.translations.get(block_id, "")
+            translation = self.translations.get(block_id, "")
+        if contains_prompt_leak(translation):
+            return ""
+        return translation
 
     def get_failed_blocks(self) -> set[str]:
         with self._lock:
@@ -117,12 +123,24 @@ class TypesetTranslationProgress:
 
     def get_cached_prompt_translation(self, cache_key: str) -> str:
         with self._lock:
-            return self.translation_cache.get(cache_key, "")
+            translation = self.translation_cache.get(cache_key, "")
+        if contains_prompt_leak(translation):
+            return ""
+        return translation
 
     def mark_cached_prompt_translation(self, cache_key: str, translation: str):
         if cache_key and translation:
+            ensure_no_prompt_leak(translation, "缓存译文")
             with self._lock:
                 self.translation_cache[cache_key] = translation
+                self.save()
+
+    def delete_cached_prompt_translation(self, cache_key: str):
+        if not cache_key:
+            return
+        with self._lock:
+            removed = self.translation_cache.pop(cache_key, None)
+            if removed is not None:
                 self.save()
 
     # -- Mutation methods --
@@ -132,6 +150,7 @@ class TypesetTranslationProgress:
             raise ValueError("block_id 不能为空")
         if not translation:
             raise ValueError(f"译文为空：{block_id}")
+        ensure_no_prompt_leak(translation)
         with self._lock:
             self.translations[block_id] = translation
             self.failed_blocks.pop(block_id, None)
@@ -186,14 +205,7 @@ def _source_text_hash(text: str) -> str:
 
 def _build_marked_text(blocks: list[ContentBlock]) -> str:
     """Build translation request text with [BLOCK id] markers."""
-    parts = [
-        "Translate each block below. Preserve every block marker line exactly. "
-        "Return one translated block for each source block. Do not merge blocks, remove markers, "
-        "or add commentary. Inside each block, output plain translated text only. "
-        "Do not add Markdown heading markers, bullet markers, notes, explanations, or formatting "
-        "unless that exact marker exists in the source block. Keep the translation concise so it "
-        "fits back into the original PDF text box."
-    ]
+    parts = []
     for block in blocks:
         parts.append(f"[BLOCK {block.id}]\n{block.source_text}\n[/BLOCK {block.id}]")
     return "\n\n".join(parts)
@@ -201,6 +213,7 @@ def _build_marked_text(blocks: list[ContentBlock]) -> str:
 
 def _parse_marked_translations(text: str, expected_ids: set[str]) -> dict[str, str]:
     """Parse translation response to extract per-block translations."""
+    ensure_no_prompt_leak(text, "模型返回")
     pattern = re.compile(
         r"\[BLOCK ([^\]\s]+)\]\s*(.*?)\s*\[/BLOCK \1\]",
         re.DOTALL,
@@ -226,6 +239,8 @@ def _parse_marked_translations(text: str, expected_ids: set[str]) -> dict[str, s
     empty = [block_id for block_id, translated in parsed.items() if not translated]
     if empty:
         raise ValueError("译文为空：" + ", ".join(sorted(empty)[:10]))
+    for block_id, translated in parsed.items():
+        ensure_no_prompt_leak(translated, f"译文块 {block_id}")
     return parsed
 
 

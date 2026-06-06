@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
+from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
 from core.utils import file_sha256
 
 
@@ -143,10 +144,13 @@ class ProgressTracker:
 
     def is_completed(self, page_num: int) -> bool:
         """Check whether a page has already been translated."""
-        return page_num in self.completed_pages
+        if page_num not in self.completed_pages:
+            return False
+        return not contains_prompt_leak(self.translations.get(str(page_num), ""))
 
     def mark_completed(self, page_num: int, translation: str):
         """Record a page translation and persist immediately."""
+        ensure_no_prompt_leak(translation)
         with self._lock:
             self.completed_pages.add(page_num)
             self.translations[str(page_num)] = translation
@@ -207,22 +211,38 @@ class ProgressTracker:
 
     def get_translation(self, page_num: int) -> str:
         """Retrieve the cached translation for a page, or empty string."""
-        return self.translations.get(str(page_num), "")
+        translation = self.translations.get(str(page_num), "")
+        if contains_prompt_leak(translation):
+            return ""
+        return translation
 
     def get_cached_prompt_translation(self, cache_key: str) -> str:
         """Retrieve a cached translation for an exact prompt key."""
         if not cache_key:
             return ""
         with self._lock:
-            return self.translation_cache.get(cache_key, "")
+            translation = self.translation_cache.get(cache_key, "")
+        if contains_prompt_leak(translation):
+            return ""
+        return translation
 
     def mark_cached_prompt_translation(self, cache_key: str, translation: str):
         """Persist a translation for an exact prompt key."""
         if not cache_key or not translation:
             return
+        ensure_no_prompt_leak(translation, "缓存译文")
         with self._lock:
             self.translation_cache[cache_key] = translation
         self.save()
+
+    def delete_cached_prompt_translation(self, cache_key: str):
+        """Remove one exact prompt cache entry."""
+        if not cache_key:
+            return
+        with self._lock:
+            removed = self.translation_cache.pop(cache_key, None)
+        if removed is not None:
+            self.save()
 
 
 def _replace_with_retry(tmp_path: Path, target_path: Path, attempts: int = 20):

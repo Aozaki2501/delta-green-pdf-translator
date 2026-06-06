@@ -25,6 +25,7 @@ from core.glossary import load_glossary, build_glossary_matcher
 from core.dispatcher import ConcurrentDispatcher, DispatcherConfig
 from core.utils import file_sha256, configure_console_output
 from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
+from core.translation_validation import ensure_no_prompt_leak
 from exporters.md_preserve import write_md_output
 
 configure_console_output()
@@ -48,6 +49,7 @@ def _parse_marked_md_translation(translated: str, group: list[MdBlock]) -> dict[
     If some blocks are found but others are missing, returns partial results
     (caller handles retry for missing blocks).
     """
+    ensure_no_prompt_leak(translated or "", "模型返回")
     # 单块组：直接使用返回文本（不需要 BLOCK 标记）
     if len(group) == 1:
         text = (translated or "").strip()
@@ -60,6 +62,7 @@ def _parse_marked_md_translation(translated: str, group: list[MdBlock]) -> dict[
         # 剥离 AI 可能添加的 # 前缀（heading 重组时会加回来）
         if group[0].block_type == "heading":
             text = re.sub(r'^#{1,6}\s*', '', text)
+        ensure_no_prompt_leak(text)
         return {group[0].index: text} if text else {}
 
     expected = [block.index for block in group]
@@ -73,6 +76,8 @@ def _parse_marked_md_translation(translated: str, group: list[MdBlock]) -> dict[
 
     # 过滤掉空译文和不在预期列表中的块
     found = {idx: text for idx, text in found.items() if idx in expected and text}
+    for idx, text in found.items():
+        ensure_no_prompt_leak(text, f"Markdown 译文块 {idx}")
 
     if not found:
         raise ValueError("Markdown 翻译块标记完全无法解析，未找到任何有效 [BLOCK n] 标记")
@@ -206,6 +211,11 @@ def translate_md_file(
     failed_count = len(tracker.get_failed_pages())
     if translatable and not translations:
         raise RuntimeError(f"所有 Markdown 翻译块都失败了，未生成有效译文；失败组数：{failed_count}")
+    missing_count = len(translatable) - len(translations)
+    if missing_count > 0:
+        raise RuntimeError(
+            f"Markdown 翻译未完成：{missing_count}/{len(translatable)} 个块没有合格译文"
+        )
 
     # Write output
     print(f"\nWriting output to: {output_path}")
