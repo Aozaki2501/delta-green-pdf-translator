@@ -17,15 +17,6 @@ from translate_pdf import (
     build_progress_metadata, parse_page_selection, write_glossary_report,
     normalize_page_range, is_failed_translation, build_extraction_diagnostics_report
 )
-from core.layout_extractor import extract_layout_to_file
-from core.layout_translation import (
-    apply_translations_file,
-    block_source_text,
-    translate_layout_to_template,
-    write_overflow_report,
-)
-from exporters.pdf_html import render_layout_html
-from exporters.pdf_playwright import export_layout_pdf, read_browser_layout_report_overflow_count
 from webui.components import (
     make_dossier_id,
     render_audit_grid,
@@ -52,7 +43,6 @@ OUTPUT_FORMAT_LABELS = {
     "markdown": "纯文本稿",
     "html": "网页排版",
     "word": "文档排版",
-    "replica_pdf": "原版坐标 PDF",
     "typeset_pdf": "纯重绘 PDF（_typeset）",
 }
 
@@ -1045,8 +1035,6 @@ with st.sidebar:
     word_hard_page_breaks = False
     word_header_left = "绿色三角洲"
     word_header_right = ""
-    replica_debug_mode = False
-
     st.checkbox("低动效模式", value=False, key="reduce_motion")
     st.caption("开启后会关闭入场遮罩和主要动画，适合远程部署或低性能浏览器。")
 
@@ -1094,17 +1082,6 @@ with st.sidebar:
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
-        replica_debug_mode = st.checkbox(
-            "启用原版坐标 PDF 调试检查稿",
-            value=False,
-            help="仅用于排查坐标、遮盖和翻译块问题。开启后，本次任务只生成原版坐标 PDF。",
-        )
-        if replica_debug_mode:
-            st.caption("调试模式已开启：本次任务只生成原版坐标 PDF 检查稿。")
-
-    if replica_debug_mode:
-        formats = ["replica_pdf"]
-
     if "word" in formats:
         with st.expander("文档档案输出", expanded=False):
             word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
@@ -1309,8 +1286,6 @@ if launch_pressed:
         st.error("✗ 请输入模型名称")
     elif source_type == "pdf" and not formats:
         st.error("✗ 请至少选择一种输出格式")
-    elif source_type == "pdf" and "replica_pdf" in formats and len(formats) > 1:
-        st.error("✗ 原版坐标 PDF 请单独运行，避免和阅读版输出重复调用接口。")
     elif source_type == "pdf" and "typeset_pdf" in formats and len(formats) > 1:
         st.error("✗ 纯重绘 PDF 请单独运行，避免和其他输出重复调用接口。")
     elif (
@@ -1600,189 +1575,6 @@ if launch_pressed:
         translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
         translator.set_glossary(glossary)
 
-        if formats == ["replica_pdf"]:
-            layout_path = make_output_path(output_base, "_replica.layout.json")
-            translations_path = make_output_path(output_base, "_replica.translations.json")
-            translated_layout_path = make_output_path(output_base, "_replica.translated.layout.json")
-            overflow_path = make_output_path(output_base, "_replica.overflow.md")
-            layout_report_path = make_output_path(output_base, "_replica.layout_report.md")
-            replica_html_path = make_output_path(output_base, "_replica.html")
-            replica_pdf_path = make_output_path(output_base, "_replica.pdf")
-            replica_progress_path = make_output_path(output_base, "_replica.progress.json")
-
-            render_status_flow(active_index=1)
-            st.info(f"📐 提取坐标版面：第 {start_page + 1}-{end_page} 页")
-            layout = extract_layout_to_file(
-                pdf_path,
-                layout_path,
-                start_page=start_page,
-                end_page=end_page,
-            )
-            generated_files.append(layout_path)
-
-            render_status_flow(active_index=3)
-            st.info("正在按文本块翻译坐标版面。")
-            replica_progress_bar = st.progress(0)
-            replica_status = st.empty()
-            replica_metric_cols = st.columns(4)
-            replica_done_metric = replica_metric_cols[0].empty()
-            replica_elapsed_metric = replica_metric_cols[1].empty()
-            replica_speed_metric = replica_metric_cols[2].empty()
-            replica_cost_metric = replica_metric_cols[3].empty()
-            replica_started_at = time.time()
-
-            def update_replica_progress(done_count, total_count, block_id, success):
-                pct = done_count / total_count if total_count else 1.0
-                elapsed = time.time() - replica_started_at
-                avg_seconds = elapsed / done_count if done_count else None
-                speed = 60 / avg_seconds if avg_seconds else None
-                state_text = "完成" if success else "失败"
-                try:
-                    replica_progress_bar.progress(
-                        min(pct, 1.0),
-                        text=f"{done_count}/{total_count} 块 ({pct * 100:.0f}%)",
-                    )
-                except TypeError:
-                    replica_progress_bar.progress(min(pct, 1.0))
-                replica_status.text(
-                    f"坐标翻译：{state_text} {block_id} | "
-                    f"已用 {format_duration(elapsed)} | 费用 ¥{stats.cost_yuan:.3f}"
-                )
-                replica_done_metric.metric("翻译组", f"{done_count}/{total_count}")
-                replica_elapsed_metric.metric("已用时", format_duration(elapsed))
-                replica_speed_metric.metric("速度", f"{speed:.1f} 组/分钟" if speed else "估算中")
-                replica_cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}")
-
-            translate_layout_to_template(
-                layout,
-                translator,
-                progress_file=replica_progress_path,
-                output_path=translations_path,
-                retry_failed=retry_failed_pages,
-                progress_callback=update_replica_progress,
-            )
-            generated_files.extend([translations_path, replica_progress_path])
-            replica_source_blocks = [
-                block
-                for page in layout.pages
-                for block in page.text_blocks
-                if block_source_text(block).strip()
-            ]
-            replica_progress_data = {}
-            if Path(replica_progress_path).exists():
-                try:
-                    import json
-                    replica_progress_data = json.loads(Path(replica_progress_path).read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    replica_progress_data = {}
-            replica_translations = replica_progress_data.get("translations", {})
-            if replica_source_blocks and not any(str(text).strip() for text in replica_translations.values()):
-                write_audit_record(audit_path, {
-                    "dossier_id": dossier_id,
-                    "source_file": pdf_file.name,
-                    "source_sha256": source_digest,
-                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
-                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-                    "status": "failed",
-                    "provider": provider,
-                    "model": model,
-                    "page_range": f"{start_page + 1}-{end_page}",
-                    "formats": formats,
-                    "reason": "坐标 PDF 没有生成任何译文",
-                    "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
-                })
-                st.error("坐标 PDF 没有生成任何译文，已停止导出，避免产出全英文 PDF。")
-                extractor.close()
-                st.stop()
-            if replica_translations and not any(contains_cjk(str(text)) for text in replica_translations.values()):
-                write_audit_record(audit_path, {
-                    "dossier_id": dossier_id,
-                    "source_file": pdf_file.name,
-                    "source_sha256": source_digest,
-                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
-                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-                    "status": "failed",
-                    "provider": provider,
-                    "model": model,
-                    "page_range": f"{start_page + 1}-{end_page}",
-                    "formats": formats,
-                    "reason": "坐标 PDF 译文没有中文字符",
-                    "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
-                })
-                st.error("坐标 PDF 译文没有中文字符，已停止导出，避免产出全英文 PDF。")
-                extractor.close()
-                st.stop()
-
-            translated_layout = apply_translations_file(
-                layout_path,
-                translations_path,
-                translated_layout_path,
-            )
-            generated_files.append(translated_layout_path)
-
-            issues = write_overflow_report(translated_layout, overflow_path)
-            generated_files.append(overflow_path)
-            render_layout_html(
-                translated_layout,
-                replica_html_path,
-                show_boxes=True,
-                asset_base_dir=str(Path(layout_path).parent),
-            )
-            generated_files.append(replica_html_path)
-
-            if issues:
-                render_status_flow(active_index=4)
-                st.warning(
-                    f"发现 {len(issues)} 个需要缩字检查的文本块。"
-                    "PDF 会继续导出，并在浏览器排版阶段自动缩小译文字号。"
-                )
-            else:
-                render_status_flow(active_index=4)
-            export_layout_pdf(
-                translated_layout,
-                replica_pdf_path,
-                html_output=replica_html_path,
-                show_boxes=False,
-                asset_base_dir=str(Path(layout_path).parent),
-                layout_report_output=layout_report_path,
-            )
-            generated_files.append(replica_pdf_path)
-            generated_files.append(layout_report_path)
-            browser_overflow_count = read_browser_layout_report_overflow_count(layout_report_path)
-
-            render_downloads(generated_files)
-
-            audit_record = {
-                "dossier_id": dossier_id,
-                "source_file": pdf_file.name,
-                "source_sha256": source_digest,
-                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
-                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-                "status": "completed",
-                "provider": provider,
-                "model": model,
-                "page_range": f"{start_page + 1}-{end_page}",
-                "formats": formats,
-                "completed_pages": len(layout.pages),
-                "failed_pages": [],
-                "overflow_blocks": browser_overflow_count,
-                "conservative_overflow_blocks": len(issues),
-                "glossary": Path(glossary_path).name if glossary_path else "",
-                "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
-            }
-            write_audit_record(audit_path, audit_record)
-            generated_files.append(str(audit_path))
-            render_status_flow(active_index=5)
-            render_completion_stamp("已归档")
-            render_audit_grid({
-                "档案号": dossier_id,
-                "坐标页": len(layout.pages),
-                "溢出块": browser_overflow_count,
-                "成品数": len(existing_output_files(generated_files, final_only=True)),
-            })
-            extractor.close()
-            st.stop()
-
         if formats == ["typeset_pdf"]:
             # ============================================================
             # TYPESET PDF PIPELINE FLOW
@@ -1846,10 +1638,12 @@ if launch_pressed:
             # Progress UI for typeset pipeline
             typeset_progress_bar = st.progress(0)
             typeset_status = st.empty()
-            typeset_metric_cols = st.columns(3)
+            typeset_metric_cols = st.columns(5)
             typeset_phase_metric = typeset_metric_cols[0].empty()
             typeset_elapsed_metric = typeset_metric_cols[1].empty()
             typeset_detail_metric = typeset_metric_cols[2].empty()
+            typeset_token_metric = typeset_metric_cols[3].empty()
+            typeset_cost_metric = typeset_metric_cols[4].empty()
             typeset_started_at = time.time()
 
             phase_names = {
@@ -1897,6 +1691,14 @@ if launch_pressed:
                     typeset_status.text(f"{phase_label}：{done}/{total}")
                     typeset_phase_metric.metric(phase_label, f"{done}/{total}")
                 typeset_elapsed_metric.metric("已用时", format_duration(elapsed))
+                typeset_detail_metric.metric(
+                    "API 调用",
+                    f"{stats.api_calls} 次"
+                    if not stats.failed_calls
+                    else f"{stats.api_calls} 次 / 失败 {stats.failed_calls}",
+                )
+                typeset_token_metric.metric("Token", f"{stats.total_tokens:,}")
+                typeset_cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}")
 
             layout_hints_generator = None
             if typeset_auto_layout_hints and not layout_hints_path:
@@ -1972,7 +1774,9 @@ if launch_pressed:
             elapsed_total = time.time() - typeset_started_at
             typeset_progress_bar.progress(1.0)
             typeset_status.text(
-                f"✓ 纯重绘完成! 总用时 {format_duration(elapsed_total)}"
+                "✓ 纯重绘完成! "
+                f"总用时 {format_duration(elapsed_total)} | "
+                f"Token {result.total_tokens:,} | 费用 ¥{result.cost_yuan:.3f}"
             )
 
             if result.export_errors:
@@ -1998,6 +1802,14 @@ if launch_pressed:
                 "translated_regions": result.translated_regions,
                 "failed_regions": result.failed_regions,
                 "export_errors": len(result.export_errors),
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "cached_tokens": result.cached_tokens,
+                "total_tokens": result.total_tokens,
+                "api_calls": result.api_calls,
+                "failed_calls": result.failed_calls,
+                "translation_cache_hits": result.translation_cache_hits,
+                "cost_yuan": result.cost_yuan,
                 "glossary": Path(glossary_path).name if glossary_path else "",
                 "font_family": typeset_config.font_family,
                 "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
@@ -2011,6 +1823,9 @@ if launch_pressed:
                 "总页数": result.total_pages,
                 "翻译区域": result.translated_regions,
                 "失败区域": result.failed_regions,
+                "API 调用": result.api_calls,
+                "Token": f"{result.total_tokens:,}",
+                "费用": f"¥{result.cost_yuan:.3f}",
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             })
             extractor.close()

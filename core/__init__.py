@@ -54,33 +54,6 @@ from core.progress import (
     compare_progress_metadata,
 )
 
-# coordinate-level replica layout
-from core.layout_model import (
-    LayoutDocument,
-    LayoutPage,
-    LayoutTextBlock,
-    LayoutSpan,
-    LayoutImageBlock,
-    layout_document_from_json,
-    layout_document_from_dict,
-)
-from core.layout_extractor import (
-    PDFLayoutExtractor,
-    extract_layout_to_file,
-)
-from core.layout_translation import (
-    LayoutFitIssue,
-    LayoutTranslationProgress,
-    block_source_text,
-    export_translation_template,
-    apply_translation_map,
-    apply_translations_file,
-    translate_layout_blocks,
-    translate_layout_to_template,
-    check_translated_overflow,
-    write_overflow_report,
-)
-
 __all__ = [
     # constants
     "PROMPT_VERSION",
@@ -113,24 +86,4 @@ __all__ = [
     "ProgressTracker",
     "build_progress_metadata",
     "compare_progress_metadata",
-    # replica layout
-    "LayoutDocument",
-    "LayoutPage",
-    "LayoutTextBlock",
-    "LayoutSpan",
-    "LayoutImageBlock",
-    "layout_document_from_json",
-    "layout_document_from_dict",
-    "PDFLayoutExtractor",
-    "extract_layout_to_file",
-    "LayoutFitIssue",
-    "LayoutTranslationProgress",
-    "block_source_text",
-    "export_translation_template",
-    "apply_translation_map",
-    "apply_translations_file",
-    "translate_layout_blocks",
-    "translate_layout_to_template",
-    "check_translated_overflow",
-    "write_overflow_report",
 ]

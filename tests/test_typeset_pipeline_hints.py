@@ -78,6 +78,46 @@ def _structure_doc():
     )
 
 
+class _Stats:
+    input_tokens = 100
+    output_tokens = 40
+    cached_tokens = 10
+    total_tokens = 140
+    api_calls = 3
+    failed_calls = 1
+    translation_cache_hits = 2
+    cost_yuan = 0.00125
+
+
+class _Translator:
+    stats = _Stats()
+
+
+def test_pipeline_result_includes_token_usage(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    content = _content_doc()
+    content.pages[0].blocks[0] = replace(
+        content.pages[0].blocks[0],
+        translated_text="A-cn",
+    )
+
+    result = pipeline._build_result(_structure_doc(), content, "out.html", "out.pdf")
+
+    assert result.input_tokens == 100
+    assert result.output_tokens == 40
+    assert result.cached_tokens == 10
+    assert result.total_tokens == 140
+    assert result.api_calls == 3
+    assert result.failed_calls == 1
+    assert result.translation_cache_hits == 2
+    assert result.cost_yuan == 0.00125
+
+
 def test_pipeline_uses_layout_hints_from_output_dir(tmp_path):
     (tmp_path / "layout_hints.json").write_text(
         json.dumps({

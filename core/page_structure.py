@@ -533,7 +533,7 @@ class PageStructureExtractor:
         """Extract text region bounding boxes from the page.
 
         Uses page.get_text("dict") to find text blocks and their bboxes,
-        similar to the approach in layout_extractor.py.
+        using the same coordinate rules as the page structure extractor.
 
         Args:
             page: PyMuPDF page object.

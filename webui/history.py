@@ -11,14 +11,6 @@ from typing import Any
 HISTORY_SUFFIX_LABELS = (
     ("_extraction_report.md", "提取诊断"),
     ("_glossary_report.md", "术语报告"),
-    ("_replica.overflow.md", "坐标溢出报告"),
-    ("_replica.layout_report.md", "坐标排版报告"),
-    ("_replica.translated.layout.json", "坐标译文"),
-    ("_replica.translations.json", "坐标译文模板"),
-    ("_replica.layout.json", "坐标版面"),
-    ("_replica.progress.json", "坐标进度"),
-    ("_replica.html", "坐标网页"),
-    ("_replica.pdf", "坐标PDF"),
     ("_audit.json", "审计记录"),
     (".progress.json", "进度"),
     (".pdf", "PDF"),
@@ -32,19 +24,11 @@ HISTORY_SUFFIX_LABELS = (
 INTERNAL_OUTPUT_SUFFIXES = (
     "_extraction_report.md",
     "_glossary_report.md",
-    "_replica.overflow.md",
-    "_replica.layout_report.md",
-    "_replica.translated.layout.json",
-    "_replica.translations.json",
-    "_replica.layout.json",
-    "_replica.progress.json",
     "_audit.json",
     ".progress.json",
 )
 
 FINAL_OUTPUT_SUFFIXES = (
-    "_replica.pdf",
-    "_replica.html",
     ".pdf",
     ".html",
     ".docx",

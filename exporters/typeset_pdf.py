@@ -3,7 +3,7 @@ Typeset PDF exporter using Playwright headless Chromium.
 
 Renders the typeset HTML (produced by TypesetHTMLRebuilder) into a
 professional-quality PDF with correct page dimensions and embedded fonts.
-Reuses Playwright patterns from exporters/pdf_playwright.py.
+Uses Playwright headless Chromium for PDF generation.
 """
 
 from __future__ import annotations

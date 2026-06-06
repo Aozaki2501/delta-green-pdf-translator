@@ -48,8 +48,7 @@ class TypesetPipeline:
     → Phase E (PDF export). Supports checkpoint/resume by checking
     intermediate files and their schema versions.
 
-    The pipeline never modifies or deletes files produced by the replica
-    pipeline (_replica suffix). All typeset outputs use _typeset suffix.
+    All typeset outputs use _typeset suffix.
     """
 
     def __init__(
@@ -303,9 +302,6 @@ class TypesetPipeline:
         # Load or create progress file
         progress = TypesetTranslationProgress(str(self._progress_path))
 
-        # Reuse existing replica translation progress if available
-        self._reuse_existing_translation_progress(progress, content)
-
         # Translation callback wrapper
         def translation_callback(done: int, total: int, unit_id: str, success: bool):
             if self._progress_callback:
@@ -489,60 +485,6 @@ class TypesetPipeline:
         except (json.JSONDecodeError, ValueError, KeyError):
             return None
 
-    def _reuse_existing_translation_progress(
-        self,
-        progress,
-        content: PageContentDocument,
-    ) -> None:
-        """Reuse existing replica translation progress when source text matches.
-
-        Looks for existing _replica.progress.json and imports cached
-        translations where the source text hash matches.
-        """
-        import hashlib
-
-        # Look for replica progress file patterns
-        replica_progress_candidates = list(
-            self.output_dir.glob("*_replica.progress.json")
-        )
-        if not replica_progress_candidates:
-            return
-
-        for replica_path in replica_progress_candidates:
-            try:
-                data = json.loads(replica_path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    continue
-                replica_cache = data.get("translation_cache", {})
-                if not replica_cache:
-                    continue
-
-                # Import cached translations that match source text hashes
-                imported = 0
-                for page in content.pages:
-                    for block in page.blocks:
-                        if not block.translatable or not block.source_text.strip():
-                            continue
-                        if progress.is_completed(block.id):
-                            continue
-                        # Check if source text hash exists in replica cache
-                        source_hash = hashlib.sha256(
-                            block.source_text.encode("utf-8")
-                        ).hexdigest()
-                        cached = replica_cache.get(source_hash)
-                        if cached:
-                            progress.mark_completed(block.id, cached)
-                            progress.translation_cache[source_hash] = cached
-                            imported += 1
-
-                if imported > 0:
-                    progress.save()
-                    logger.info(
-                        f"从 replica 进度文件导入 {imported} 条翻译缓存"
-                    )
-            except (json.JSONDecodeError, OSError):
-                continue
-
     def _mark_phase_completed(self, phase: str) -> None:
         """Mark a phase as completed in the progress file."""
         from core.typeset_translation import TypesetTranslationProgress
@@ -656,6 +598,7 @@ class TypesetPipeline:
                     else:
                         failed_regions += 1
 
+        stats = getattr(self.translator, "stats", None)
         return TypesetResult(
             pdf_path=pdf_path,
             html_path=html_path,
@@ -665,6 +608,16 @@ class TypesetPipeline:
             translated_regions=translated_regions,
             failed_regions=failed_regions,
             export_errors=list(self._errors),
+            input_tokens=int(getattr(stats, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(stats, "output_tokens", 0) or 0),
+            cached_tokens=int(getattr(stats, "cached_tokens", 0) or 0),
+            total_tokens=int(getattr(stats, "total_tokens", 0) or 0),
+            api_calls=int(getattr(stats, "api_calls", 0) or 0),
+            failed_calls=int(getattr(stats, "failed_calls", 0) or 0),
+            translation_cache_hits=int(
+                getattr(stats, "translation_cache_hits", 0) or 0
+            ),
+            cost_yuan=float(getattr(stats, "cost_yuan", 0.0) or 0.0),
         )
 
     def _write_report(self, result: TypesetResult) -> None:
@@ -679,6 +632,16 @@ class TypesetPipeline:
             "pdf_output": result.pdf_path,
             "html_output": result.html_path,
             "errors": result.export_errors,
+            "usage": {
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "cached_tokens": result.cached_tokens,
+                "total_tokens": result.total_tokens,
+                "api_calls": result.api_calls,
+                "failed_calls": result.failed_calls,
+                "translation_cache_hits": result.translation_cache_hits,
+                "cost_yuan": result.cost_yuan,
+            },
             "config": {
                 "font_family": self.config.font_family,
                 "fallback_fonts": self.config.fallback_fonts,

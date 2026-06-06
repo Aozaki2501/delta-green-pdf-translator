@@ -271,6 +271,14 @@ class TypesetResult:
     translated_regions: int = 0
     failed_regions: int = 0
     export_errors: list[str] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+    api_calls: int = 0
+    failed_calls: int = 0
+    translation_cache_hits: int = 0
+    cost_yuan: float = 0.0
 
 
 # ===========================================================================

@@ -334,3 +334,11 @@
 - Done: tilted Chinese card blocks are grouped into one readable flow when at least three related tilted blocks are present.
 - Result: page 2 title/body/small note now flow together; the small note moves into the main card text flow and no longer leaves the large blank gap above it.
 - Verified: rebuilt `_debug_local_fix_typeset.pdf`; 12 pages exported, 0 layout issues. Full test suite: 462 passed.
+
+# 原坐标 PDF 清理与重绘费用显示
+
+- 目标：废弃原坐标 PDF 功能，并让纯重绘 PDF 显示 token 用量和费用。
+- 已完成：移除 Web 里的原坐标 PDF 调试入口和执行分支；`_typeset` 不再读取 `_replica.progress.json`。
+- 已完成：删除原坐标 PDF 的旧脚本、旧模块和旧测试；README 不再介绍该功能。
+- 已完成：纯重绘 PDF 结果、页面进度、审计记录和 `_typeset_report.json` 增加 token、API 调用和费用字段。
+- 已验证：全量测试 438 个通过。

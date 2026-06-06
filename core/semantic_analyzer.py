@@ -256,7 +256,7 @@ class SemanticAnalyzer:
     ) -> PageType:
         """Classify the page type based on layout characteristics.
 
-        Reuses logic from existing page_classifier.py:
+        Uses simple page geometry signals:
         - art: minimal text + large images (images cover >50% of page area)
         - cover: centered large-font text with few blocks
         - columns: text blocks distributed in two vertical columns (detect gutter)
