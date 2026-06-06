@@ -105,6 +105,7 @@ class TestCoreModuleImports:
         "core.utils",
         "core.glossary",
         "core.extractor",
+        "core.layout_adapters",
         "core.layout_hints",
         "core.translator",
         "core.progress",

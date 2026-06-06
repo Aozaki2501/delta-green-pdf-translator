@@ -67,6 +67,10 @@ from core import (
     build_glossary_report,
     write_glossary_report,
 )
+from core.layout_adapters import (
+    build_pdf_output_layout_context,
+    merge_output_page_layouts,
+)
 
 from exporters import (
     write_html_output,
@@ -180,14 +184,27 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         print("Extracting text and analyzing chapters...")
         pages_text = {}
         source_page_labels = {}
-        page_layouts = {}
+        base_page_layouts = {}
         page_diagnostics = []
         for page_num in range(start_page, end_page):
             source_page_labels[page_num] = extractor.get_page_label(page_num)
-            page_layouts[page_num] = extractor.detect_page_layout(page_num)
+            base_page_layouts[page_num] = extractor.detect_page_layout(page_num)
             text = extractor.extract_page(page_num, include_images=False)
             pages_text[page_num] = text
             page_diagnostics.append(extractor.get_page_diagnostics(page_num, text))
+        layout_context = build_pdf_output_layout_context(
+            pdf_path,
+            start_page=start_page,
+            end_page=end_page,
+        )
+        page_layouts = merge_output_page_layouts(
+            base_page_layouts,
+            layout_context.page_layouts,
+        )
+        for item in page_diagnostics:
+            page_index = int(item.get("page", -1))
+            item["layout"] = page_layouts.get(page_index, item.get("layout", "unknown"))
+            item.setdefault("notes", []).extend(layout_context.notes.get(page_index, []))
 
         extractor.finalize_chapters()
         toc = extractor.chapter_detector.get_toc_markdown()

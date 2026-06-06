@@ -34,6 +34,7 @@ from translate_md import translate_md_file
 from translate_docx import translate_docx_file
 from core.md_extractor import MarkdownExtractor
 from core.docx_extractor import DocxExtractor, HAS_DOCX as HAS_DOCX_LIB
+from core.layout_adapters import build_pdf_output_layout_context, merge_output_page_layouts
 from core.utils import looks_untranslated_page
 
 
@@ -1895,13 +1896,26 @@ if launch_pressed:
         st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
         source_page_labels = {}
-        page_layouts = {}
+        base_page_layouts = {}
         page_diagnostics = []
         for pn in range(start_page, end_page):
             source_page_labels[pn] = extractor.get_page_label(pn)
-            page_layouts[pn] = extractor.detect_page_layout(pn)
+            base_page_layouts[pn] = extractor.detect_page_layout(pn)
             pages_text[pn] = extractor.extract_page(pn, include_images=False)
             page_diagnostics.append(extractor.get_page_diagnostics(pn, pages_text[pn]))
+        layout_context = build_pdf_output_layout_context(
+            pdf_path,
+            start_page=start_page,
+            end_page=end_page,
+        )
+        page_layouts = merge_output_page_layouts(
+            base_page_layouts,
+            layout_context.page_layouts,
+        )
+        for item in page_diagnostics:
+            page_index = int(item.get("page", -1))
+            item["layout"] = page_layouts.get(page_index, item.get("layout", "unknown"))
+            item.setdefault("notes", []).extend(layout_context.notes.get(page_index, []))
         extractor.finalize_chapters()
         toc = extractor.chapter_detector.get_toc_markdown()
         risky_pages = [item for item in page_diagnostics if item.get("risks")]

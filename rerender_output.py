@@ -12,6 +12,7 @@ from pathlib import Path
 
 from core.constants import SUPPORTED_OUTPUT_FORMATS
 from core.extractor import PDFExtractor
+from core.layout_adapters import build_pdf_output_layout_context, merge_output_page_layouts
 from core.utils import ensure_output_parent, output_base_in_own_dir
 from exporters.html import write_html_output
 from exporters.markdown import write_markdown_output
@@ -55,15 +56,25 @@ def detect_pdf_page_context(pdf_path: str | None, translated_pages: list[tuple[i
         return {}, {}, {}
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF 文件不存在：{pdf_path}")
-    layouts = {}
+    base_layouts = {}
     pages_text = {}
     page_labels = {}
+    valid_page_numbers = []
     with PDFExtractor(pdf_path) as extractor:
         for page_num, _ in translated_pages:
             if 0 <= page_num < extractor.total_pages:
+                valid_page_numbers.append(page_num)
                 page_labels[page_num] = extractor.get_page_label(page_num)
-                layouts[page_num] = extractor.detect_page_layout(page_num)
+                base_layouts[page_num] = extractor.detect_page_layout(page_num)
                 pages_text[page_num] = extractor.extract_page(page_num, include_images=False)
+    if not valid_page_numbers:
+        return base_layouts, pages_text, page_labels
+    layout_context = build_pdf_output_layout_context(
+        pdf_path,
+        start_page=min(valid_page_numbers),
+        end_page=max(valid_page_numbers) + 1,
+    )
+    layouts = merge_output_page_layouts(base_layouts, layout_context.page_layouts)
     return layouts, pages_text, page_labels
 
 

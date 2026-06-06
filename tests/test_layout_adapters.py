@@ -1,10 +1,36 @@
 import re
 import zipfile
 
+from core.layout_adapters import (
+    build_output_layout_context_from_content,
+    merge_output_page_layouts,
+)
+from core.typeset_models import (
+    PAGE_CONTENT_SCHEMA_VERSION,
+    ColumnInfo,
+    ContentBlock,
+    PageContent,
+    PageContentDocument,
+    PageType,
+    SemanticRole,
+    StyledTextRun,
+)
 from exporters._shared import _layout_uses_columns, paginate_translated_blocks
 from exporters.html import write_html_output
 from exporters.markdown import write_markdown_output
 from exporters.word import HAS_DOCX, write_word_output
+
+
+def _typeset_block(block_id="b1", region_id="r1", role=SemanticRole.BODY_COLUMN):
+    return ContentBlock(
+        id=block_id,
+        region_id=region_id,
+        role=role,
+        runs=[StyledTextRun("Text", 10.0, False, False, "#000000")],
+        source_text="Text",
+        translated_text=None,
+        translatable=True,
+    )
 
 
 def test_layout_helper_distinguishes_columns_from_single_column_modes():
@@ -13,6 +39,64 @@ def test_layout_helper_distinguishes_columns_from_single_column_modes():
     assert _layout_uses_columns("document") is False
     assert _layout_uses_columns("credits") is False
     assert _layout_uses_columns("art") is False
+
+
+def test_typeset_semantics_become_reading_page_layouts():
+    content = PageContentDocument(
+        schema_version=PAGE_CONTENT_SCHEMA_VERSION,
+        source_pdf="book.pdf",
+        page_count=2,
+        pages=[
+            PageContent(
+                page_index=0,
+                page_type=PageType.SINGLE,
+                columns=[],
+                blocks=[_typeset_block()],
+            ),
+            PageContent(
+                page_index=1,
+                page_type=PageType.MIXED,
+                columns=[
+                    ColumnInfo("left", [0, 0, 100, 100], ["b2"]),
+                    ColumnInfo("right", [120, 0, 220, 100], ["b3"]),
+                ],
+                blocks=[
+                    _typeset_block("b2", "r2"),
+                    _typeset_block("b3", "r3"),
+                ],
+            ),
+        ],
+    )
+
+    context = build_output_layout_context_from_content(content)
+
+    assert context.page_layouts == {0: "single", 1: "columns"}
+    assert "typeset_page_type: single" in context.notes[0]
+    assert "typeset_columns: 2" in context.notes[1]
+
+
+def test_typeset_layout_merge_preserves_special_reading_layouts():
+    merged = merge_output_page_layouts(
+        {
+            0: "toc",
+            1: "handout",
+            2: "character",
+            3: "columns",
+        },
+        {
+            0: "single",
+            1: "columns",
+            2: "single",
+            3: "single",
+            4: "art",
+        },
+    )
+
+    assert merged[0] == "toc"
+    assert merged[1] == "handout"
+    assert merged[2] == "character"
+    assert merged[3] == "single"
+    assert merged[4] == "art"
 
 
 def test_paginate_translated_blocks_splits_when_layout_changes():
