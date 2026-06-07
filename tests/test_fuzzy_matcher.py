@@ -9,7 +9,8 @@ Requirements: 2.4, 2.5, 2.10
 
 import pytest
 
-from core.glossary import FuzzyMatcher, ACGlossaryMatcher, GlossaryMatch
+from core.glossary import FuzzyMatcher, ACGlossaryMatcher, GlossaryMatch, build_glossary_matcher
+from core.translator import Translator
 
 
 # ---------------------------------------------------------------------------
@@ -220,3 +221,19 @@ class TestFuzzyMatcherIntegration:
                                     filter_articles=False)
         result = matcher.find_relevant_glossary_terms("Some text here.")
         assert result == {}
+
+    def test_translator_uses_fuzzy_glossary_matcher(self):
+        """Translator should use the injected matcher before building prompts."""
+        glossary = {"Sanity": "理智"}
+        matcher = build_glossary_matcher(glossary, fuzzy=True)
+        translator = Translator(
+            api_key="sk-test",
+            model="test-model",
+            base_url="https://example.com/v1",
+            glossary_matcher=matcher,
+        )
+        translator.set_glossary(glossary)
+
+        result = translator._find_relevant_glossary_terms("Check your 5anity.")
+
+        assert result == {"Sanity": "理智"}

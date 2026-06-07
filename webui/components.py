@@ -16,10 +16,79 @@ from webui.history import (
     format_file_time,
     history_file_label,
     is_final_output_file,
+    write_audit_record,
 )
 
 
 STATUS_STEPS = ("接收档案", "提取文本", "匹配术语", "编译译文", "生成输出", "归档完成")
+
+
+def _retryable_formats(audit: dict[str, Any]) -> list[str]:
+    raw_formats = audit.get("formats", [])
+    if isinstance(raw_formats, str):
+        raw_formats = [raw_formats]
+    if not isinstance(raw_formats, list):
+        return []
+    return [
+        str(item)
+        for item in raw_formats
+        if str(item) in {"markdown", "html", "word"}
+    ]
+
+
+def _can_retry_export(audit: dict[str, Any]) -> bool:
+    return (
+        audit.get("status") == "export_failed"
+        and bool(audit.get("retryable_export"))
+        and bool(audit.get("progress_path"))
+        and bool(_retryable_formats(audit))
+    )
+
+
+def _retry_export_from_audit(entry: dict[str, Any]) -> list[str]:
+    audit = entry.get("audit", {})
+    audit_path = entry.get("audit_path")
+    if not audit_path:
+        raise ValueError("审计记录缺少路径，不能重试导出")
+
+    progress_path = Path(str(audit.get("progress_path", "")))
+    if not progress_path.exists():
+        raise FileNotFoundError(f"进度文件不存在：{progress_path}")
+
+    output_options = audit.get("output_options", {})
+    if not isinstance(output_options, dict):
+        output_options = {}
+
+    from rerender_output import rerender_selected_outputs
+
+    written = rerender_selected_outputs(
+        progress_path=str(progress_path),
+        output_base=audit.get("output_base") or None,
+        pdf_path=audit.get("source_path") or None,
+        output_formats=_retryable_formats(audit),
+        title=Path(str(audit.get("source_file") or entry.get("title") or "document")).stem,
+        markdown_min_chars=int(output_options.get("markdown_min_chars", 1000)),
+        markdown_max_chars=int(output_options.get("markdown_max_chars", 1500)),
+        html_min_chars=int(output_options.get("html_min_chars", 1200)),
+        html_max_chars=int(output_options.get("html_max_chars", 1800)),
+        word_min_chars=int(output_options.get("word_min_chars", 1000)),
+        word_max_chars=int(output_options.get("word_max_chars", 1500)),
+        columns=int(output_options.get("columns", 2)),
+        body_font_size=float(output_options.get("body_font_size", 12.0)),
+        line_spacing=float(output_options.get("line_spacing", 1.5)),
+        header_left=str(output_options.get("header_left", "绿色三角洲")),
+        header_right=output_options.get("header_right") or None,
+        word_hard_page_breaks=bool(output_options.get("word_hard_page_breaks", False)),
+    )
+
+    updated = dict(audit)
+    updated["status"] = "completed"
+    updated["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    updated["retryable_export"] = False
+    updated["export_errors"] = []
+    updated["outputs"] = [Path(path).name for path in written]
+    write_audit_record(Path(audit_path), updated)
+    return written
 
 
 def make_dossier_id(filename: str, file_digest: str, created_at: float | None = None) -> str:
@@ -145,6 +214,18 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
                     audit_items["失败页"] = ", ".join(str(page) for page in audit_failed[:12])
                 render_audit_grid(audit_items)
                 st.caption(f"目录：{entry['folder']}")
+
+                if _can_retry_export(audit):
+                    retry_key = "retry_export_" + hashlib.sha256(
+                        str(entry.get("audit_path", "")).encode("utf-8")
+                    ).hexdigest()
+                    if st.button("重试导出", key=retry_key):
+                        try:
+                            with st.spinner("正在重试导出，不会调用翻译 API。"):
+                                written = _retry_export_from_audit(entry)
+                            st.success(f"重试导出完成：{len(written)} 个成品。")
+                        except Exception as exc:
+                            st.error(f"重试导出失败：{exc}")
 
                 for file_index, file_path in enumerate(download_files):
                     if not is_final_output_file(file_path):
