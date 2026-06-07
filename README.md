@@ -1,93 +1,59 @@
-# Delta Green PDF Translator
+# Delta Green PDF Translator 使用手册
 
-这是一个面向 Delta Green / TRPG 英文 PDF 的中文翻译工具。
+这是一个本地运行的 TRPG 英文文档中文翻译工具。它主要面向 Delta Green、规则书、模组、设定集这类带文本层、双栏排版、术语很多的 PDF，也支持 Markdown 和 Word 文档。
 
-它会从带文本层的 PDF 中提取正文，调用 DeepSeek 或其他 OpenAI 兼容接口翻译，并生成 Markdown、HTML、Word 文档。它适合规则书、模组、设定集这类双栏排版的英文 TRPG PDF。
+它会读取原文，按页或按块调用 DeepSeek 或其他 OpenAI 兼容接口翻译，再生成 Markdown、HTML、Word，或实验性的纯重绘 PDF。
 
-注意：扫描版纯图片 PDF 需要先做 OCR。本项目不负责 OCR。
+注意：扫描版、纯图片 PDF 需要先做 OCR。本项目不负责 OCR。
 
-## 主要功能
+## 你可以用它做什么
 
-- Web 界面：上传 PDF、填写 API Key、选择模型和输出格式后直接翻译。
-- 命令行：适合长文档、批量处理和自动化。
-- 双栏 PDF 提取：尽量按正常阅读顺序合并双栏正文。
-- 标题识别：自动识别章节标题，并在 Markdown 中生成目录。
-- 卡片和属性块：保留 `[CARD]`、`[STAT_BLOCK]` 等结构标记，避免内容被揉成一段。
-- 表格保留：尽量把表格保留为 Markdown 表格。
-- 图片回填：提取正文图片到 `assets` 目录，并在 HTML、Word、Markdown 中放回。
-- 术语表：用 `glossary.tsv` 统一专名译法，只把当前页命中的术语发给模型。
-- 断点续跑：翻译进度保存到 `.progress.json`，中断后可继续。
-- 失败页重试：失败页会单独记录，可只重试失败页。
-- 诊断报告：每次输出提取诊断报告，提示空页、图片、表格、乱码等风险。
-- 离线重排：已有 `.progress.json` 时，可不调用 API，重新生成 HTML、Word、Markdown。
-- 纯重绘 PDF：从 PDF 重新提取页面结构，用 HTML/CSS 重建页面，再导出 `_typeset.pdf`。
-- Token 统计：记录调用次数、token 用量和估算费用。
+| 目标 | 推荐方式 | 输出 |
+| --- | --- | --- |
+| 第一次使用，想少配置 | Web 界面 | HTML / Word / Markdown |
+| 翻译很长的 PDF | Web 或命令行 | HTML / Word / Markdown |
+| 只重试失败页 | Web 高级任务控制或 `--retry-failed` | 原格式重新生成 |
+| 翻译 Markdown | Web 上传 `.md` 或 `translate_md.py` | Markdown |
+| 翻译 Word | Web 上传 `.docx` 或 `translate_docx.py` | Word |
+| 尽量接近原 PDF 版面 | 纯重绘 PDF | `_typeset.pdf` |
+| 不重新花钱，只重新生成输出 | 档案库“重试导出”或 `rerender_output.py` | HTML / Word / Markdown |
 
-## 目录说明
+## 工作流总览
 
-```text
-DGtranslate/
-├─ app.py                         Web 界面入口
-├─ translate_pdf.py               命令行入口
-├─ rerender_output.py             离线重新生成输出文件
-├─ glossary.tsv                   默认术语表
-├─ config.example.json            命令行配置模板
-├─ start_web.bat                  Windows 一键启动
-├─ start_web.ps1                  PowerShell 启动脚本
-├─ core/                          PDF 提取、翻译、进度、术语表等核心逻辑
-├─ exporters/                     Markdown、HTML、Word 输出逻辑
-├─ tests/                         自动测试
-├─ uploads/                       Web 上传临时目录
-└─ output/                        默认输出目录
+```mermaid
+flowchart TD
+    A["准备带文本层的英文 PDF"] --> B["启动 Web 或命令行"]
+    B --> C["填写 API Key、模型、页码、术语表"]
+    C --> D["提取文本和版面信息"]
+    D --> E{"提取预览是否正常"}
+    E -- "否" --> F["先处理 OCR、页码或 PDF 文本层"]
+    E -- "是" --> G["调用翻译 API"]
+    G --> H["保存 progress.json"]
+    H --> I["生成 Markdown / HTML / Word / PDF"]
+    I --> J{"导出是否成功"}
+    J -- "否" --> K["拦住成品，保留进度，可重试导出"]
+    J -- "是" --> L["下载输出并校对"]
 ```
 
-## 环境要求
+## 安装和启动
 
-- Python 3.10 或更高版本
-- DeepSeek API Key，或其他 OpenAI 兼容接口的 API Key
-- 带文本层的英文 PDF
+### 方法一：Windows 一键启动
 
-依赖见 `requirements.txt`：
+适合大多数用户。
 
-```text
-pymupdf
-openai
-python-docx
-streamlit
-```
-
-## 快速开始
-
-### 方法一：一键启动 Web
-
-在 Windows 上双击：
+1. 安装 Python 3.10 或更新版本。
+2. 解压或克隆本项目。
+3. 双击：
 
 ```text
 start_web.bat
 ```
 
-脚本会自动创建虚拟环境、安装依赖，并启动 Web 界面。
-
-启动后浏览器打开：
+第一次启动会自动创建 `.venv`、安装依赖，并打开 Web 服务：
 
 ```text
 http://localhost:8501
 ```
-
-### 分享给别人
-
-如果要把可运行项目直接发给别人，可以在项目根目录执行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\pack_release.ps1
-```
-
-它会在 `dist/` 生成一个 zip 包。对方只需要：
-
-1. 安装 Python 3.10+
-2. 解压 zip
-3. 双击 `start_web.bat`
-4. 在网页里填入她自己的 API Key
 
 ### 方法二：手动启动 Web
 
@@ -98,7 +64,9 @@ pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-### 方法三：命令行翻译
+不要直接运行 `python app.py`。
+
+### 方法三：命令行使用
 
 先复制配置文件：
 
@@ -106,7 +74,7 @@ python -m streamlit run app.py
 copy config.example.json config.json
 ```
 
-编辑 `config.json`，填入 PDF 路径和 API Key，然后运行：
+编辑 `config.json` 后运行：
 
 ```powershell
 python translate_pdf.py --config config.json
@@ -118,127 +86,193 @@ python translate_pdf.py --config config.json
 python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 32
 ```
 
-### 纯重绘 PDF
+## Web 界面怎么用
 
-纯重绘 PDF 是当前重点开发的 PDF 输出方式。它会重新提取页面结构、分析标题和正文区域、逐块翻译，再用浏览器排版导出 `_typeset.pdf`。
+Web 是推荐入口。它会保存上传文件、显示进度、生成审计记录，并在“档案库”里保留历史输出。
 
-Web 界面里这样使用：
+```text
+┌────────────────────── 左侧任务参数 ──────────────────────┐
+│ API Key                                                   │
+│ 输出格式：Markdown / HTML / Word / 纯重绘 PDF             │
+│ 页码范围、并发数、模型、Base URL                          │
+│ 高级任务控制：重翻页码、只重试失败页、提取预览             │
+│ 文档档案输出：Word 字号、行距、分栏、页眉                  │
+│ 纯重绘配置：字体、layout_hints、自动审稿接口              │
+└───────────────────────────────────────────────────────────┘
 
-1. 上传 PDF。
-2. 输出格式只选择“纯重绘 PDF（_typeset）”。
-3. 如有需要，在“纯重绘排版配置”里填写中文字体。
-4. 如果已经有 `layout_hints.json`，填入它的路径；如果要让模型帮忙审稿，勾选“自动生成 layout hints”，并选择 Gemini 官方接口或 OpenAI 兼容多模态接口。
-5. 点击开始任务。
+┌────────────────────── 主工作区 ──────────────────────────┐
+│ 上传源文件和术语表                                       │
+│ 查看提取预览                                             │
+│ 执行翻译任务                                             │
+│ 查看进度、费用、失败页                                   │
+│ 下载成品                                                 │
+│ 档案库：查看旧输出，导出失败时可重试导出                 │
+└───────────────────────────────────────────────────────────┘
+```
 
-注意：
+### 标准 Web 流程
 
-- 纯重绘 PDF 必须单独运行，不要和 Markdown、HTML、Word 一起勾选。
-- `layout_hints.json` 只负责修正阅读顺序、分栏和跳过块，不负责生成坐标、字号或最终译文。
-- 手动填写 `layout_hints.json` 时路径或块 ID 错误会直接失败，避免生成看似正常但实际错位的 PDF。
-- 自动审稿会调用外部多模态 API，适合先在少量疑难页上试。Gemini 免费额度不够时，可以改用 OpenAI 兼容多模态接口，填写对应 Base URL、模型和 Key。
+1. 启动 Web。
+2. 上传 PDF、Markdown 或 Word。
+3. 填入翻译 API Key。
+4. 选择输出格式。
+5. 可选：上传术语表。
+6. 可选：勾选“显示提取预览”，先检查 PDF 是否能正常读出文本。
+7. 点击“执行翻译任务”。
+8. 任务完成后下载成品。
 
-## Web 使用流程
+### 页码怎么填
 
-1. 启动 Web 页面。
-2. 上传 PDF。
-3. 填入 API Key。
-4. 选择模型、并发数和输出格式。
-5. 可选：上传自己的术语表，或指定页码范围。
-6. 先用提取预览检查 PDF 是否被正确读取。
-7. 点击开始翻译。
-8. 完成后在页面下载输出文件。
+Web 里的 PDF 页码从 1 开始，和阅读器看到的页码更接近。
 
-Web 界面支持选择性重翻。页码可以写成：
+示例：
+
+```text
+起始页：1
+结束页：10
+```
+
+表示翻译第 1 到第 10 页。
+
+“重翻页码”支持：
 
 ```text
 8, 12-15
 ```
 
-## 命令行参数
+表示只清理并重翻第 8、12、13、14、15 页。
 
-常用参数：
+## 命令行 PDF 翻译
 
-| 参数 | 说明 |
-| --- | --- |
-| `pdf` | 输入 PDF 路径 |
-| `--config` | JSON 配置文件 |
-| `--api-key` | API Key |
-| `--output` | 输出路径，不需要写扩展名 |
-| `--glossary` | 术语表路径 |
-| `--provider` | 服务名，只用于记录进度指纹 |
-| `--base-url` | OpenAI 兼容接口地址 |
-| `--model` | 模型名，默认 `deepseek-v4-pro` |
-| `--format` | 输出格式：`markdown`、`html`、`word`、`both`、`all` |
-| `--workers` | 并发数，范围 1 到 64，默认 32 |
-| `--start` | 起始页，从 0 开始 |
-| `--end` | 结束页，不包含这一页 |
-| `--retry-failed` | 只重试进度文件里记录的失败页 |
-
-配置文件示例：
+### 配置文件示例
 
 ```json
 {
   "pdf": "THE MILLENNIUM.pdf",
-  "api_key": "sk-在这里填入你的DeepSeek API Key",
+  "api_key": "sk-在这里填入你的 API Key",
   "glossary": "glossary.tsv",
   "provider": "deepseek",
   "base_url": "https://api.deepseek.com",
   "model": "deepseek-v4-pro",
   "format": "all",
   "workers": 32,
+  "rate_limit": 60,
+  "cooldown": 1.0,
+  "max_split_depth": 10,
+  "fuzzy_matching": false,
   "start": 0,
   "end": null
 }
 ```
 
-翻译 API 使用 OpenAI 兼容格式。换服务时通常只改三项：
+### 常用命令
 
-```json
-{
-  "api_key": "sk-xxx",
-  "base_url": "https://你的接口地址/v1",
-  "model": "你的翻译模型"
-}
+翻译整个 PDF：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --format all
 ```
 
-纯重绘里的自动 layout hints 需要多模态模型。命令行实验脚本支持：
+只翻译前 10 页。命令行页码从 0 开始，`--end` 不包含这一页：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --start 0 --end 10
+```
+
+只输出 Word：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --format word
+```
+
+使用 OpenAI 兼容接口：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --base-url "https://你的接口/v1" --model "你的模型"
+```
+
+启用 OCR 字符容错术语匹配：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --fuzzy-matching
+```
+
+只重试失败页：
+
+```powershell
+python translate_pdf.py "book.pdf" --api-key sk-xxx --retry-failed
+```
+
+### 参数速查
+
+| 参数 | 说明 |
+| --- | --- |
+| `pdf` | 输入 PDF 路径 |
+| `--config` | JSON 配置文件 |
+| `--api-key` | 翻译接口密钥 |
+| `--output` | 输出路径，不需要写扩展名 |
+| `--glossary` | 术语表路径 |
+| `--provider` | 服务名，只用于进度指纹 |
+| `--base-url` | OpenAI 兼容接口地址 |
+| `--model` | 模型名 |
+| `--format` | `markdown`、`html`、`word`、`both`、`all` |
+| `--workers` | 并发数，范围 1 到 64 |
+| `--start` | 起始页，从 0 开始 |
+| `--end` | 结束页，不包含这一页 |
+| `--retry-failed` | 只重试失败页 |
+| `--fuzzy-matching` | 启用 OCR 字符容错术语匹配 |
+
+## Markdown 和 Word 翻译
+
+Web 可以直接上传 `.md`、`.txt`、`.docx`。
+
+命令行也可以单独使用：
+
+```powershell
+python translate_md.py input.md --api-key sk-xxx --glossary glossary.tsv --workers 4
+python translate_docx.py input.docx --api-key sk-xxx --glossary glossary.tsv --workers 4
+```
+
+Word 翻译默认不翻译页眉页脚。如需翻译：
+
+```powershell
+python translate_docx.py input.docx --api-key sk-xxx --translate-headers
+```
+
+## 输出文件说明
+
+默认输出在 `output/`。每个任务会按文件名创建独立目录。
 
 ```text
-python experiments/gemini_layout_review.py --provider gemini --api-key AIza... --model gemini-2.5-flash ...
-python experiments/gemini_layout_review.py --provider openai-compatible --api-key sk-xxx --base-url https://你的接口地址/v1 --model 你的视觉模型 ...
+output/
+└─ book_cn/
+   ├─ book_cn.md
+   ├─ book_cn.html
+   ├─ book_cn.docx
+   ├─ book_cn.progress.json
+   ├─ book_cn_extraction_report.md
+   ├─ book_cn_glossary_report.md
+   ├─ book_cn_audit.json
+   └─ assets/
+      ├─ book_cn_p0001_img1.png
+      └─ ...
 ```
 
-命令行参数会覆盖配置文件中的同名字段。
-
-## 输出文件
-
-默认输出在 `output` 目录下。每个任务会按文件名创建独立目录，避免多个任务互相混在一起。
-
-常见输出：
-
-```text
-output/book_cn/book_cn.md
-output/book_cn/book_cn.html
-output/book_cn/book_cn.docx
-output/book_cn/book_cn.progress.json
-output/book_cn/book_cn_extraction_report.md
-output/book_cn/book_cn_glossary_report.md
-output/book_cn/assets/
-```
-
-说明：
-
-- `.md` 是 Markdown 译文。
-- `.html` 是浏览器阅读版。
-- `.docx` 是 Word 文档。
-- `.progress.json` 是断点续跑文件。
-- `_extraction_report.md` 是 PDF 提取诊断报告。
-- `_glossary_report.md` 是术语命中报告。
-- `assets/` 保存从 PDF 裁出的正文图片。
+| 文件 | 作用 |
+| --- | --- |
+| `.md` | Markdown 译文 |
+| `.html` | 浏览器阅读版 |
+| `.docx` | Word 校对版 |
+| `_typeset.pdf` | 纯重绘 PDF |
+| `.progress.json` | 断点续跑和离线重排用的进度 |
+| `_extraction_report.md` | PDF 提取诊断 |
+| `_glossary_report.md` | 术语命中报告 |
+| `_audit.json` | Web 任务审计记录 |
+| `assets/` | 从 PDF 裁出的图片资源 |
 
 ## 术语表
 
-术语表使用 TSV 格式，也就是用 Tab 分隔两列。
+术语表是 TSV 文件，也就是两列中间用 Tab 分隔。
 
 格式：
 
@@ -254,71 +288,257 @@ output/book_cn/assets/
 阿撒托斯	Azathoth
 ```
 
-程序会在每页英文原文中查找术语。只有当前页命中的术语会加入翻译请求，减少 token 占用。
+程序会先找当前页命中的术语，只把命中的术语发给模型，减少 token 占用。
 
-如果有从 PDF 复制出来的原始术语文本，可以用转换脚本：
+如果 PDF 文字层有 OCR 损坏，可以启用模糊术语匹配。它会识别常见替换：
+
+| OCR 错字 | 可能原字 |
+| --- | --- |
+| `0` | `O` / `o` |
+| `1` | `l` / `I` / `i` |
+| `5` | `S` / `s` |
+| `8` | `B` / `b` |
+
+Web 中勾选“模糊术语匹配”。命令行使用：
 
 ```powershell
-python convert_glossary.py raw_glossary.txt -o glossary.tsv
+python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --fuzzy-matching
 ```
 
-## 断点续跑和失败页
+## 断点续跑、失败页和导出重试
 
-翻译进度保存在：
+翻译进度保存在 `.progress.json`。
 
-```text
-输出文件名.progress.json
+```mermaid
+flowchart LR
+    A["翻译开始"] --> B["每页成功后写入 progress.json"]
+    B --> C{"中断或失败"}
+    C -- "重新运行同设置" --> D["跳过已完成页"]
+    C -- "只重试失败页" --> E["只处理 failed_pages"]
+    D --> F["继续生成输出"]
+    E --> F
 ```
 
-同一个 PDF、同一个术语表、同一个模型和同一段页码再次运行时，程序会跳过已经完成的页。
-Web 界面也是同样规则：重新上传同一个 PDF，保持术语表、模型和页码范围不变，再点击执行即可继续。
-如果这些设置变了，程序会提示进度指纹不一致，并默认不复用旧译文，避免旧缓存串到新任务里。
+### 什么时候会复用旧进度
 
-如果某些页调用 API 失败，会写入 `failed_pages`，不会当作正常译文混进最终结果。
+以下设置一致时，会复用旧译文：
 
-只重试失败页：
+- PDF 文件
+- 术语表
+- 模型
+- Base URL
+- 页码范围
+- 提示词版本
+- 提取逻辑版本
+
+如果不一致，程序会提示进度指纹不匹配，默认不复用旧译文。
+
+### 失败页
+
+失败页会写入 `failed_pages`，不会当作正常译文输出。
+
+Web：勾选“只重试失败页”。
+
+命令行：
 
 ```powershell
 python translate_pdf.py "book.pdf" --api-key sk-xxx --retry-failed
 ```
 
-Web 界面里可以在“高级任务控制”勾选“只重试失败页”。
+### 导出失败重试
 
-如果输出没有任何中文译文，Web 会停止生成最终文件，避免产出空文档或全英文文件。
+如果翻译成功但 HTML 或 Word 导出失败，Web 会拦住成品，并记录为 `export_failed`。
 
-## 离线重新生成输出
+这时不要重新翻译。打开 Web 的“档案库”，点击“重试导出”。它会复用 `.progress.json`，只重新生成文件，不会调用翻译 API。
 
-如果翻译已经完成，只想用现有进度文件重新生成 Word、HTML 或 Markdown，可以运行：
+命令行也可以手动离线重排：
 
 ```powershell
 python rerender_output.py --progress output\book_cn\book_cn.progress.json --pdf "book.pdf" --format all
 ```
 
-这个命令不会调用翻译 API。
-
-注意：离线重排只能重新套用输出样式，不能修正旧译文本身的顺序错误。
-
-## 环境检查
-
-检查依赖：
+只重新生成 HTML：
 
 ```powershell
-python test_setup.py
+python rerender_output.py --progress output\book_cn\book_cn.progress.json --pdf "book.pdf" --format html
 ```
 
-检查 PDF 提取：
+## 纯重绘 PDF
+
+纯重绘 PDF 会重新提取页面结构，用 HTML/CSS 重建页面，再导出 `_typeset.pdf`。它比普通 Word/HTML 更接近原 PDF 版面，但也更挑 PDF 结构。
+
+```mermaid
+flowchart TD
+    A["源 PDF"] --> B["提取 page_structure.json"]
+    B --> C["分析 page_content.json"]
+    C --> D{"是否有 layout_hints.json"}
+    D -- "有" --> E["校验并应用 hints"]
+    D -- "没有" --> F["使用本地规则"]
+    E --> G["逐块翻译"]
+    F --> G
+    G --> H["生成 _typeset.html"]
+    H --> I["浏览器检查溢出"]
+    I --> J["导出 _typeset.pdf"]
+```
+
+### Web 使用方式
+
+1. 上传 PDF。
+2. 输出格式只选择“纯重绘 PDF（_typeset）”。
+3. 如有需要，填写中文字体。
+4. 如果已有 `layout_hints.json`，填入路径。
+5. 如果要让多模态模型审稿，勾选“自动生成 layout hints”。
+6. 点击执行。
+
+### layout hints 的作用
+
+`layout_hints.json` 只负责修正语义和阅读顺序，例如：
+
+- 哪些块跳过翻译
+- 哪些块属于左栏或右栏
+- 哪些页是目录、正文、手册页、角色表或美术页
+- 特殊页面的阅读顺序
+
+它不负责生成坐标、字号或最终译文。
+
+如果 `layout_hints.json` 的路径、页码或块 ID 错误，程序会直接失败，不会静默忽略。
+
+### 多模态审稿接口
+
+支持 Gemini 官方接口和 OpenAI 兼容多模态接口。
+
+命令行实验脚本示例：
 
 ```powershell
-python test_setup.py --pdf "book.pdf"
+python experiments/gemini_layout_review.py --provider gemini --api-key AIza... --model gemini-2.5-flash --pdf book.pdf --page-structure page_structure.json --page-content page_content.json --page 0 --output layout_hints.json
 ```
 
-检查 API 连通：
+OpenAI 兼容接口：
 
 ```powershell
-python test_setup.py --api-key sk-xxx
+python experiments/gemini_layout_review.py --provider openai-compatible --api-key sk-xxx --base-url https://你的接口/v1 --model 你的视觉模型 --pdf book.pdf --page-structure page_structure.json --page-content page_content.json --page 0 --output layout_hints.json
 ```
 
-## 测试
+## 打包分享
+
+如果要把可运行项目发给别人，可以在项目根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\pack_release.ps1
+```
+
+它会在 `dist/` 生成 zip 包。
+
+对方只需要：
+
+1. 安装 Python 3.10 或更新版本。
+2. 解压 zip。
+3. 双击 `start_web.bat`。
+4. 在网页里填自己的 API Key。
+
+## 质量检查建议
+
+翻译完成后建议重点检查：
+
+| 检查项 | 正常表现 | 异常表现 |
+| --- | --- | --- |
+| 骰子记法 | `1D6`、`3D6` 保留 | 被翻成中文数字 |
+| 属性缩写 | `STR`、`SAN`、`HP` 保留 | 被翻成普通词 |
+| 术语 | 同一术语译法一致 | 同一词多种译名 |
+| 页序 | 双栏阅读顺序正常 | 右栏跑到左栏前 |
+| 图片 | 图片在 HTML/Word 中能看到 | 图片丢失 |
+| 提示词泄露 | 没有内部翻译规则文字 | 出现“你是专业翻译”等内容 |
+| 导出状态 | 审计记录为 completed | export_failed 或 failed |
+
+## 常见问题
+
+### Web 页面打不开
+
+先确认命令是否是：
+
+```powershell
+python -m streamlit run app.py
+```
+
+如果是双击启动，查看终端里是否显示：
+
+```text
+http://localhost:8501
+```
+
+### PowerShell 不能激活虚拟环境
+
+当前窗口临时放开执行策略：
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+### PDF 提取不到文字
+
+大概率是扫描版 PDF。先用 OCR 工具生成带文本层的 PDF，再交给本项目。
+
+### 翻译中断
+
+直接用同样设置重新运行。程序会读取 `.progress.json`，跳过已完成页。
+
+### 输出没有中文
+
+程序会拦住这种结果，避免生成全英文成品。请检查：
+
+- API Key 是否正确
+- Base URL 是否正确
+- 模型是否可用
+- 页码范围是否有正文
+- PDF 是否能提取文字
+
+### 术语没有生效
+
+检查术语表是否是：
+
+```text
+中文译名	英文原名
+```
+
+中间必须是 Tab。还要确认原文页里真的出现了英文术语。
+
+### Word 导出失败
+
+确认依赖已安装：
+
+```powershell
+pip install -r requirements.txt
+```
+
+如果 Web 里显示导出失败，可以去“档案库”点击“重试导出”。
+
+### 纯重绘 PDF 有错位
+
+先用少量页测试。复杂页面需要 `layout_hints.json` 辅助。不要让多模态模型直接生成坐标，只让它判断阅读顺序、块类型和跳过规则。
+
+## 项目结构
+
+```text
+DGtranslate/
+├─ app.py                         Web 界面入口
+├─ translate_pdf.py               PDF 命令行入口
+├─ translate_md.py                Markdown 翻译入口
+├─ translate_docx.py              Word 翻译入口
+├─ rerender_output.py             离线重新生成输出
+├─ config.example.json            命令行配置模板
+├─ glossary.tsv                   默认术语表
+├─ core/                          提取、翻译、进度、术语、重绘管线
+├─ exporters/                     Markdown、HTML、Word、typeset PDF 输出
+├─ webui/                         Web 组件、历史、主题、运行时工具
+├─ experiments/                   多模态 layout hints 实验脚本
+├─ docs/                          设计、路线图、计划和测试说明
+├─ tests/                         自动测试
+├─ uploads/                       Web 上传临时目录
+└─ output/                        默认输出目录
+```
+
+## 开发者检查
 
 运行全部测试：
 
@@ -326,45 +546,16 @@ python test_setup.py --api-key sk-xxx
 python -m pytest
 ```
 
-当前测试覆盖导入兼容、页码解析、术语匹配、进度文件、输出清理、标题样式、离线重排等核心逻辑。
-
-## 常见问题
-
-### Web 怎么启动？
-
-使用：
+语法检查：
 
 ```powershell
-python -m streamlit run app.py
+python -m py_compile app.py translate_pdf.py rerender_output.py
 ```
 
-不要直接运行 `python app.py`。
-
-### PDF 没有文字怎么办？
-
-先用 OCR 工具把 PDF 转成带文本层的文件，再交给本项目处理。
-
-### 翻译中断怎么办？
-
-直接重新运行同一个任务。程序会读取 `.progress.json` 并跳过已完成页。
-
-### 想只翻译几页怎么办？
-
-命令行使用 `--start` 和 `--end`。注意页码从 0 开始。
-
-示例：只翻译第 1 到第 5 页：
+环境检查：
 
 ```powershell
-python translate_pdf.py "book.pdf" --api-key sk-xxx --start 0 --end 5
-```
-
-### PowerShell 不能激活虚拟环境怎么办？
-
-当前窗口临时放开执行策略：
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
+python test_setup.py
 ```
 
 ## 使用提醒
