@@ -1,6 +1,7 @@
 import json
+import os
 
-from webui.components import make_dossier_id
+from webui.components import _retry_export_from_audit, make_dossier_id
 from webui.components import render_output_history
 from webui.history import (
     collect_output_history,
@@ -91,6 +92,34 @@ def test_collect_output_history_groups_files_by_audit_outputs(tmp_path):
     assert [path.name for path in history[0]["download_files"]] == ["book_cn.docx"]
 
 
+def test_collect_output_history_uses_latest_audit_as_main_entry(tmp_path):
+    output_dir = tmp_path / "output"
+    folder = output_dir / "book_cn"
+    folder.mkdir(parents=True)
+    progress = folder / "book_cn.progress.json"
+    progress.write_text(
+        json.dumps({
+            "metadata": {},
+            "completed_pages": [0],
+            "failed_pages": {},
+            "translations": {"0": "ok"},
+        }),
+        encoding="utf-8",
+    )
+    old_audit = folder / "book_cn_old_audit.json"
+    new_audit = folder / "book_cn_new_audit.json"
+    write_audit_record(old_audit, {"dossier_id": "DG-OLD", "outputs": [progress.name]})
+    write_audit_record(new_audit, {"dossier_id": "DG-NEW", "outputs": [progress.name]})
+    os.utime(old_audit, (1_700_000_000, 1_700_000_000))
+    os.utime(new_audit, (1_700_000_100, 1_700_000_100))
+
+    history = collect_output_history(output_dir)
+
+    assert len(history) == 1
+    assert history[0]["audit"]["dossier_id"] == "DG-NEW"
+    assert [path.name for path in history[0]["older_audits"]] == ["book_cn_old_audit.json"]
+
+
 def test_history_omits_failed_metric_when_there_are_no_failures(tmp_path, monkeypatch):
     output_dir = tmp_path / "output"
     folder = output_dir / "book_cn"
@@ -128,3 +157,54 @@ def test_history_omits_failed_metric_when_there_are_no_failures(tmp_path, monkey
     render_output_history(output_dir)
 
     assert ("失败页", "0") not in calls
+
+
+def test_retry_export_from_audit_reuses_progress_and_updates_audit(tmp_path, monkeypatch):
+    folder = tmp_path / "book_cn"
+    folder.mkdir()
+    progress = folder / "book_cn.progress.json"
+    progress.write_text(
+        json.dumps({
+            "translations": {"0": "正文。"},
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    audit_path = folder / "book_cn_audit.json"
+    write_audit_record(audit_path, {
+        "dossier_id": "DG-RETRY",
+        "source_file": "book.pdf",
+        "status": "export_failed",
+        "formats": ["html"],
+        "progress_path": str(progress),
+        "output_base": str(folder / "book_cn"),
+        "output_options": {"columns": 1},
+        "retryable_export": True,
+        "export_errors": ["html failed"],
+        "outputs": [],
+    })
+    calls = []
+
+    def fake_rerender(**kwargs):
+        calls.append(kwargs)
+        html_path = folder / "book_cn.html"
+        html_path.write_text("<html></html>", encoding="utf-8")
+        return [str(html_path)]
+
+    monkeypatch.setattr("rerender_output.rerender_selected_outputs", fake_rerender)
+
+    written = _retry_export_from_audit({
+        "audit": json.loads(audit_path.read_text(encoding="utf-8")),
+        "audit_path": audit_path,
+        "title": "book_cn",
+        "folder": folder,
+    })
+
+    updated = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert written == [str(folder / "book_cn.html")]
+    assert calls[0]["progress_path"] == str(progress)
+    assert calls[0]["output_formats"] == ["html"]
+    assert calls[0]["columns"] == 1
+    assert updated["status"] == "completed"
+    assert updated["retryable_export"] is False
+    assert updated["export_errors"] == []
+    assert updated["outputs"] == ["book_cn.html"]

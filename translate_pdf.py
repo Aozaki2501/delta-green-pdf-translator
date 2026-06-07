@@ -71,6 +71,7 @@ from core.layout_adapters import (
     build_pdf_output_layout_context,
     merge_output_page_layouts,
 )
+from core.glossary import build_glossary_matcher
 
 from exporters import (
     write_html_output,
@@ -94,7 +95,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                   model="deepseek-v4-pro", start_page=0, end_page=None,
                   output_format="markdown", max_workers=32,
                   provider="deepseek", base_url="https://api.deepseek.com",
-                  retry_failed=False):
+                  retry_failed=False, fuzzy_matching=False):
     print("=" * 60)
     print("  DG TRPG PDF Translator v2.0")
     print("=" * 60)
@@ -142,8 +143,20 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             print()
 
         print(f"Engine: {provider} ({model})")
-        translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
+        glossary_matcher = (
+            build_glossary_matcher(glossary, fuzzy=bool(fuzzy_matching))
+            if glossary else None
+        )
+        translator = Translator(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            stats=stats,
+            glossary_matcher=glossary_matcher,
+        )
         translator.set_glossary(glossary)
+        if glossary and fuzzy_matching:
+            print("   Fuzzy glossary matching: enabled")
         print()
 
         progress_file = output_base + ".progress.json"
@@ -331,17 +344,14 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         if output_format in ("html", "both", "all"):
             html_output = output_base + ".html"
             print(f"  生成 HTML: {html_output}")
-            try:
-                write_html_output(
-                    translated_pages_sorted,
-                    html_output,
-                    Path(pdf_path).stem,
-                    source_page_labels=source_page_labels,
-                    page_layouts=page_layouts,
-                )
-                print("   ✅ HTML 输出完成")
-            except Exception as e:
-                print(f"   ❌ HTML 输出失败: {e}")
+            write_html_output(
+                translated_pages_sorted,
+                html_output,
+                Path(pdf_path).stem,
+                source_page_labels=source_page_labels,
+                page_layouts=page_layouts,
+            )
+            print("   ✅ HTML 输出完成")
 
         # Markdown output
         if output_format in ("markdown", "both", "all"):
@@ -359,23 +369,19 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         # Word output
         if output_format in ("word", "all"):
             if not HAS_DOCX:
-                print("  ⚠️  Word 输出需要 python-docx，请运行: pip install python-docx")
+                raise RuntimeError("Word 输出需要 python-docx")
             else:
                 docx_output = output_base + ".docx"
                 print(f"  生成 Word 文档: {docx_output}")
-                try:
-                    write_word_output(
-                        translated_pages_sorted,
-                        docx_output,
-                        Path(pdf_path).stem,
-                        source_pages_text=pages_text,
-                        source_page_labels=source_page_labels,
-                        page_layouts=page_layouts,
-                    )
-                    print("   ✓ Word 输出完成")
-
-                except Exception as e:
-                    print(f"   ❌ Word 输出失败: {e}")
+                write_word_output(
+                    translated_pages_sorted,
+                    docx_output,
+                    Path(pdf_path).stem,
+                    source_pages_text=pages_text,
+                    source_page_labels=source_page_labels,
+                    page_layouts=page_layouts,
+                )
+                print("   ✓ Word 输出完成")
 
         page_count = len([t for _, t in translated_pages_sorted if t.strip()])
         print(f"\n  共翻译 {page_count} 页")
@@ -450,6 +456,7 @@ def main():
     parser.add_argument("--start", type=int, default=None, help="起始页码（从0开始）")
     parser.add_argument("--end", type=int, default=None, help="结束页码（不含）")
     parser.add_argument("--retry-failed", action="store_true", help="只重试 progress.json 里记录的失败页")
+    parser.add_argument("--fuzzy-matching", action="store_true", help="启用 OCR 字符替换模糊术语匹配")
 
     args = parser.parse_args()
 
@@ -470,6 +477,7 @@ def main():
     workers = args.workers if args.workers is not None else config.get("workers", 32)
     start_page = args.start if args.start is not None else config.get("start", 0)
     end_page = args.end if args.end is not None else config.get("end")
+    fuzzy_matching = bool(args.fuzzy_matching or config.get("fuzzy_matching", False))
 
     # Validate required params
     if not pdf_path:
@@ -524,6 +532,7 @@ def main():
         output_format=output_format,
         max_workers=workers,
         retry_failed=bool(args.retry_failed or config.get("retry_failed", False)),
+        fuzzy_matching=fuzzy_matching,
     )
 
 

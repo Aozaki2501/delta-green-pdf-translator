@@ -34,6 +34,7 @@ from translate_md import translate_md_file
 from translate_docx import translate_docx_file
 from core.md_extractor import MarkdownExtractor
 from core.docx_extractor import DocxExtractor, HAS_DOCX as HAS_DOCX_LIB
+from core.glossary import build_glossary_matcher
 from core.layout_adapters import build_pdf_output_layout_context, merge_output_page_layouts
 from core.utils import looks_untranslated_page
 
@@ -1588,7 +1589,17 @@ if launch_pressed:
             st.info(f"📚 术语表: {glossary_source} ({len(glossary)} 条)")
         else:
             st.warning("未使用术语表。")
-        translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats)
+        glossary_matcher = (
+            build_glossary_matcher(glossary, fuzzy=bool(fuzzy_matching))
+            if glossary else None
+        )
+        translator = Translator(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            stats=stats,
+            glossary_matcher=glossary_matcher,
+        )
         translator.set_glossary(glossary)
 
         if formats == ["typeset_pdf"]:
@@ -2096,6 +2107,20 @@ if launch_pressed:
 
         # Output & Download
         render_status_flow(active_index=4)
+        output_options = {
+            "markdown_min_chars": 1000,
+            "markdown_max_chars": 1500,
+            "html_min_chars": 1200,
+            "html_max_chars": 1800,
+            "word_min_chars": int(word_min_chars),
+            "word_max_chars": int(word_max_chars),
+            "columns": int(word_columns),
+            "body_font_size": float(word_body_font_size),
+            "line_spacing": float(word_line_spacing),
+            "header_left": word_header_left,
+            "header_right": word_header_right or None,
+            "word_hard_page_breaks": bool(word_hard_page_breaks),
+        }
         diagnostics_path = make_output_path(output_base, "_extraction_report.md")
         with open(diagnostics_path, "w", encoding="utf-8") as f:
             f.write(build_extraction_diagnostics_report(page_diagnostics, pdf_stem))
@@ -2118,6 +2143,7 @@ if launch_pressed:
             )
             generated_files.append(md_path)
 
+        export_errors = []
         if "html" in formats:
             html_path = make_output_path(output_base, ".html")
             try:
@@ -2130,61 +2156,106 @@ if launch_pressed:
                 )
                 generated_files.append(html_path)
             except Exception as e:
-                st.error(f"网页排版输出失败：{e}")
+                export_errors.append(f"网页排版输出失败：{e}")
 
         if "word" in formats:
             if not HAS_DOCX:
-                st.warning("文档排版需要 python-docx，请运行：pip install python-docx")
+                export_errors.append("文档排版需要 python-docx")
             else:
                 docx_path = make_output_path(output_base, ".docx")
-                write_word_output(
-                    translated_pages_sorted,
-                    docx_path,
-                    pdf_stem,
-                    min_chars=int(word_min_chars),
-                    max_chars=int(word_max_chars),
-                    body_font_size=float(word_body_font_size),
-                    line_spacing=float(word_line_spacing),
-                    columns=int(word_columns),
-                    header_left=word_header_left,
-                    header_right=word_header_right or None,
-                    hard_page_breaks=bool(word_hard_page_breaks),
-                    source_pages_text=pages_text,
-                    source_page_labels=source_page_labels,
-                    page_layouts=page_layouts,
-                )
-                generated_files.append(docx_path)
+                try:
+                    write_word_output(
+                        translated_pages_sorted,
+                        docx_path,
+                        pdf_stem,
+                        min_chars=int(word_min_chars),
+                        max_chars=int(word_max_chars),
+                        body_font_size=float(word_body_font_size),
+                        line_spacing=float(word_line_spacing),
+                        columns=int(word_columns),
+                        header_left=word_header_left,
+                        header_right=word_header_right or None,
+                        hard_page_breaks=bool(word_hard_page_breaks),
+                        source_pages_text=pages_text,
+                        source_page_labels=source_page_labels,
+                        page_layouts=page_layouts,
+                    )
+                    generated_files.append(docx_path)
+                except Exception as e:
+                    export_errors.append(f"文档排版输出失败：{e}")
 
-        audit_record = {
-            "dossier_id": dossier_id,
-            "source_file": pdf_file.name,
-            "source_sha256": source_digest,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
-            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-            "status": "completed" if not failed_pages else "completed_with_failures",
-            "provider": provider,
-            "model": model,
-            "page_range": f"{start_page + 1}-{end_page}",
-            "formats": formats,
-            "completed_pages": len(translated_pages_sorted),
-            "failed_pages": failed_pages,
-            "glossary": Path(glossary_path).name if glossary_path else "",
-            "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
-        }
-        write_audit_record(audit_path, audit_record)
-        generated_files.append(str(audit_path))
-        render_status_flow(active_index=5, failed=bool(failed_pages))
-        render_completion_stamp("待校对" if failed_pages else "已归档")
-        final_audit_items = {
-            "档案号": dossier_id,
-            "完成页": len(translated_pages_sorted),
-            "成品数": len(existing_output_files(generated_files, final_only=True)),
-        }
-        if failed_pages:
-            final_audit_items["失败页"] = ", ".join(map(str, failed_pages[:12]))
-        render_audit_grid(final_audit_items)
-        render_downloads(generated_files)
-        extractor.close()
+        if export_errors:
+            audit_record = {
+                "dossier_id": dossier_id,
+                "source_file": pdf_file.name,
+                "source_path": pdf_path,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "export_failed",
+                "provider": provider,
+                "model": model,
+                "page_range": f"{start_page + 1}-{end_page}",
+                "formats": formats,
+                "completed_pages": len(translated_pages_sorted),
+                "failed_pages": failed_pages,
+                "glossary": Path(glossary_path).name if glossary_path else "",
+                "progress_path": progress_file,
+                "output_base": output_base,
+                "output_options": output_options,
+                "retryable_export": True,
+                "export_errors": export_errors,
+                "outputs": [],
+            }
+            write_audit_record(audit_path, audit_record)
+            generated_files.append(str(audit_path))
+            render_status_flow(active_index=4, failed=True)
+            st.error("导出失败，已拦住成品。译文进度已保留，可在档案库里点击“重试导出”。")
+            render_audit_grid({
+                "档案号": dossier_id,
+                "完成页": len(translated_pages_sorted),
+                "导出错误": len(export_errors),
+            })
+            for message in export_errors[:5]:
+                st.error(message)
+            extractor.close()
+        else:
+            audit_record = {
+                "dossier_id": dossier_id,
+                "source_file": pdf_file.name,
+                "source_path": pdf_path,
+                "source_sha256": source_digest,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(run_started_at)),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": "completed" if not failed_pages else "completed_with_failures",
+                "provider": provider,
+                "model": model,
+                "page_range": f"{start_page + 1}-{end_page}",
+                "formats": formats,
+                "completed_pages": len(translated_pages_sorted),
+                "failed_pages": failed_pages,
+                "glossary": Path(glossary_path).name if glossary_path else "",
+                "progress_path": progress_file,
+                "output_base": output_base,
+                "output_options": output_options,
+                "retryable_export": False,
+                "export_errors": [],
+                "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
+            }
+            write_audit_record(audit_path, audit_record)
+            generated_files.append(str(audit_path))
+            render_status_flow(active_index=5, failed=bool(failed_pages))
+            render_completion_stamp("待校对" if failed_pages else "已归档")
+            final_audit_items = {
+                "档案号": dossier_id,
+                "完成页": len(translated_pages_sorted),
+                "成品数": len(existing_output_files(generated_files, final_only=True)),
+            }
+            if failed_pages:
+                final_audit_items["失败页"] = ", ".join(map(str, failed_pages[:12]))
+            render_audit_grid(final_audit_items)
+            render_downloads(generated_files)
+            extractor.close()
 
 with st.expander("档案库", expanded=False):
     render_output_history(APP_DIR / "output")

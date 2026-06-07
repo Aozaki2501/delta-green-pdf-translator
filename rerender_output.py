@@ -19,6 +19,41 @@ from exporters.markdown import write_markdown_output
 from exporters.word import HAS_DOCX, write_word_output
 
 
+READING_OUTPUT_FORMATS = ("markdown", "html", "word")
+
+
+def output_format_to_formats(output_format: str) -> list[str]:
+    if output_format not in SUPPORTED_OUTPUT_FORMATS:
+        raise ValueError(f"不支持的输出格式：{output_format}")
+    if output_format == "markdown":
+        return ["markdown"]
+    if output_format == "html":
+        return ["html"]
+    if output_format == "word":
+        return ["word"]
+    if output_format == "both":
+        return ["html", "markdown"]
+    return ["html", "markdown", "word"]
+
+
+def normalize_output_formats(output_formats) -> list[str]:
+    if isinstance(output_formats, str):
+        return output_format_to_formats(output_formats)
+    if not output_formats:
+        raise ValueError("没有指定要重新导出的格式")
+
+    selected = []
+    for item in output_formats:
+        value = str(item).strip()
+        if value == "typeset_pdf":
+            raise ValueError("普通离线重排不支持纯重绘 PDF")
+        if value not in READING_OUTPUT_FORMATS:
+            raise ValueError(f"不支持的输出格式：{value}")
+        if value not in selected:
+            selected.append(value)
+    return selected
+
+
 def load_progress_translations(progress_path: str) -> list[tuple[int, str]]:
     with open(progress_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -78,16 +113,23 @@ def detect_pdf_page_context(pdf_path: str | None, translated_pages: list[tuple[i
     return layouts, pages_text, page_labels
 
 
-def rerender_outputs(progress_path: str, output_base: str | None = None,
-                     pdf_path: str | None = None, output_format: str = "all",
-                     title: str | None = None, markdown_min_chars: int = 1000,
-                     markdown_max_chars: int = 1500, html_min_chars: int = 1200,
-                     html_max_chars: int = 1800, word_min_chars: int = 1000,
-                     word_max_chars: int = 1500, columns: int = 2,
-                     word_hard_page_breaks: bool = False) -> list[str]:
-    if output_format not in SUPPORTED_OUTPUT_FORMATS:
-        raise ValueError(f"不支持的输出格式：{output_format}")
-
+def rerender_selected_outputs(progress_path: str, output_base: str | None = None,
+                              pdf_path: str | None = None,
+                              output_formats=None,
+                              title: str | None = None,
+                              markdown_min_chars: int = 1000,
+                              markdown_max_chars: int = 1500,
+                              html_min_chars: int = 1200,
+                              html_max_chars: int = 1800,
+                              word_min_chars: int = 1000,
+                              word_max_chars: int = 1500,
+                              columns: int = 2,
+                              body_font_size: float = 12.0,
+                              line_spacing: float = 1.5,
+                              header_left: str = "绿色三角洲",
+                              header_right: str | None = None,
+                              word_hard_page_breaks: bool = False) -> list[str]:
+    selected_formats = normalize_output_formats("all" if output_formats is None else output_formats)
     translated_pages = load_progress_translations(progress_path)
     base = infer_output_base(progress_path, output_base)
     ensure_output_parent(base + ".tmp")
@@ -98,7 +140,7 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
     )
 
     written = []
-    if output_format in ("html", "both", "all"):
+    if "html" in selected_formats:
         html_path = base + ".html"
         write_html_output(
             translated_pages,
@@ -112,7 +154,7 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
         )
         written.append(html_path)
 
-    if output_format in ("markdown", "both", "all"):
+    if "markdown" in selected_formats:
         md_path = base + ".md"
         write_markdown_output(
             translated_pages,
@@ -124,7 +166,7 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
         )
         written.append(md_path)
 
-    if output_format in ("word", "all"):
+    if "word" in selected_formats:
         if not HAS_DOCX:
             raise RuntimeError("Word 输出需要安装 python-docx")
         docx_path = base + ".docx"
@@ -134,7 +176,11 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
             doc_title,
             min_chars=word_min_chars,
             max_chars=word_max_chars,
+            body_font_size=body_font_size,
+            line_spacing=line_spacing,
             columns=columns,
+            header_left=header_left,
+            header_right=header_right,
             hard_page_breaks=word_hard_page_breaks,
             source_pages_text=pages_text,
             source_page_labels=source_page_labels,
@@ -143,6 +189,38 @@ def rerender_outputs(progress_path: str, output_base: str | None = None,
         written.append(docx_path)
 
     return written
+
+
+def rerender_outputs(progress_path: str, output_base: str | None = None,
+                     pdf_path: str | None = None, output_format: str = "all",
+                     title: str | None = None, markdown_min_chars: int = 1000,
+                     markdown_max_chars: int = 1500, html_min_chars: int = 1200,
+                     html_max_chars: int = 1800, word_min_chars: int = 1000,
+                     word_max_chars: int = 1500, columns: int = 2,
+                     body_font_size: float = 12.0,
+                     line_spacing: float = 1.5,
+                     header_left: str = "绿色三角洲",
+                     header_right: str | None = None,
+                     word_hard_page_breaks: bool = False) -> list[str]:
+    return rerender_selected_outputs(
+        progress_path=progress_path,
+        output_base=output_base,
+        pdf_path=pdf_path,
+        output_formats=output_format,
+        title=title,
+        markdown_min_chars=markdown_min_chars,
+        markdown_max_chars=markdown_max_chars,
+        html_min_chars=html_min_chars,
+        html_max_chars=html_max_chars,
+        word_min_chars=word_min_chars,
+        word_max_chars=word_max_chars,
+        columns=columns,
+        body_font_size=body_font_size,
+        line_spacing=line_spacing,
+        header_left=header_left,
+        header_right=header_right,
+        word_hard_page_breaks=word_hard_page_breaks,
+    )
 
 
 def main():

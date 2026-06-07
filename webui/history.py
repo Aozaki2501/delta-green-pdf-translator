@@ -167,24 +167,26 @@ def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict[str, A
         progress_files = [path for path in files if path.name.endswith(".progress.json")]
         audit_files = [path for path in files if path.name.endswith("_audit.json")]
         if audit_files:
-            for audit_path in audit_files:
-                audit = read_json_file(audit_path)
-                audit_files_for_entry = _files_for_audit(folder, audit_path, files)
-                entry_progress_files = [
-                    path for path in audit_files_for_entry
-                    if path.name.endswith(".progress.json")
-                ] or progress_files
-                entries.append({
-                    "title": folder.name,
-                    "folder": folder,
-                    "files": audit_files_for_entry,
-                    "download_files": [path for path in audit_files_for_entry if is_final_output_file(path)],
-                    "mtime": audit_path.stat().st_mtime,
-                    "size": sum(path.stat().st_size for path in audit_files_for_entry),
-                    "assets": _asset_count(folder),
-                    "progress": read_progress_summary(entry_progress_files[0]) if entry_progress_files else {},
-                    "audit": audit,
-                })
+            audit_path = audit_files[0]
+            audit = read_json_file(audit_path)
+            audit_files_for_entry = _files_for_audit(folder, audit_path, files)
+            entry_progress_files = [
+                path for path in audit_files_for_entry
+                if path.name.endswith(".progress.json")
+            ] or progress_files
+            entries.append({
+                "title": folder.name,
+                "folder": folder,
+                "files": audit_files_for_entry,
+                "download_files": [path for path in audit_files_for_entry if is_final_output_file(path)],
+                "mtime": audit_path.stat().st_mtime,
+                "size": sum(path.stat().st_size for path in audit_files_for_entry),
+                "assets": _asset_count(folder),
+                "progress": read_progress_summary(entry_progress_files[0]) if entry_progress_files else {},
+                "audit": audit,
+                "audit_path": audit_path,
+                "older_audits": audit_files[1:],
+            })
         else:
             entries.append({
                 "title": folder.name,
@@ -196,6 +198,7 @@ def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict[str, A
                 "assets": _asset_count(folder),
                 "progress": read_progress_summary(progress_files[0]) if progress_files else {},
                 "audit": {},
+                "audit_path": None,
             })
 
     loose_files = sorted(
@@ -216,6 +219,7 @@ def collect_output_history(output_dir: Path, limit: int = 8) -> list[dict[str, A
             "assets": 0,
             "progress": read_progress_summary(progress_files[0]) if progress_files else {},
             "audit": read_json_file(audit_files[0]) if audit_files else {},
+            "audit_path": audit_files[0] if audit_files else None,
         })
 
     return sorted(entries, key=lambda item: item["mtime"], reverse=True)[:limit]
