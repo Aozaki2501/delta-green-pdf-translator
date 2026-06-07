@@ -1,7 +1,7 @@
-"""Ask Gemini to review one PDF page and propose layout_hints.json.
+"""Ask a multimodal model to review one PDF page and propose layout_hints.json.
 
 This is an experiment script. It does not run as part of the normal pipeline.
-It sends a rendered page image plus local PyMuPDF block facts to Gemini, then
+It sends a rendered page image plus local PyMuPDF block facts to a model, then
 validates the returned hints against page_content.json before writing them.
 """
 
@@ -23,9 +23,14 @@ from core.layout_hints import LAYOUT_HINTS_SCHEMA_VERSION, LayoutHints
 from core.typeset_models import PageContentDocument, PageStructureDocument
 
 
+DEFAULT_PROVIDER = "gemini"
 DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_OPENAI_COMPATIBLE_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_COMPATIBLE_BASE_URL = "https://api.openai.com/v1"
 GEMINI_RETRY_ATTEMPTS = 3
 GEMINI_RETRY_DELAY_SECONDS = 3
+
+
 def render_page_png_base64(pdf_path: Path, page_index: int, dpi: int) -> str:
     doc = pymupdf.open(str(pdf_path))
     try:
@@ -240,7 +245,96 @@ def call_gemini_layout_review(
     return json.loads(text)
 
 
+def call_openai_compatible_layout_review(
+    api_key: str,
+    base_url: str,
+    model: str,
+    prompt: str,
+    image_base64: str,
+    timeout: int,
+) -> dict:
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError("缺少 OpenAI SDK：请先安装依赖 openai。") from exc
+
+    client_kwargs = {"api_key": api_key, "timeout": timeout}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    client = OpenAI(**client_kwargs)
+
+    response = None
+    for attempt in range(1, GEMINI_RETRY_ATTEMPTS + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_base64}",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                temperature=0,
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+            )
+            break
+        except Exception as exc:
+            if attempt >= GEMINI_RETRY_ATTEMPTS or not is_retryable_layout_review_error(exc):
+                raise make_layout_review_api_error(exc, "OpenAI 兼容接口", model, attempt) from exc
+            time.sleep(GEMINI_RETRY_DELAY_SECONDS * attempt)
+
+    if not response or not response.choices:
+        raise RuntimeError("OpenAI 兼容接口没有返回 choices")
+    text = response.choices[0].message.content or ""
+    if not text.strip():
+        raise RuntimeError("OpenAI 兼容接口没有返回 JSON 文本")
+    return json.loads(text)
+
+
+def call_layout_review_api(
+    provider: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    image_base64: str,
+    timeout: int,
+    base_url: str | None = None,
+) -> dict:
+    normalized = (provider or DEFAULT_PROVIDER).strip().lower()
+    if normalized == "gemini":
+        return call_gemini_layout_review(
+            api_key=api_key,
+            model=model,
+            prompt=prompt,
+            image_base64=image_base64,
+            timeout=timeout,
+        )
+    if normalized in {"openai", "openai-compatible", "compatible"}:
+        return call_openai_compatible_layout_review(
+            api_key=api_key,
+            base_url=base_url or DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+            model=model,
+            prompt=prompt,
+            image_base64=image_base64,
+            timeout=timeout,
+        )
+    raise ValueError(f"不支持的 layout hints 审稿接口：{provider}")
+
+
 def is_retryable_gemini_error(exc: Exception) -> bool:
+    return is_retryable_layout_review_error(exc)
+
+
+def is_retryable_layout_review_error(exc: Exception) -> bool:
     message = str(exc).lower()
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     return (
@@ -261,21 +355,30 @@ def make_gemini_sdk_error(
     model: str,
     attempts: int = GEMINI_RETRY_ATTEMPTS,
 ) -> RuntimeError:
+    return make_layout_review_api_error(exc, "Gemini", model, attempts)
+
+
+def make_layout_review_api_error(
+    exc: Exception,
+    provider_label: str,
+    model: str,
+    attempts: int = GEMINI_RETRY_ATTEMPTS,
+) -> RuntimeError:
     message = str(exc)
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     if code == 503 or "503" in message or "UNAVAILABLE" in message:
         return RuntimeError(
-            f"Gemini 模型当前繁忙：{model}。"
-            "这是 Gemini 服务端返回的 503，不是本地排版错误。"
+            f"{provider_label} 模型当前繁忙：{model}。"
+            f"这是 {provider_label} 服务端返回的 503，不是本地排版错误。"
             f"已自动重试 {attempts} 次，仍然失败。"
-            "请稍后重试，或在页面里手动换一个可用 Gemini 模型。"
+            "请稍后重试，或手动换一个可用模型。"
         )
-    if is_retryable_gemini_error(exc):
+    if is_retryable_layout_review_error(exc):
         return RuntimeError(
-            f"Gemini API 临时请求失败：{message}。"
+            f"{provider_label} API 临时请求失败：{message}。"
             f"已自动重试 {attempts} 次，仍然失败。"
         )
-    return RuntimeError(f"Gemini API 请求失败：{message}")
+    return RuntimeError(f"{provider_label} API 请求失败：{message}")
 
 
 def generate_layout_hints_for_pages(
@@ -286,15 +389,19 @@ def generate_layout_hints_for_pages(
     output_path: str | Path,
     api_key: str,
     model: str = DEFAULT_MODEL,
+    provider: str = DEFAULT_PROVIDER,
+    base_url: str | None = None,
     dpi: int = 144,
     timeout: int = 90,
     progress_callback=None,
 ) -> Path:
     """Generate and validate one layout_hints.json file for selected pages."""
     if not api_key:
-        raise ValueError("缺少 Gemini API Key")
+        raise ValueError("缺少 layout hints 审稿 API Key")
+    if not model or not str(model).strip():
+        raise ValueError("缺少 layout hints 审稿模型名")
     if not page_indexes:
-        raise ValueError("Gemini 审稿页码不能为空")
+        raise ValueError("layout hints 审稿页码不能为空")
 
     source_pdf = structure.source_pdf
     pages: dict[str, dict] = {}
@@ -304,22 +411,24 @@ def generate_layout_hints_for_pages(
         page_summary = build_page_block_summary(structure, content, page_index)
         image_base64 = render_page_png_base64(pdf, page_index, dpi)
         prompt = build_prompt(source_pdf, page_summary)
-        hints_data = call_gemini_layout_review(
+        hints_data = call_layout_review_api(
+            provider=provider,
             api_key=api_key,
             model=model,
             prompt=prompt,
             image_base64=image_base64,
             timeout=timeout,
+            base_url=base_url,
         )
         try:
             hints = LayoutHints.from_json(json.dumps(hints_data, ensure_ascii=False))
         except ValueError as exc:
-            raise ValueError(f"Gemini 输出 layout_hints 格式错误：{exc}") from exc
+            raise ValueError(f"模型输出 layout_hints 格式错误：{exc}") from exc
         page_hint = hints.get_page_hint(page_index)
         if page_hint is None:
             returned_keys = sorted((hints_data.get("pages") or {}).keys())
             raise ValueError(
-                f"Gemini 输出缺少第 {page_index} 页 hints；"
+                f"模型输出缺少第 {page_index} 页 hints；"
                 f"实际返回页码键：{returned_keys}"
             )
         pages[str(page_index)] = _page_hint_to_dict(page_hint)
@@ -381,7 +490,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--page-content", required=True, help="page_content.json 路径")
     parser.add_argument("--page", type=int, required=True, help="0-based 页码")
     parser.add_argument("--output", required=True, help="输出 layout_hints.json 路径")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--provider", default=DEFAULT_PROVIDER, choices=["gemini", "openai-compatible"])
+    parser.add_argument("--base-url", default=os.environ.get("LAYOUT_REVIEW_BASE_URL", ""))
+    parser.add_argument("--model", default="")
     parser.add_argument("--api-key", default=os.environ.get("GEMINI_API_KEY", ""))
     parser.add_argument("--dpi", type=int, default=144)
     parser.add_argument("--timeout", type=int, default=90)
@@ -391,7 +502,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if not args.api_key:
-        raise ValueError("缺少 Gemini API Key：请设置 GEMINI_API_KEY 或传入 --api-key")
+        raise ValueError("缺少审稿 API Key：请设置环境变量或传入 --api-key")
+
+    model = args.model.strip()
+    if not model:
+        model = DEFAULT_MODEL if args.provider == "gemini" else DEFAULT_OPENAI_COMPATIBLE_MODEL
 
     pdf_path = Path(args.pdf)
     structure = PageStructureDocument.from_json(
@@ -407,7 +522,9 @@ def main() -> None:
         page_indexes=[args.page],
         output_path=args.output,
         api_key=args.api_key,
-        model=args.model,
+        model=model,
+        provider=args.provider,
+        base_url=args.base_url.strip() or None,
         dpi=args.dpi,
         timeout=args.timeout,
     )

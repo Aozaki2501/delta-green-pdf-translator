@@ -127,7 +127,7 @@ Web 界面里这样使用：
 1. 上传 PDF。
 2. 输出格式只选择“纯重绘 PDF（_typeset）”。
 3. 如有需要，在“纯重绘排版配置”里填写中文字体。
-4. 如果已经有 `layout_hints.json`，填入它的路径；如果要让 Gemini 帮忙审稿，勾选“自动生成 layout hints（Gemini）”并填写 Gemini Key。
+4. 如果已经有 `layout_hints.json`，填入它的路径；如果要让模型帮忙审稿，勾选“自动生成 layout hints”，并选择 Gemini 官方接口或 OpenAI 兼容多模态接口。
 5. 点击开始任务。
 
 注意：
@@ -135,7 +135,7 @@ Web 界面里这样使用：
 - 纯重绘 PDF 必须单独运行，不要和 Markdown、HTML、Word 一起勾选。
 - `layout_hints.json` 只负责修正阅读顺序、分栏和跳过块，不负责生成坐标、字号或最终译文。
 - 手动填写 `layout_hints.json` 时路径或块 ID 错误会直接失败，避免生成看似正常但实际错位的 PDF。
-- Gemini 自动审稿会调用外部 Gemini API，适合先在少量疑难页上试。
+- 自动审稿会调用外部多模态 API，适合先在少量疑难页上试。Gemini 免费额度不够时，可以改用 OpenAI 兼容多模态接口，填写对应 Base URL、模型和 Key。
 
 ## Web 使用流程
 
@@ -189,6 +189,23 @@ Web 界面支持选择性重翻。页码可以写成：
   "start": 0,
   "end": null
 }
+```
+
+翻译 API 使用 OpenAI 兼容格式。换服务时通常只改三项：
+
+```json
+{
+  "api_key": "sk-xxx",
+  "base_url": "https://你的接口地址/v1",
+  "model": "你的翻译模型"
+}
+```
+
+纯重绘里的自动 layout hints 需要多模态模型。命令行实验脚本支持：
+
+```text
+python experiments/gemini_layout_review.py --provider gemini --api-key AIza... --model gemini-2.5-flash ...
+python experiments/gemini_layout_review.py --provider openai-compatible --api-key sk-xxx --base-url https://你的接口地址/v1 --model 你的视觉模型 ...
 ```
 
 命令行参数会覆盖配置文件中的同名字段。

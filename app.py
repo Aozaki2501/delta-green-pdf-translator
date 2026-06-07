@@ -1060,6 +1060,7 @@ with st.sidebar:
     )
 
     with st.expander("高级任务控制", expanded=False):
+        base_url = st.text_input("接口地址", value=base_url, placeholder="https://api.deepseek.com")
         model = st.text_input("模型名称", value=model)
         workers = st.slider("并发数", 1, 64, 32, help="并行 API 调用数量")
         rate_limit = st.number_input(
@@ -1102,9 +1103,11 @@ with st.sidebar:
     typeset_font_family = "Noto Serif SC"
     typeset_layout_hints_path = ""
     typeset_auto_layout_hints = False
-    typeset_gemini_api_key = ""
-    typeset_gemini_model = "gemini-2.5-flash"
-    typeset_gemini_pages = ""
+    typeset_layout_review_provider = "gemini"
+    typeset_layout_review_api_key = ""
+    typeset_layout_review_base_url = "https://api.openai.com/v1"
+    typeset_layout_review_model = "gemini-2.5-flash"
+    typeset_layout_review_pages = ""
     if "typeset_pdf" in formats:
         with st.expander("纯重绘排版配置", expanded=False):
             typeset_font_family = st.text_input(
@@ -1119,22 +1122,34 @@ with st.sidebar:
                 help="可选。填写后，纯重绘 PDF 会按该文件修正阅读顺序、分栏和跳过块。",
             )
             typeset_auto_layout_hints = st.checkbox(
-                "自动生成 layout hints（Gemini）",
+                "自动生成 layout hints",
                 value=False,
-                help="可选。自动让 Gemini 审稿页面布局，并把结果用于本次纯重绘 PDF。",
+                help="可选。让多模态模型审稿页面布局，并把结果用于本次纯重绘 PDF。",
             )
             if typeset_auto_layout_hints:
-                typeset_gemini_api_key = st.text_input(
-                    "Gemini API Key",
+                typeset_layout_review_provider = st.selectbox(
+                    "审稿接口",
+                    ["gemini", "openai-compatible"],
+                    format_func=lambda value: "Gemini 官方接口" if value == "gemini" else "OpenAI 兼容多模态接口",
+                )
+                typeset_layout_review_api_key = st.text_input(
+                    "审稿 API Key",
                     type="password",
-                    placeholder="AIza...",
+                    placeholder="AIza... 或 sk-...",
                 )
-                typeset_gemini_model = st.text_input(
-                    "Gemini 模型",
-                    value=typeset_gemini_model,
+                if typeset_layout_review_provider == "openai-compatible":
+                    typeset_layout_review_base_url = st.text_input(
+                        "审稿 Base URL",
+                        value=typeset_layout_review_base_url,
+                        placeholder="https://api.openai.com/v1",
+                    )
+                    typeset_layout_review_model = "gpt-4o-mini"
+                typeset_layout_review_model = st.text_input(
+                    "审稿模型",
+                    value=typeset_layout_review_model,
                 )
-                typeset_gemini_pages = st.text_input(
-                    "Gemini 审稿页码",
+                typeset_layout_review_pages = st.text_input(
+                    "审稿页码",
                     value="",
                     placeholder="留空表示本次页码范围；如：1, 3-5",
                     help="从 1 开始，建议先选少量问题页测试。",
@@ -1294,9 +1309,9 @@ if launch_pressed:
         and "typeset_pdf" in formats
         and typeset_auto_layout_hints
         and not typeset_layout_hints_path.strip()
-        and not typeset_gemini_api_key.strip()
+        and not typeset_layout_review_api_key.strip()
     ):
-        st.error("✗ 自动生成 layout hints 需要填写 Gemini API Key")
+        st.error("✗ 自动生成 layout hints 需要填写审稿 API Key")
     elif source_type in ("markdown", "docx"):
         # ============================================================
         # MARKDOWN / DOCX TRANSLATION FLOW
@@ -1704,32 +1719,34 @@ if launch_pressed:
             layout_hints_generator = None
             if typeset_auto_layout_hints and not layout_hints_path:
                 try:
-                    if typeset_gemini_pages.strip():
-                        gemini_pages = parse_page_selection(typeset_gemini_pages, total)
+                    if typeset_layout_review_pages.strip():
+                        review_pages = parse_page_selection(typeset_layout_review_pages, total)
                     else:
-                        gemini_pages = set(range(start_page, end_page))
+                        review_pages = set(range(start_page, end_page))
                 except ValueError as e:
-                    st.error(f"Gemini 审稿页码格式错误：{e}")
+                    st.error(f"审稿页码格式错误：{e}")
                     extractor.close()
                     st.stop()
-                gemini_pages = sorted(p for p in gemini_pages if start_page <= p < end_page)
-                if not gemini_pages:
-                    st.error("Gemini 审稿页码不在本次 PDF 页码范围内。")
+                review_pages = sorted(p for p in review_pages if start_page <= p < end_page)
+                if not review_pages:
+                    st.error("审稿页码不在本次 PDF 页码范围内。")
                     extractor.close()
                     st.stop()
 
                 def layout_hints_generator(structure, content, output_path):
                     from experiments.gemini_layout_review import generate_layout_hints_for_pages
 
-                    st.info(f"正在生成 layout hints：{len(gemini_pages)} 页")
+                    st.info(f"正在生成 layout hints：{len(review_pages)} 页")
                     return generate_layout_hints_for_pages(
                         pdf_path=pdf_path,
                         structure=structure,
                         content=content,
-                        page_indexes=gemini_pages,
+                        page_indexes=review_pages,
                         output_path=output_path,
-                        api_key=typeset_gemini_api_key.strip(),
-                        model=typeset_gemini_model.strip() or "gemini-2.5-flash",
+                        api_key=typeset_layout_review_api_key.strip(),
+                        model=typeset_layout_review_model.strip(),
+                        provider=typeset_layout_review_provider,
+                        base_url=typeset_layout_review_base_url.strip() or None,
                         progress_callback=lambda done, total_count, page_index: update_typeset_progress(
                             "layout_hints",
                             done,

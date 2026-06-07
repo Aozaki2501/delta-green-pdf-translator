@@ -1,6 +1,6 @@
 {
     "pdf": "THE MILLENNIUM.pdf",
-    "api_key": "sk-在这里填入你的DeepSeek API Key",
+    "api_key": "sk-在这里填入你的 API Key",
     "glossary": "glossary.tsv",
     "provider": "deepseek",
     "base_url": "https://api.deepseek.com",

@@ -18,9 +18,12 @@ from core.typeset_models import (
 )
 from experiments.gemini_layout_review import (
     DEFAULT_MODEL,
+    DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+    DEFAULT_PROVIDER,
     _extract_response_text,
     build_page_block_summary,
     build_prompt,
+    call_layout_review_api,
     generate_layout_hints_for_pages,
     is_retryable_gemini_error,
     layout_hints_response_schema,
@@ -95,7 +98,60 @@ def test_response_schema_requires_layout_hints_shape():
 
 
 def test_default_gemini_model_uses_stable_flash():
+    assert DEFAULT_PROVIDER == "gemini"
     assert DEFAULT_MODEL == "gemini-2.5-flash"
+
+
+def test_openai_compatible_review_routes_with_base_url(monkeypatch):
+    captured = {}
+
+    def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"schema_version": 1, "source_pdf": "book.pdf", "pages": {}}
+
+    monkeypatch.setattr(
+        "experiments.gemini_layout_review.call_openai_compatible_layout_review",
+        fake_call,
+    )
+
+    result = call_layout_review_api(
+        provider="openai-compatible",
+        api_key="key",
+        model="vision-model",
+        prompt="prompt",
+        image_base64="image",
+        timeout=30,
+        base_url="https://example.test/v1",
+    )
+
+    assert result["schema_version"] == 1
+    assert captured["base_url"] == "https://example.test/v1"
+    assert captured["model"] == "vision-model"
+    assert captured["image_base64"] == "image"
+
+
+def test_openai_compatible_review_uses_default_base_url(monkeypatch):
+    captured = {}
+
+    def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"schema_version": 1, "source_pdf": "book.pdf", "pages": {}}
+
+    monkeypatch.setattr(
+        "experiments.gemini_layout_review.call_openai_compatible_layout_review",
+        fake_call,
+    )
+
+    call_layout_review_api(
+        provider="openai-compatible",
+        api_key="key",
+        model="vision-model",
+        prompt="prompt",
+        image_base64="image",
+        timeout=30,
+    )
+
+    assert captured["base_url"] == DEFAULT_OPENAI_COMPATIBLE_BASE_URL
 
 
 def test_gemini_503_error_is_actionable():
@@ -296,7 +352,7 @@ def test_invalid_gemini_skip_blocks_shape_reports_model_output_error(tmp_path, m
         },
     )
 
-    with pytest.raises(ValueError, match="Gemini 输出 layout_hints 格式错误"):
+    with pytest.raises(ValueError, match="模型输出 layout_hints 格式错误"):
         generate_layout_hints_for_pages(
             pdf_path=pdf_path,
             structure=structure,
