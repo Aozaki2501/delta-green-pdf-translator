@@ -399,3 +399,13 @@
 - 已完成：新增 `docs/plans/EXPORT_RETRY_AND_OUTPUT_HEALTH_PLAN.md` 记录计划和进度。
 - 已验证：相关测试 39 个通过；全量测试 458 个通过。
 - 关键决定：大文件拆分暂不混入本轮，等行为稳定后再按小步拆分。
+
+# 大文件拆分第一轮
+
+- 目标：降低 `app.py` 职责混杂，先做低风险搬迁，不改变业务行为。
+- 已完成：新增 `webui/runtime.py`，承接 Web 路径、下载、文件名、时长、HTML 资源包和中文字符检查等运行时小工具。
+- 已完成：`app.py` 的主主题 CSS 已搬到 `webui/theme.py` 的 `render_app_theme()`，`app.py` 只保留调用入口。
+- 已完成：新增 `docs/plans/LARGE_FILE_SPLIT_PLAN.md` 记录拆分原则和进度。
+- 已完成：新增 `tests/test_webui_runtime.py` 覆盖拆出的运行时工具和主题渲染入口。
+- 已验证：相关测试 22 个通过；全量测试 464 个通过。
+- 关键决定：`typeset_html.py` 和 `core/extractor.py` 涉及版面识别/渲染规则，本轮不继续硬拆，避免混入行为变化。
