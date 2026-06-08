@@ -234,6 +234,37 @@ def test_html_renders_quote_table_inside_card():
     assert "| 姓名 | 职务 |" not in html
 
 
+def test_html_does_not_turn_pipe_fragments_into_tables():
+    html = _html_block(
+        "[CARD]\n"
+        "| Tip |\n"
+        "| --- |\n"
+        "Body text.\n"
+        "[/CARD]\n\n"
+        "| Loose row |\n"
+        "More text."
+    )
+
+    assert 'class="aid-table' not in html
+    assert "<h3>Tip</h3>" in html
+    assert "---" not in html
+    assert "Loose row" in html
+
+
+def test_word_segments_require_markdown_table_separator():
+    segments = _split_card_segments(
+        "| Tip |\n"
+        "| --- |\n"
+        "Body text.\n\n"
+        "| Name | Role |\n"
+        "|---|---|\n"
+        "| Bell | Commander |"
+    )
+
+    assert segments[0] == ("normal", "| Tip |\n| --- |\nBody text.")
+    assert segments[1][0] == "table"
+
+
 def test_html_renders_guillemet_lines_as_list():
     html = _html_block("» 第一项\n» 第二项")
 

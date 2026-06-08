@@ -25,6 +25,8 @@ from exporters._shared import (
     _header_title as _shared_header_title,
     _without_image_blocks,
     _looks_like_markdown_table_row,
+    _collect_strict_markdown_table,
+    _strip_single_cell_pipe_fragment,
     _strip_list_marker,
     _strip_quote_prefix,
 )
@@ -357,6 +359,7 @@ def _plain_text(line: str) -> str:
     clean = _strip_quote_prefix(line)
     clean = _normalize_heading_markup(clean)
     clean = _normalize_marker_line(clean)
+    clean = _strip_single_cell_pipe_fragment(clean)
     clean = re.sub(r"\*\*(.+?)\*\*", r"\1", clean)
     clean = re.sub(r"\*(.+?)\*", r"\1", clean)
     return clean.strip()
@@ -422,14 +425,19 @@ def _split_card_segments(text: str):
             segments.append(("card", "\n".join(quote_lines).strip()))
         quote_lines = []
 
-    for raw_line in text.splitlines():
+    raw_lines = text.splitlines()
+    line_index = 0
+    while line_index < len(raw_lines):
+        raw_line = raw_lines[line_index]
         line = _normalize_marker_line(raw_line)
         stripped = line.strip()
         if in_quote and not stripped:
             quote_lines.append("")
+            line_index += 1
             continue
         if in_quote and stripped.startswith(">"):
             quote_lines.append(_strip_quote_prefix(raw_line))
+            line_index += 1
             continue
         if in_quote:
             flush_quote()
@@ -443,52 +451,64 @@ def _split_card_segments(text: str):
             flush_image()
             flush_quote()
             in_full_title = True
+            line_index += 1
             continue
         if line == "[/FULL_WIDTH_TITLE]":
             flush_full_title()
             in_full_title = False
+            line_index += 1
             continue
         if line == "[CARD]":
             flush_normal()
             flush_table()
             flush_quote()
             in_card = True
+            line_index += 1
             continue
         if line == "[/CARD]":
             flush_card()
             in_card = False
+            line_index += 1
             continue
         if line == "[STAT_BLOCK]":
             flush_normal()
             flush_table()
             flush_quote()
             in_stat = True
+            line_index += 1
             continue
         if line == "[/STAT_BLOCK]":
             flush_stat()
             in_stat = False
+            line_index += 1
             continue
         if line == "[IMAGE]":
             flush_normal()
             flush_table()
             flush_quote()
             in_image = True
+            line_index += 1
             continue
         if line == "[/IMAGE]":
             flush_image()
             in_image = False
+            line_index += 1
             continue
         if in_card:
             card_lines.append(raw_line)
+            line_index += 1
             continue
         if in_stat:
             stat_lines.append(raw_line)
+            line_index += 1
             continue
         if in_image:
             image_lines.append(raw_line)
+            line_index += 1
             continue
         if in_full_title:
             full_title_lines.append(raw_line)
+            line_index += 1
             continue
 
         if stripped.startswith(">"):
@@ -496,17 +516,25 @@ def _split_card_segments(text: str):
             flush_table()
             in_quote = True
             quote_lines.append(_strip_quote_prefix(raw_line))
+            line_index += 1
             continue
 
-        # Detect table lines
-        if _is_table_line(line):
-            if not table_lines:
-                flush_normal()
-            table_lines.append(raw_line)
-        else:
-            if table_lines:
-                flush_table()
-            normal_lines.append(raw_line)
+        table_candidate, next_index = _collect_strict_markdown_table(
+            raw_lines,
+            line_index,
+            lambda value: _normalize_marker_line(str(value)),
+        )
+        if table_candidate:
+            flush_normal()
+            table_lines.extend(table_candidate)
+            flush_table()
+            line_index = next_index
+            continue
+
+        if table_lines:
+            flush_table()
+        normal_lines.append(raw_line)
+        line_index += 1
 
     if in_full_title:
         flush_full_title()
@@ -578,8 +606,8 @@ def _write_word_block(doc, text: str, layout: str = "columns"):
 def _write_word_table(doc, text: str):
     """Render a Markdown table as a Word table."""
     lines = [line.strip() for line in text.split("\n") if line.strip()]
-    if len(lines) < 2:
-        # Not enough lines for a table, fall back to plain text
+    if len(lines) < 2 or not _is_markdown_table_separator_row(lines[1]):
+        # Not a strict Markdown table, fall back to plain text.
         for line in lines:
             doc.add_paragraph(_strip_quote_prefix(line).strip("| "))
         return
@@ -698,17 +726,10 @@ def _write_word_card(doc, text: str):
 
     while idx < len(clean_lines):
         clean_line = clean_lines[idx]
-        if _is_table_line(clean_line):
-            table_lines = [clean_line]
-            idx += 1
-            while idx < len(clean_lines):
-                peek = clean_lines[idx]
-                if _is_table_line(peek) or _is_markdown_table_separator_row(peek):
-                    table_lines.append(peek)
-                    idx += 1
-                    continue
-                break
+        table_lines, next_idx = _collect_strict_markdown_table(clean_lines, idx)
+        if table_lines:
             _write_word_table(doc, "\n".join(table_lines))
+            idx = next_idx
             continue
 
         list_item = _strip_list_marker(clean_line)

@@ -91,6 +91,45 @@ def _is_markdown_table_separator_row(line: str) -> bool:
     cells = [cell.strip() for cell in stripped.strip("|").split("|")]
     return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
 
+
+def _collect_strict_markdown_table(lines, start: int, normalize=None) -> tuple[list[str], int]:
+    """Collect a Markdown table only when it has a real separator row."""
+    normalize = normalize or (lambda value: str(value).strip())
+    if start < 0 or start + 1 >= len(lines):
+        return [], start
+
+    header = normalize(lines[start])
+    separator = normalize(lines[start + 1])
+    if (
+        not _looks_like_markdown_table_row(header)
+        or not _is_markdown_table_separator_row(separator)
+    ):
+        return [], start
+
+    table_lines = [header, separator]
+    idx = start + 2
+    while idx < len(lines):
+        line = normalize(lines[idx])
+        if not _looks_like_markdown_table_row(line):
+            break
+        table_lines.append(line)
+        idx += 1
+    return table_lines, idx
+
+
+def _strip_single_cell_pipe_fragment(line: str) -> str:
+    """Normalize stray one-cell pipe fragments from malformed table output."""
+    stripped = _strip_quote_prefix(line).strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return line
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    if len(cells) != 1:
+        return line
+    if re.fullmatch(r":?-{3,}:?", cells[0] or ""):
+        return ""
+    return cells[0]
+
+
 def _split_translation_chunks(text: str) -> list[str]:
     chunks = []
     normal_lines = []

@@ -257,7 +257,12 @@ class PageStructureExtractor:
         """Close the underlying PDF document."""
         self.doc.close()
 
-    def extract(self, start_page: int = 0, end_page: int | None = None) -> PageStructureDocument:
+    def extract(
+        self,
+        start_page: int = 0,
+        end_page: int | None = None,
+        include_images: bool = True,
+    ) -> PageStructureDocument:
         """Extract page structure for a range of pages.
 
         Args:
@@ -277,7 +282,10 @@ class PageStructureExtractor:
         if end_page > total:
             end_page = total
 
-        pages = [self.extract_page(i) for i in range(start_page, end_page)]
+        pages = [
+            self.extract_page(i, include_images=include_images)
+            for i in range(start_page, end_page)
+        ]
         return PageStructureDocument(
             schema_version=PAGE_STRUCTURE_SCHEMA_VERSION,
             source_pdf=Path(self.pdf_path).name,
@@ -285,7 +293,7 @@ class PageStructureExtractor:
             pages=pages,
         )
 
-    def extract_page(self, page_index: int) -> PageStructure:
+    def extract_page(self, page_index: int, include_images: bool = True) -> PageStructure:
         """Extract structure for a single page.
 
         Args:
@@ -296,7 +304,7 @@ class PageStructureExtractor:
         """
         page = self.doc[page_index]
         background = self.extract_background(page)
-        images = self.extract_images(page, page_index)
+        images = self.extract_images(page, page_index) if include_images else []
         decorations = self.extract_decorations(page)
         text_regions = self.extract_text_regions(page)
 

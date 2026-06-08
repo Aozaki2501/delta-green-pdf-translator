@@ -50,7 +50,11 @@ def build_pdf_output_layout_context(
 
     with TemporaryDirectory(prefix="dgtranslate_layout_") as temp_dir:
         with PageStructureExtractor(pdf_path, temp_dir) as extractor:
-            structure = extractor.extract(start_page=start_page, end_page=end_page)
+            structure = extractor.extract(
+                start_page=start_page,
+                end_page=end_page,
+                include_images=False,
+            )
         with SemanticAnalyzer(pdf_path, temp_dir) as analyzer:
             content = analyzer.analyze_document(structure)
     return build_output_layout_context_from_content(content)

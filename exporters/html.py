@@ -23,9 +23,11 @@ from exporters._shared import (
     _looks_like_stat_block,
     _looks_like_markdown_table_row,
     _is_markdown_table_separator_row,
+    _collect_strict_markdown_table,
     _layout_uses_columns,
     _normalize_heading_markup,
     _normalize_marker_line,
+    _strip_single_cell_pipe_fragment,
     _strip_list_marker,
     _strip_quote_prefix,
 )
@@ -54,6 +56,13 @@ def _table_cells(line: str) -> list[str]:
 
 
 def _html_table(lines: list[str], class_name: str = "aid-table") -> str:
+    if len(lines) < 2 or not _is_markdown_table_separator(lines[1]):
+        return "".join(
+            f"<p>{_html_inline(_strip_quote_prefix(line).strip('| '))}</p>"
+            for line in lines
+            if _strip_quote_prefix(line).strip("| ")
+        )
+
     rows = []
     for raw_line in lines:
         cells = _table_cells(raw_line)
@@ -88,6 +97,7 @@ def _clean_card_line(line: str) -> str:
     clean = _strip_quote_prefix(line)
     clean = _normalize_heading_markup(clean)
     clean = _normalize_marker_line(clean)
+    clean = _strip_single_cell_pipe_fragment(clean)
     return clean.strip()
 
 
@@ -103,17 +113,14 @@ def _append_card_body(parts: list[str], lines: list[str]):
             idx += 1
             continue
 
-        if _looks_like_markdown_table_row(clean):
-            table_lines = [clean]
-            idx += 1
-            while idx < len(lines):
-                peek = _clean_card_line(lines[idx])
-                if _looks_like_markdown_table_row(peek) or _is_markdown_table_separator(peek):
-                    table_lines.append(peek)
-                    idx += 1
-                    continue
-                break
+        table_lines, next_idx = _collect_strict_markdown_table(
+            lines,
+            idx,
+            _clean_card_line,
+        )
+        if table_lines:
             parts.append(_html_table(table_lines, "aid-table card-table"))
+            idx = next_idx
             continue
 
         list_item = _strip_list_marker(clean)
@@ -223,6 +230,9 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
             continue
         clean_line = _normalize_heading_markup(clean_line)
         clean_line = _normalize_marker_line(clean_line)
+        clean_line = _strip_single_cell_pipe_fragment(clean_line).strip()
+        if not clean_line:
+            continue
 
         if clean_line == "[[TOC]]":
             continue
@@ -297,16 +307,14 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
             parts.append('<pre class="toc-card">' + html.escape("\n".join(toc_lines)) + "</pre>")
             continue
 
-        if _looks_like_markdown_table_row(clean_line):
-            table_lines = [clean_line]
-            while idx < len(lines):
-                peek = _normalize_marker_line(lines[idx].strip())
-                if _looks_like_markdown_table_row(peek) or _is_markdown_table_separator(peek):
-                    table_lines.append(peek)
-                    idx += 1
-                    continue
-                break
+        table_lines, next_idx = _collect_strict_markdown_table(
+            [clean_line, *lines[idx:]],
+            0,
+            lambda value: _normalize_marker_line(str(value).strip()),
+        )
+        if table_lines:
             parts.append(_html_table(table_lines))
+            idx += next_idx - 1
             continue
 
         list_item = _strip_list_marker(clean_line)

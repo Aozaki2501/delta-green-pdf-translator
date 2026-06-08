@@ -33,6 +33,25 @@ def test_axis_aligned_image_is_cropped_to_visible_page_bbox(tmp_path):
     assert extracted_image.getpixel((50, 50)) == (0, 0, 255)
 
 
+def test_extract_can_skip_image_assets_for_reading_layout_analysis(tmp_path):
+    image_path = tmp_path / "image.png"
+    Image.new("RGB", (20, 20), "red").save(image_path)
+
+    pdf_path = tmp_path / "skip-images.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=100, height=100)
+    page.insert_image(pymupdf.Rect(10, 10, 60, 60), filename=str(image_path))
+    doc.save(pdf_path)
+    doc.close()
+
+    output_dir = tmp_path / "out"
+    with PageStructureExtractor(str(pdf_path), str(output_dir)) as extractor:
+        structure = extractor.extract(include_images=False)
+
+    assert structure.pages[0].images == []
+    assert not (output_dir / "assets" / "typeset_images").exists()
+
+
 def test_text_regions_keep_line_geometry_and_style(tmp_path):
     pdf_path = tmp_path / "line-style.pdf"
     doc = pymupdf.open()
