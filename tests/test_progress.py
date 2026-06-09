@@ -61,6 +61,21 @@ class TestSaveLoadRoundTrip:
         assert tracker2.get_cached_prompt_translation("abc123") == "cached translation"
         assert tracker2.get_cached_prompt_translation("missing") == ""
 
+    def test_delete_cached_prompt_translations_by_value(self, tmp_path):
+        progress_file = str(tmp_path / "cache_value.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.mark_cached_prompt_translation("bad-1", "short translation")
+        tracker.mark_cached_prompt_translation("good", "complete translation")
+        tracker.mark_cached_prompt_translation("bad-2", "short translation")
+
+        assert tracker.delete_cached_prompt_translations_by_value("short translation") == 2
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.get_cached_prompt_translation("bad-1") == ""
+        assert tracker2.get_cached_prompt_translation("bad-2") == ""
+        assert tracker2.get_cached_prompt_translation("good") == "complete translation"
+
     def test_prompt_leak_cache_is_not_reused(self, tmp_path):
         progress_file = str(tmp_path / "cache_leak.progress.json")
 

@@ -44,7 +44,7 @@ from core.md_extractor import MarkdownExtractor
 from core.docx_extractor import DocxExtractor, HAS_DOCX as HAS_DOCX_LIB
 from core.glossary import build_glossary_matcher
 from core.layout_adapters import build_pdf_output_layout_context, merge_output_page_layouts
-from core.utils import looks_untranslated_page
+from core.utils import looks_incomplete_translation, looks_untranslated_page
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -1234,12 +1234,19 @@ if launch_pressed:
             translation = tracker.get_translation(pn)
             if not translation.strip():
                 continue
+            source_text = pages_text.get(pn, "")
+            page_layout = page_layouts.get(pn, "")
             if looks_untranslated_page(
-                pages_text.get(pn, ""),
+                source_text,
                 translation,
-                page_layouts.get(pn, ""),
+                page_layout,
             ):
+                tracker.delete_cached_prompt_translations_by_value(translation)
                 tracker.mark_failed(pn, "页面疑似整页未翻译，已拦截输出")
+                continue
+            if looks_incomplete_translation(source_text, translation, page_layout):
+                tracker.delete_cached_prompt_translations_by_value(translation)
+                tracker.mark_failed(pn, "页面译文明显短于原文，疑似截断，已拦截输出")
 
         translated_pages_sorted = sorted(
             [

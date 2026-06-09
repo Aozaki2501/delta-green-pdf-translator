@@ -11,6 +11,7 @@ from core.semantic_analyzer import (
     PageContext,
     SemanticAnalyzer,
     _bbox_area,
+    _is_fixed_nontranslatable_text,
     _region_inside_table_grid,
     _looks_like_list,
     _looks_like_table,
@@ -38,6 +39,17 @@ from core.typeset_models import (
 class TestBboxArea:
     def test_normal_bbox(self):
         assert _bbox_area([0, 0, 100, 200]) == 20000.0
+
+
+class TestNonTranslatableText:
+    def test_private_checkbox_glyph_is_not_translatable(self):
+        assert _is_fixed_nontranslatable_text("\uf070", SemanticRole.BODY_COLUMN)
+
+    def test_numeric_marker_is_not_translatable(self):
+        assert _is_fixed_nontranslatable_text("-1", SemanticRole.BODY_COLUMN)
+
+    def test_words_remain_translatable(self):
+        assert not _is_fixed_nontranslatable_text("Stability", SemanticRole.BODY_COLUMN)
 
     def test_small_bbox(self):
         assert _bbox_area([10, 10, 60, 60]) == 2500.0

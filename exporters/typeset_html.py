@@ -626,7 +626,8 @@ body {{
 
         # Render layers in z-order
         parts.append(self.render_background_layer(page_structure.background))
-        parts.append(self.render_image_layer(page_structure.images, page_structure))
+        page_images = [] if self._is_dense_line_grid_page(page_structure) else page_structure.images
+        parts.append(self.render_image_layer(page_images, page_structure))
         parts.append(self.render_decoration_layer(page_structure.decorations))
         parts.append(self.render_text_layer(page_content, page_structure))
 
@@ -918,15 +919,21 @@ body {{
         )
         dense_line_grid_page = self._is_dense_line_grid_page(page_structure)
         if dense_line_grid_page:
-            return "\n".join(
-                self._render_positioned_single_block(
-                    self._source_text_block(block),
-                    page_structure,
-                    region_map[block.region_id],
+            parts = []
+            for block in page_blocks:
+                render_block = block
+                if abs(self._region_angle(block.region_id, page_structure)) >= 1.0:
+                    render_block = self._source_text_block(block)
+                if not self._display_text_for_block(render_block):
+                    continue
+                parts.append(
+                    self._render_positioned_single_block(
+                        render_block,
+                        page_structure,
+                        region_map[block.region_id],
+                    )
                 )
-                for block in page_blocks
-                if self._display_text_for_block(self._source_text_block(block))
-            )
+            return "\n".join(parts)
         rotated_flow_count = sum(
             1
             for block in page_blocks
@@ -1423,10 +1430,22 @@ body {{
     def _is_table_grid_line(self, decoration: DecorationElement) -> bool:
         if decoration.element_type != "line" or len(decoration.bbox) != 4:
             return False
-        if (decoration.stroke_color or "").lower() != "#000000":
+        if not self._is_dark_or_unspecified_stroke(decoration.stroke_color):
             return False
         x0, y0, x1, y1 = decoration.bbox
         return abs(x1 - x0) >= 8.0 or abs(y1 - y0) >= 8.0
+
+    def _is_dark_or_unspecified_stroke(self, color: str | None) -> bool:
+        if color is None:
+            return True
+        match = re.fullmatch(r"#?([0-9a-fA-F]{6})", color.strip())
+        if not match:
+            return False
+        value = match.group(1)
+        red = int(value[0:2], 16)
+        green = int(value[2:4], 16)
+        blue = int(value[4:6], 16)
+        return max(red, green, blue) <= 80
 
     def _overlap_ratio(self, a: list[float], b: list[float]) -> float:
         if len(a) != 4 or len(b) != 4:

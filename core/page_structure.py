@@ -373,6 +373,9 @@ class PageStructureExtractor:
             bbox = block.get("bbox")
             if not bbox or len(bbox) != 4:
                 continue
+            x0, y0, x1, y1 = [float(v) for v in bbox]
+            if x1 <= x0 or y1 <= y0:
+                continue
 
             pix = pymupdf.Pixmap(block["image"])
             if block.get("mask"):
@@ -394,6 +397,8 @@ class PageStructureExtractor:
                 width_px = image.width
                 height_px = image.height
                 image_transform = _round_bbox(transform)
+            if width_px <= 0 or height_px <= 0 or image.width <= 0 or image.height <= 0:
+                continue
 
             # Save images as PNG so Chromium can render them from HTML.
             img_id = f"p{page_index + 1:04d}_img{img_idx + 1:04d}"

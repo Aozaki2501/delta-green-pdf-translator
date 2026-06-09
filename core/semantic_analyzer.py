@@ -616,6 +616,8 @@ def _is_fixed_nontranslatable_text(text: str, role: SemanticRole) -> bool:
         return True
     if role == SemanticRole.HEADER and "//" in stripped:
         return True
+    if not any(ch.isalpha() for ch in stripped):
+        return True
     return False
 
 

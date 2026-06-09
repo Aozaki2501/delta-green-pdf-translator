@@ -244,6 +244,21 @@ class ProgressTracker:
         if removed is not None:
             self.save()
 
+    def delete_cached_prompt_translations_by_value(self, translation: str) -> int:
+        """Remove exact-prompt cache entries that contain a rejected translation."""
+        if not translation:
+            return 0
+        with self._lock:
+            cache_keys = [
+                key for key, value in self.translation_cache.items()
+                if value == translation
+            ]
+            for key in cache_keys:
+                self.translation_cache.pop(key, None)
+        if cache_keys:
+            self.save()
+        return len(cache_keys)
+
 
 def _replace_with_retry(tmp_path: Path, target_path: Path, attempts: int = 20):
     """Atomically replace a progress file, tolerating short Windows file locks."""

@@ -52,6 +52,50 @@ def test_extract_can_skip_image_assets_for_reading_layout_analysis(tmp_path):
     assert not (output_dir / "assets" / "typeset_images").exists()
 
 
+def test_zero_area_image_blocks_are_skipped(tmp_path):
+    image_path = tmp_path / "image.png"
+    Image.new("RGB", (20, 20), "red").save(image_path)
+
+    pdf_path = tmp_path / "zero-area-image.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=100, height=100)
+    page.insert_image(pymupdf.Rect(-20, 0, 0, 100), filename=str(image_path))
+    doc.save(pdf_path)
+    doc.close()
+
+    output_dir = tmp_path / "out"
+    with PageStructureExtractor(str(pdf_path), str(output_dir)) as extractor:
+        structure = extractor.extract()
+
+    assert structure.pages[0].images == []
+
+
+def test_empty_cropped_images_are_skipped(tmp_path, monkeypatch):
+    import core.page_structure as page_structure
+
+    image_path = tmp_path / "image.png"
+    Image.new("RGB", (20, 20), "red").save(image_path)
+
+    pdf_path = tmp_path / "empty-crop-image.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=100, height=100)
+    page.insert_image(pymupdf.Rect(10, 10, 60, 60), filename=str(image_path))
+    doc.save(pdf_path)
+    doc.close()
+
+    def empty_crop(*args):
+        image = Image.new("RGB", (10, 10), "red").crop((0, 0, 0, 10))
+        return image, 0, 10
+
+    monkeypatch.setattr(page_structure, "_crop_axis_aligned_pixmap_to_bbox", empty_crop)
+
+    output_dir = tmp_path / "out"
+    with PageStructureExtractor(str(pdf_path), str(output_dir)) as extractor:
+        structure = extractor.extract()
+
+    assert structure.pages[0].images == []
+
+
 def test_text_regions_keep_line_geometry_and_style(tmp_path):
     pdf_path = tmp_path / "line-style.pdf"
     doc = pymupdf.open()

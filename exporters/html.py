@@ -802,12 +802,19 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         margin: 0;
     }}
     @media print {{
-        body {{ background: white; }}
+        html,
+        body {{
+            background: var(--paper);
+        }}
         .sheet {{
             margin: 0;
             box-shadow: none;
-            width: 8.5in;
+            width: auto;
             min-height: 11in;
+            background:
+                radial-gradient(circle at 12% 18%, rgba(160, 132, 93, 0.11), transparent 22%),
+                radial-gradient(circle at 85% 70%, rgba(126, 96, 62, 0.08), transparent 24%),
+                var(--paper);
         }}
     }}
     """

@@ -3,8 +3,11 @@ import pytest
 from core.typeset_models import (
     BackgroundLayer,
     ContentBlock,
+    DecorationElement,
     ImageElement,
+    PageContent,
     PageStructure,
+    PageType,
     SemanticRole,
     StyledTextRun,
     TextRegionBBox,
@@ -145,6 +148,116 @@ def test_fit_script_exposes_layout_issue_collector():
 
     assert "function typesetCollectLayoutIssues()" in script
     assert "typesetElementOverflows" in script
+
+
+def test_dense_grid_page_keeps_boxes_and_uses_translated_text():
+    decorations = [
+        DecorationElement(
+            id=f"line-{index}",
+            element_type="line",
+            bbox=[20.0, 40.0 + index, 180.0, 40.0 + index],
+            stroke_color=None,
+            fill_color=None,
+            stroke_width=0.5,
+        )
+        for index in range(80)
+    ]
+    structure = PageStructure(
+        page_index=0,
+        width=240.0,
+        height=320.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=decorations,
+        text_regions=[
+            TextRegionBBox(
+                id="p0001_r0001",
+                bbox=[40.0, 60.0, 200.0, 100.0],
+                block_ids=["t1"],
+            )
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.MIXED,
+        columns=[],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Original sheet text", 9.0, False, False, "#000000")],
+                source_text="Original sheet text",
+                translated_text="角色表译文",
+                translatable=True,
+            )
+        ],
+    )
+
+    html = TypesetHTMLRebuilder().rebuild_page(structure, content)
+
+    assert 'data-template="single_source_flow"' in html
+    assert "角色表译文" in html
+    assert "Original sheet text" not in html
+    assert 'data-region-id="p0001_r0001"' in html
+
+
+def test_dense_grid_page_omits_extracted_image_layer():
+    decorations = [
+        DecorationElement(
+            id=f"line-{index}",
+            element_type="line",
+            bbox=[20.0, 40.0 + index, 180.0, 40.0 + index],
+            stroke_color="#000000",
+            fill_color=None,
+            stroke_width=0.5,
+        )
+        for index in range(80)
+    ]
+    structure = PageStructure(
+        page_index=0,
+        width=240.0,
+        height=320.0,
+        background=BackgroundLayer(),
+        images=[
+            ImageElement(
+                id="p0001_img0001",
+                bbox=[0.0, 0.0, 240.0, 320.0],
+                image_path="assets/typeset_images/page.png",
+                width_px=480,
+                height_px=640,
+            )
+        ],
+        decorations=decorations,
+        text_regions=[
+            TextRegionBBox(
+                id="p0001_r0001",
+                bbox=[40.0, 60.0, 200.0, 100.0],
+                block_ids=["t1"],
+            )
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.MIXED,
+        columns=[],
+        blocks=[
+            ContentBlock(
+                id="p0001_r0001_b0001",
+                region_id="p0001_r0001",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("Original sheet text", 9.0, False, False, "#000000")],
+                source_text="Original sheet text",
+                translated_text="角色表译文",
+                translatable=True,
+            )
+        ],
+    )
+
+    html = TypesetHTMLRebuilder().rebuild_page(structure, content)
+
+    assert 'data-image-id="p0001_img0001"' not in html
+    assert "角色表译文" in html
 
 
 def test_pdf_exporter_raises_on_layout_issues():

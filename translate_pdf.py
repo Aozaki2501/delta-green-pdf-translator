@@ -81,7 +81,7 @@ from exporters import (
 )
 
 from exporters.word import HAS_DOCX
-from core.utils import looks_untranslated_page
+from core.utils import looks_incomplete_translation, looks_untranslated_page
 
 # Apply console output configuration at import time (preserves original behavior)
 configure_console_output()
@@ -305,12 +305,19 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             translation = tracker.get_translation(page_num)
             if not translation.strip():
                 continue
+            source_text = pages_text.get(page_num, "")
+            page_layout = page_layouts.get(page_num, "")
             if looks_untranslated_page(
-                pages_text.get(page_num, ""),
+                source_text,
                 translation,
-                page_layouts.get(page_num, ""),
+                page_layout,
             ):
+                tracker.delete_cached_prompt_translations_by_value(translation)
                 tracker.mark_failed(page_num, "页面疑似整页未翻译，已拦截输出")
+                continue
+            if looks_incomplete_translation(source_text, translation, page_layout):
+                tracker.delete_cached_prompt_translations_by_value(translation)
+                tracker.mark_failed(page_num, "页面译文明显短于原文，疑似截断，已拦截输出")
 
         translated_pages_sorted = sorted(
             [

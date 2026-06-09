@@ -16,6 +16,7 @@ import pytest
 from core.utils import (
     count_cjk_chars,
     is_failed_translation,
+    looks_incomplete_translation,
     looks_untranslated_page,
     normalize_page_range,
     output_base_in_own_dir,
@@ -190,6 +191,27 @@ class TestLooksUntranslatedPage:
 
     def test_counts_cjk_chars(self):
         assert count_cjk_chars("中文 mixed English") == 2
+
+
+class TestLooksIncompleteTranslation:
+    def test_flags_long_source_with_tiny_chinese_translation(self):
+        source = " ".join(["The agents enter the chamber and study the wall carefully."] * 160)
+        translated = "这是一段明显被截断的中文译文。" * 12
+
+        assert looks_incomplete_translation(source, translated, "columns") is True
+
+    def test_accepts_normal_length_chinese_translation(self):
+        source = " ".join(["The agents enter the chamber and study the wall carefully."] * 160)
+        translated = "调查员进入房间，仔细检查墙面上的痕迹，并继续向前搜索。" * 80
+
+        assert looks_incomplete_translation(source, translated, "columns") is False
+
+    def test_skips_short_or_non_body_pages(self):
+        source = "The cover shows a ruined house under the night sky."
+        translated = "这是一座夜色中的废弃宅邸。"
+
+        assert looks_incomplete_translation(source, translated, "art") is False
+        assert looks_incomplete_translation("[[TOC]]\n" + source * 80, translated * 40, "columns") is False
 
 
 def test_output_base_uses_same_named_folder():

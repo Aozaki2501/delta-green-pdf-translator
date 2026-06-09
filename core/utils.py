@@ -105,6 +105,34 @@ def looks_untranslated_page(source_text: str, translated_text: str, layout: str 
     return latin_ratio >= 0.72
 
 
+def looks_incomplete_translation(source_text: str, translated_text: str, layout: str = "") -> bool:
+    if layout == "art":
+        return False
+    if is_failed_translation(translated_text):
+        return False
+
+    source = str(source_text or "").strip()
+    translated = str(translated_text or "").strip()
+    if not source or not translated or "[[TOC]]" in source:
+        return False
+
+    source_visible_len = len(re.sub(r"\s+", "", source))
+    translated_visible_len = len(re.sub(r"\s+", "", translated))
+    if source_visible_len < 1200:
+        return False
+
+    source_latin = count_latin_chars(source)
+    source_words = re.findall(r"[A-Za-z]{3,}", source)
+    if source_latin < 700 or len(source_words) < 120:
+        return False
+
+    translated_cjk = count_cjk_chars(translated)
+    if translated_cjk < 80:
+        return False
+
+    return translated_visible_len / max(source_visible_len, 1) < 0.15
+
+
 def parse_page_selection(selection: str, total_pages: int) -> set[int]:
     """Parse 1-based page specs such as '8, 12-15' into zero-based page indexes."""
     pages = set()
