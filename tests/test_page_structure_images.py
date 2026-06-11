@@ -96,6 +96,56 @@ def test_empty_cropped_images_are_skipped(tmp_path, monkeypatch):
     assert structure.pages[0].images == []
 
 
+def test_redundant_solid_full_page_stencil_is_skipped(tmp_path):
+    base_path = tmp_path / "base.png"
+    stencil_path = tmp_path / "stencil.png"
+    Image.new("RGB", (100, 100), (240, 240, 240)).save(base_path)
+    Image.new("1", (100, 100), 0).save(stencil_path)
+
+    pdf_path = tmp_path / "solid-stencil.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=100, height=100)
+    page.insert_image(pymupdf.Rect(0, 0, 100, 100), filename=str(base_path))
+    page.insert_text((20, 50), "Body text", fontsize=10)
+    page.insert_image(pymupdf.Rect(0, 0, 100, 100), filename=str(stencil_path))
+    doc.save(pdf_path)
+    doc.close()
+
+    output_dir = tmp_path / "out"
+    with PageStructureExtractor(str(pdf_path), str(output_dir)) as extractor:
+        structure = extractor.extract()
+
+    assert len(structure.pages[0].images) == 1
+    extracted_image = Image.open(output_dir / structure.pages[0].images[0].image_path).convert("RGB")
+    assert extracted_image.getpixel((50, 50)) == (240, 240, 240)
+
+
+def test_redundant_dark_full_page_border_stencil_is_skipped(tmp_path):
+    base_path = tmp_path / "base.png"
+    border_path = tmp_path / "border.png"
+    Image.new("RGB", (100, 100), (240, 240, 240)).save(base_path)
+    border = Image.new("1", (100, 100), 0)
+    for x in range(96, 100):
+        for y in range(0, 100):
+            border.putpixel((x, y), 1)
+    border.save(border_path)
+
+    pdf_path = tmp_path / "dark-border-stencil.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=100, height=100)
+    page.insert_image(pymupdf.Rect(0, 0, 100, 100), filename=str(base_path))
+    page.insert_text((20, 50), "Body text", fontsize=10)
+    page.insert_image(pymupdf.Rect(0, 0, 100, 100), filename=str(border_path))
+    doc.save(pdf_path)
+    doc.close()
+
+    output_dir = tmp_path / "out"
+    with PageStructureExtractor(str(pdf_path), str(output_dir)) as extractor:
+        structure = extractor.extract()
+
+    assert len(structure.pages[0].images) == 1
+
+
 def test_text_regions_keep_line_geometry_and_style(tmp_path):
     pdf_path = tmp_path / "line-style.pdf"
     doc = pymupdf.open()

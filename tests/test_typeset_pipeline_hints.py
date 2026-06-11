@@ -2,12 +2,14 @@ import json
 from dataclasses import replace
 
 import pytest
+from PIL import Image
 
 from core.typeset_models import (
     PAGE_CONTENT_SCHEMA_VERSION,
     PAGE_STRUCTURE_SCHEMA_VERSION,
     BackgroundLayer,
     ContentBlock,
+    ImageElement,
     PageContent,
     PageContentDocument,
     PageStructure,
@@ -166,6 +168,51 @@ def test_pipeline_does_not_reuse_structure_from_different_upload(tmp_path):
     )
     pipeline = TypesetPipeline(
         pdf_path="new_upload.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+
+    assert pipeline._load_existing_structure() is None
+
+
+def test_pipeline_does_not_reuse_structure_with_dark_full_page_overlay(tmp_path):
+    image_dir = tmp_path / "assets" / "typeset_images"
+    image_dir.mkdir(parents=True)
+    Image.new("RGB", (100, 100), (240, 240, 240)).save(image_dir / "base.png")
+    Image.new("RGB", (100, 100), (0, 0, 0)).save(image_dir / "overlay.png")
+    structure = _structure_doc()
+    page = structure.pages[0]
+    structure = replace(
+        structure,
+        pages=[
+            replace(
+                page,
+                images=[
+                    ImageElement(
+                        id="base",
+                        bbox=[0.0, 0.0, page.width, page.height],
+                        image_path="assets/typeset_images/base.png",
+                        width_px=100,
+                        height_px=100,
+                    ),
+                    ImageElement(
+                        id="overlay",
+                        bbox=[0.0, 0.0, page.width, page.height],
+                        image_path="assets/typeset_images/overlay.png",
+                        width_px=100,
+                        height_px=100,
+                    ),
+                ],
+            )
+        ],
+    )
+    (tmp_path / "page_structure.json").write_text(
+        structure.to_json(),
+        encoding="utf-8",
+    )
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
         output_dir=str(tmp_path),
         translator=None,
         glossary={},

@@ -427,7 +427,7 @@ class TypesetPipeline:
                     "page_structure.json 来源 PDF 不匹配，将重新提取"
                 )
                 return None
-            if _has_browser_incompatible_images(doc):
+            if _has_browser_incompatible_images(doc, self.output_dir):
                 logger.warning(
                     "page_structure.json 包含浏览器不支持的图片格式，将重新提取"
                 )
@@ -665,11 +665,72 @@ class TypesetPipeline:
             self._progress_callback(phase, done, total)
 
 
-def _has_browser_incompatible_images(doc: PageStructureDocument) -> bool:
+def _has_browser_incompatible_images(
+    doc: PageStructureDocument,
+    output_dir: Path | None = None,
+) -> bool:
     """Return True when cached image assets cannot be rendered by Chromium."""
     unsupported = {".jpx", ".jp2", ".j2k", ".jpf"}
     for page in doc.pages:
+        previous_images = []
         for image in page.images:
             if Path(image.image_path).suffix.lower() in unsupported:
                 return True
+            if (
+                output_dir is not None
+                and _is_cached_dark_full_page_overlay(page, image, previous_images, output_dir)
+            ):
+                return True
+            previous_images.append(image)
     return False
+
+
+def _is_cached_dark_full_page_overlay(page, image, previous_images, output_dir: Path) -> bool:
+    if not page.text_regions:
+        return False
+    if not _cached_bbox_covers_page(image.bbox, page.width, page.height):
+        return False
+    if not any(
+        _cached_bbox_covers_page(previous.bbox, page.width, page.height)
+        for previous in previous_images
+    ):
+        return False
+
+    image_path = Path(image.image_path)
+    if not image_path.is_absolute():
+        image_path = output_dir / image_path
+    if not image_path.exists():
+        return False
+
+    from PIL import Image
+
+    with Image.open(image_path) as loaded:
+        return _is_cached_mostly_dark_opaque_image(loaded)
+
+
+def _cached_bbox_covers_page(
+    bbox: list[float],
+    page_width: float,
+    page_height: float,
+) -> bool:
+    if len(bbox) != 4:
+        return False
+    x0, y0, x1, y1 = [float(v) for v in bbox]
+    width = max(0.0, x1 - x0)
+    height = max(0.0, y1 - y0)
+    return width >= page_width * 0.9 and height >= page_height * 0.9
+
+
+def _is_cached_mostly_dark_opaque_image(image) -> bool:
+    from PIL import ImageChops
+
+    rgba = image.convert("RGBA")
+    total = max(1, rgba.width * rgba.height)
+    alpha = rgba.getchannel("A")
+    lightness = rgba.convert("L")
+    opaque_mask = alpha.point(lambda value: 255 if value >= 250 else 0)
+    dark_mask = lightness.point(lambda value: 255 if value <= 24 else 0)
+    dark_opaque_mask = ImageChops.multiply(opaque_mask, dark_mask)
+    opaque = opaque_mask.histogram()[255]
+    dark = dark_opaque_mask.histogram()[255]
+    return opaque / total >= 0.9 and dark / total >= 0.85

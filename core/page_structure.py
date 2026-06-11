@@ -10,7 +10,7 @@ from io import BytesIO
 import math
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 try:
     import pymupdf
@@ -131,6 +131,61 @@ def _is_axis_aligned_transform(transform) -> bool:
         return True
     _, b, c, _, _, _ = [float(v) for v in transform]
     return abs(b) <= 1e-6 and abs(c) <= 1e-6
+
+
+def _bbox_covers_page(bbox: list[float], page_rect) -> bool:
+    if len(bbox) != 4:
+        return False
+    x0, y0, x1, y1 = [float(v) for v in bbox]
+    width = max(0.0, x1 - x0)
+    height = max(0.0, y1 - y0)
+    return width >= float(page_rect.width) * 0.9 and height >= float(page_rect.height) * 0.9
+
+
+def _image_has_single_color(image: Image.Image) -> bool:
+    extrema = image.getextrema()
+    if not extrema:
+        return False
+    if isinstance(extrema[0], tuple):
+        return all(low == high for low, high in extrema)
+    low, high = extrema
+    return low == high
+
+
+def _is_mostly_dark_opaque_image(image: Image.Image) -> bool:
+    rgba = image.convert("RGBA")
+    total = max(1, rgba.width * rgba.height)
+    alpha = rgba.getchannel("A")
+    lightness = rgba.convert("L")
+    opaque_mask = alpha.point(lambda value: 255 if value >= 250 else 0)
+    dark_mask = lightness.point(lambda value: 255 if value <= 24 else 0)
+    dark_opaque_mask = ImageChops.multiply(opaque_mask, dark_mask)
+    opaque = opaque_mask.histogram()[255]
+    dark = dark_opaque_mask.histogram()[255]
+    return opaque / total >= 0.9 and dark / total >= 0.85
+
+
+def _is_redundant_full_page_stencil_overlay(
+    block: dict,
+    bbox: list[float],
+    image: Image.Image,
+    page_rect,
+    previous_images: list[ImageElement],
+    text_regions: list[TextRegionBBox],
+) -> bool:
+    if int(block.get("bpc") or 0) != 1:
+        return False
+    if not _bbox_covers_page(bbox, page_rect):
+        return False
+    if not text_regions:
+        return False
+    has_full_page_base = any(
+        _bbox_covers_page(previous.bbox, page_rect)
+        for previous in previous_images
+    )
+    if not has_full_page_base:
+        return False
+    return _image_has_single_color(image) or _is_mostly_dark_opaque_image(image)
 
 
 def _line_angle(line) -> float:
@@ -304,9 +359,12 @@ class PageStructureExtractor:
         """
         page = self.doc[page_index]
         background = self.extract_background(page)
-        images = self.extract_images(page, page_index) if include_images else []
         decorations = self.extract_decorations(page)
         text_regions = self.extract_text_regions(page)
+        images = (
+            self.extract_images(page, page_index, text_regions=text_regions)
+            if include_images else []
+        )
 
         return PageStructure(
             page_index=page_index,
@@ -352,7 +410,12 @@ class PageStructureExtractor:
 
         return BackgroundLayer(color=None, gradient=None)
 
-    def extract_images(self, page, page_index: int) -> list[ImageElement]:
+    def extract_images(
+        self,
+        page,
+        page_index: int,
+        text_regions: list[TextRegionBBox] | None = None,
+    ) -> list[ImageElement]:
         """Extract independent images from the page and save pixel data.
 
         Args:
@@ -398,6 +461,15 @@ class PageStructureExtractor:
                 height_px = image.height
                 image_transform = _round_bbox(transform)
             if width_px <= 0 or height_px <= 0 or image.width <= 0 or image.height <= 0:
+                continue
+            if _is_redundant_full_page_stencil_overlay(
+                block,
+                _round_bbox(bbox),
+                image,
+                page.rect,
+                images,
+                text_regions or [],
+            ):
                 continue
 
             # Save images as PNG so Chromium can render them from HTML.
