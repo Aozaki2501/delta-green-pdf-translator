@@ -468,6 +468,28 @@ def test_contents_continuation_title_can_sit_in_top_margin():
     assert extractor.detect_page_layout(0) == "toc"
 
 
+def test_index_with_page_numbers_on_next_lines_is_classified_as_toc():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    title = _block("Index", 36, 30, 290, 44, font="Captureit")
+    toc = _block("", 36, 60, 290, 210, font="SpecialElite-Regular")
+    toc["lines"] = [
+        _line("Introduction\b", 10, 60, font="SpecialElite-Regular"),
+        _line("8", 10, 72, font="SpecialElite-Regular"),
+        _line("•\tBasic Training\b", 10, 84, font="SpecialElite-Regular"),
+        _line("8", 10, 96, font="SpecialElite-Regular"),
+        _line("Character Creation\b", 10, 108, font="SpecialElite-Regular"),
+        _line("12", 10, 120, font="SpecialElite-Regular"),
+        _line("•\tPersonal Info\b", 10, 132, font="SpecialElite-Regular"),
+        _line("12", 10, 144, font="SpecialElite-Regular"),
+    ]
+    extractor.doc = _FakeDoc([_FakeLayoutPage([title, toc])])
+
+    assert extractor.detect_page_layout(0) == "toc"
+    extracted = extractor._extract_contents_page([title, toc])
+    assert "Introduction ........ 8" in extracted
+    assert "Basic Training ........ 8" in extracted
+
+
 def test_extract_page_keeps_full_page_art_placeholder_when_text_is_empty():
     extractor = PDFExtractor.__new__(PDFExtractor)
     extractor.doc = _FakeDoc([_FakeLayoutPage([])])

@@ -293,3 +293,28 @@ def test_word_output_keeps_page_numbering_continuous_across_table_sections(tmp_p
         document_xml = zf.read("word/document.xml").decode("utf-8")
 
     assert document_xml.count("<w:pgNumType") == 1
+
+
+def test_word_output_renders_toc_as_two_column_compact_leaders(tmp_path):
+    if not HAS_DOCX:
+        return
+
+    out = tmp_path / "toc.docx"
+    write_word_output(
+        [(0, "[[TOC]]\n# Contents\n\n```toc\nChapter One ........ 12\nAppendix ----- 203\n```")],
+        str(out),
+        "Layout Demo",
+        min_chars=1,
+        max_chars=1000,
+        page_layouts={0: "toc"},
+    )
+
+    with zipfile.ZipFile(out) as zf:
+        document_xml = zf.read("word/document.xml").decode("utf-8")
+
+    assert 'w:num="2"' in document_xml
+    assert 'w:leader="dot"' in document_xml
+    assert "Chapter One" in document_xml
+    assert "Appendix" in document_xml
+    assert "```toc" not in document_xml
+    assert "[[TOC]]" not in document_xml

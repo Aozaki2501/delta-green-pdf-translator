@@ -512,13 +512,34 @@ class PDFExtractor:
     def _is_contents_block(self, block):
         text = self._extract_block_text(block)
         leader_hits = re.findall(r"\.{4,}\s*\d{1,3}", text)
+        lines = [
+            self._clean_contents_line(self._extract_line_text(line))
+            for line in block.get("lines", [])
+        ]
+        pair_hits = 0
+        previous_entry = False
+        for line in lines:
+            if not line:
+                continue
+            if re.fullmatch(r"\d{1,4}", line):
+                if previous_entry:
+                    pair_hits += 1
+                previous_entry = False
+                continue
+            previous_entry = bool(re.search(r"[A-Za-z]", line))
         return bool(re.search(r"\bContents\b", text, re.IGNORECASE)) or (
             text.count(".") >= 20 and len(leader_hits) >= 3
-        )
+        ) or pair_hits >= 3
 
     def _looks_like_contents_title(self, text: str) -> bool:
         compact = re.sub(r"[^A-Za-z]", "", str(text or "")).lower()
-        return compact.startswith("contents") and len(compact) <= 32
+        return (compact.startswith("contents") and len(compact) <= 32) or compact == "index"
+
+    def _clean_contents_line(self, text: str) -> str:
+        text = str(text or "").replace("\b", " ")
+        text = re.sub(r"^[\s\u2022•*\-]+", "", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
     def _is_handout_block(self, block):
         if not self._is_monospace_block(block):
@@ -1096,6 +1117,8 @@ class PDFExtractor:
             if len(page.get_drawings()) >= 8 or len(page.get_images(full=True)) >= 1:
                 return "art"
             return "columns"
+        if any(self._is_contents_block(block) for block in content_blocks):
+            return "toc"
 
         top_blocks = sorted(content_blocks, key=lambda block: (block["bbox"][1], block["bbox"][0]))
         top_text = self._extract_block_text(top_blocks[0]) if top_blocks else ""
@@ -1690,7 +1713,7 @@ class PDFExtractor:
     def _extract_contents_page(self, content_blocks):
         toc_blocks = [
             block for block in content_blocks
-            if self._is_monospace_block(block)
+            if self._is_monospace_block(block) or self._is_contents_block(block)
         ]
         title_blocks = [
             block for block in toc_blocks
@@ -1706,7 +1729,16 @@ class PDFExtractor:
             if title:
                 parts.append(f"[[TOC]]\n# {title}")
         else:
-            parts.append("[[TOC]]")
+            title = ""
+            for block in sorted(toc_blocks, key=lambda b: (b["bbox"][1], b["bbox"][0])):
+                for line in block.get("lines", []):
+                    line_text = self._clean_contents_line(self._extract_line_text(line))
+                    if self._looks_like_contents_title(line_text):
+                        title = line_text
+                        break
+                if title:
+                    break
+            parts.append(f"[[TOC]]\n# {title}" if title else "[[TOC]]")
 
         for block in body_blocks:
             text = self._extract_contents_block_lines(block).strip()
@@ -1716,11 +1748,46 @@ class PDFExtractor:
 
     def _extract_contents_block_lines(self, block):
         lines = []
+        pending_entry = ""
         for line in block.get("lines", []):
-            text = self._extract_line_text(line)
-            text = re.sub(r"\s+", " ", text).rstrip()
-            if text:
-                lines.append(text)
+            text = self._clean_contents_line(self._extract_line_text(line))
+            if not text:
+                continue
+            if self._looks_like_contents_title(text):
+                continue
+            if re.fullmatch(r"\d{1,4}", text):
+                if pending_entry:
+                    lines.append(f"{pending_entry} ........ {text}")
+                    pending_entry = ""
+                else:
+                    lines.append(text)
+                continue
+            inline_match = re.match(
+                r"^(?P<title>.+?)(?:\.{3,}|-{3,}|\s{2,}|\s+)(?P<page>\d{1,4})$",
+                text,
+            )
+            if inline_match:
+                if pending_entry:
+                    lines.append(pending_entry)
+                    pending_entry = ""
+                title = re.sub(r"[.\-]{3,}\s*$", "", inline_match.group("title")).strip(" -\t")
+                page = inline_match.group("page")
+                lines.append(f"{title} ........ {page}")
+                continue
+            compact_match = re.match(r"^(?P<title>.*[A-Za-z][^\d]*?)(?P<page>\d{1,4})$", text)
+            if compact_match:
+                if pending_entry:
+                    lines.append(pending_entry)
+                    pending_entry = ""
+                title = re.sub(r"[.\-]{3,}\s*$", "", compact_match.group("title")).strip(" -\t")
+                page = compact_match.group("page")
+                lines.append(f"{title} ........ {page}")
+                continue
+            if pending_entry:
+                lines.append(pending_entry)
+            pending_entry = text
+        if pending_entry:
+            lines.append(pending_entry)
         return "\n".join(lines)
 
     def finalize_chapters(self):

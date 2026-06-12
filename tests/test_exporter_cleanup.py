@@ -273,6 +273,42 @@ def test_html_renders_guillemet_lines_as_list():
     assert "<li>第二项</li>" in html
 
 
+def test_html_renders_toc_as_compact_rows():
+    html = _html_block("[[TOC]]\n# Contents\n\n```toc\nChapter One ........ 12\nAppendix ----- 203\n```")
+
+    assert '<div class="toc-card">' in html
+    assert '<span class="toc-title">Chapter One</span>' in html
+    assert '<span class="toc-page">12</span>' in html
+    assert "```toc" not in html
+
+
+def test_html_toc_preserves_abbreviation_periods():
+    html = _html_block("```toc\nM.O.S. ........ 13\nPlaying V.C. ........ 176\n```")
+
+    assert '<span class="toc-title">M.O.S.</span>' in html
+    assert '<span class="toc-title">Playing V.C.</span>' in html
+
+
+def test_html_toc_strips_existing_leader_dots_from_title():
+    html = _html_block("```toc\n起源........................................... ........ 8\n```")
+
+    assert '<span class="toc-title">起源</span>' in html
+    assert "起源................................" not in html
+
+
+def test_toc_lines_are_not_soft_merged():
+    text = _clean_translated_block(
+        "[[TOC]]\n"
+        "# Index\n"
+        "```toc\n"
+        "Introduction ........ 8\n"
+        "Basic Training ........ 8\n"
+        "```"
+    )
+
+    assert "Introduction ........ 8\nBasic Training ........ 8" in text
+
+
 def test_display_title_prefers_primary_heading_over_filename():
     reading_pages = paginate_translated_blocks(
         [(0, "# 《卡利山口》\n\n正文。")],

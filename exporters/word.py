@@ -39,7 +39,7 @@ from core.utils import ensure_output_parent
 try:
     from docx import Document as DocxDocument
     from docx.shared import Pt, Inches, RGBColor
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
     from docx.enum.section import WD_SECTION
     from docx.enum.table import WD_ROW_HEIGHT_RULE, WD_TABLE_ALIGNMENT
     from docx.oxml import OxmlElement
@@ -128,6 +128,8 @@ def set_section_page_layout(section, columns=1):
 
 
 def _columns_for_layout(layout: str, default_columns: int) -> int:
+    if layout == "toc":
+        return 2
     return int(default_columns) if _layout_uses_columns(layout) else 1
 
 
@@ -365,6 +367,17 @@ def _plain_text(line: str) -> str:
     return clean.strip()
 
 
+def _split_toc_entry(line: str) -> tuple[str, str] | None:
+    match = re.match(r"^(?P<title>.*?)\s*(?:[.\-]{3,}|\s{2,})\s*(?P<page>\d{1,4})\s*$", line.strip())
+    if not match:
+        return None
+    title = re.sub(r"[.\-]{3,}\s*$", "", match.group("title")).strip(" -\t")
+    page = match.group("page").strip()
+    if not title:
+        return None
+    return title, page
+
+
 def _split_card_segments(text: str):
     """Split block text into segments: normal (dual-column), card (single-column),
     and table (single-column). This allows the Word renderer to switch column
@@ -377,11 +390,13 @@ def _split_card_segments(text: str):
     full_title_lines = []
     table_lines = []
     quote_lines = []
+    toc_lines = []
     in_card = False
     in_stat = False
     in_image = False
     in_full_title = False
     in_quote = False
+    in_toc = False
 
     def flush_normal():
         nonlocal normal_lines
@@ -425,6 +440,12 @@ def _split_card_segments(text: str):
             segments.append(("card", "\n".join(quote_lines).strip()))
         quote_lines = []
 
+    def flush_toc():
+        nonlocal toc_lines
+        if any(line.strip() for line in toc_lines):
+            segments.append(("toc", "\n".join(toc_lines).strip()))
+        toc_lines = []
+
     raw_lines = text.splitlines()
     line_index = 0
     while line_index < len(raw_lines):
@@ -450,6 +471,7 @@ def _split_card_segments(text: str):
             flush_stat()
             flush_image()
             flush_quote()
+            flush_toc()
             in_full_title = True
             line_index += 1
             continue
@@ -462,6 +484,7 @@ def _split_card_segments(text: str):
             flush_normal()
             flush_table()
             flush_quote()
+            flush_toc()
             in_card = True
             line_index += 1
             continue
@@ -474,6 +497,7 @@ def _split_card_segments(text: str):
             flush_normal()
             flush_table()
             flush_quote()
+            flush_toc()
             in_stat = True
             line_index += 1
             continue
@@ -486,12 +510,25 @@ def _split_card_segments(text: str):
             flush_normal()
             flush_table()
             flush_quote()
+            flush_toc()
             in_image = True
             line_index += 1
             continue
         if line == "[/IMAGE]":
             flush_image()
             in_image = False
+            line_index += 1
+            continue
+        if stripped.startswith("```toc"):
+            flush_normal()
+            flush_table()
+            flush_quote()
+            in_toc = True
+            line_index += 1
+            continue
+        if in_toc and stripped.startswith("```"):
+            flush_toc()
+            in_toc = False
             line_index += 1
             continue
         if in_card:
@@ -510,10 +547,15 @@ def _split_card_segments(text: str):
             full_title_lines.append(raw_line)
             line_index += 1
             continue
+        if in_toc:
+            toc_lines.append(raw_line)
+            line_index += 1
+            continue
 
         if stripped.startswith(">"):
             flush_normal()
             flush_table()
+            flush_toc()
             in_quote = True
             quote_lines.append(_strip_quote_prefix(raw_line))
             line_index += 1
@@ -546,10 +588,55 @@ def _split_card_segments(text: str):
         flush_image()
     elif in_quote:
         flush_quote()
+    elif in_toc:
+        flush_toc()
     else:
         flush_table()
         flush_normal()
     return segments
+
+
+def _write_word_toc(doc, text: str):
+    for raw_line in text.split("\n"):
+        line = _plain_text(raw_line)
+        if not line:
+            continue
+        entry = _split_toc_entry(line)
+        if entry:
+            title, page = entry
+            paragraph = doc.add_paragraph()
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.left_indent = Pt(0)
+            paragraph.paragraph_format.right_indent = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            paragraph.paragraph_format.line_spacing = 1.0
+            paragraph.paragraph_format.tab_stops.add_tab_stop(
+                Inches(3.45),
+                WD_TAB_ALIGNMENT.RIGHT,
+                WD_TAB_LEADER.DOTS,
+            )
+            title_run = paragraph.add_run(title)
+            title_run.font.name = "Courier New"
+            title_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+            title_run.font.size = Pt(8.5)
+            page_run = paragraph.add_run(f"\t{page}")
+            page_run.font.name = "Courier New"
+            page_run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+            page_run.font.size = Pt(8.5)
+            continue
+
+        paragraph = doc.add_paragraph(line)
+        paragraph.paragraph_format.first_line_indent = Pt(0)
+        paragraph.paragraph_format.space_before = Pt(2)
+        paragraph.paragraph_format.space_after = Pt(1)
+        paragraph.paragraph_format.line_spacing = 1.0
+        if paragraph.runs:
+            run = paragraph.runs[0]
+            run.font.name = "黑体"
+            run._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+            run.font.size = Pt(10)
+            run.font.bold = True
 
 
 def _write_word_block(doc, text: str, layout: str = "columns"):
@@ -568,6 +655,13 @@ def _write_word_block(doc, text: str, layout: str = "columns"):
             continue
         clean_line = _plain_text(raw_line)
         if not clean_line:
+            continue
+
+        if clean_line == "[[TOC]]":
+            continue
+
+        if layout == "toc":
+            _write_word_toc(doc, re.sub(r"^#{1,6}\s*", "", clean_line))
             continue
 
         if clean_line.startswith("#### "):
@@ -995,6 +1089,8 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                     _write_word_stat_block(doc, content)
                 elif kind == "image":
                     continue
+                elif kind == "toc":
+                    _write_word_toc(doc, content)
                 elif kind == "full_title":
                     title_section = doc.add_section(WD_SECTION.CONTINUOUS)
                     _continue_page_numbering(title_section)

@@ -385,6 +385,9 @@ def _clean_translated_block(text: str) -> str:
     if lines and lines[0] in ("[STAT_BLOCK]", "[IMAGE]", "[FULL_WIDTH_TITLE]"):
         return "\n".join(lines).strip()
 
+    if any(line == "[[TOC]]" or line.startswith("```toc") for line in lines):
+        return "\n".join(lines).strip()
+
     if lines and lines[0] == "[CARD]":
         end_marker = "[/CARD]" if lines[-1] == "[/CARD]" else ""
         content = lines[1:-1] if end_marker else lines[1:]

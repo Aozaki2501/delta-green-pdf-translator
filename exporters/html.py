@@ -218,6 +218,38 @@ def _html_image_placeholder(lines: list[str], image_path="", html_output: str = 
     return f'<figure class="image-placeholder"><div></div><figcaption>{_html_inline(label)}</figcaption></figure>'
 
 
+def _split_toc_entry(line: str) -> tuple[str, str] | None:
+    match = re.match(r"^(?P<title>.*?)\s*(?:[.\-]{3,}|\s{2,})\s*(?P<page>\d{1,4})\s*$", line.strip())
+    if not match:
+        return None
+    title = re.sub(r"[.\-]{3,}\s*$", "", match.group("title")).strip(" -\t")
+    page = match.group("page").strip()
+    if not title:
+        return None
+    return title, page
+
+
+def _html_toc_card(lines: list[str]) -> str:
+    rows = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        entry = _split_toc_entry(line)
+        if entry:
+            title, page = entry
+            rows.append(
+                '<div class="toc-row">'
+                f'<span class="toc-title">{_html_inline(title)}</span>'
+                '<span class="toc-dots"></span>'
+                f'<span class="toc-page">{html.escape(page)}</span>'
+                '</div>'
+            )
+        else:
+            rows.append(f'<div class="toc-heading">{_html_inline(line)}</div>')
+    return '<div class="toc-card">' + "".join(rows) + "</div>"
+
+
 def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str = "") -> str:
     parts = []
     lines = text.split("\n")
@@ -304,7 +336,7 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
                 idx += 1
             if idx < len(lines) and lines[idx].strip().startswith("```"):
                 idx += 1
-            parts.append('<pre class="toc-card">' + html.escape("\n".join(toc_lines)) + "</pre>")
+            parts.append(_html_toc_card(toc_lines))
             continue
 
         table_lines, next_idx = _collect_strict_markdown_table(
@@ -675,8 +707,9 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     }}
     .toc .content {{
         column-count: 2;
-        column-gap: 0.38in;
-        font-size: 10pt;
+        column-gap: 0.32in;
+        font-size: 9pt;
+        line-height: 1.08;
     }}
     .toc h1 {{
         column-span: all;
@@ -686,13 +719,40 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         font-size: 24pt;
     }}
     .toc-card {{
-        margin: 0;
-        white-space: pre-wrap;
+        margin: 0 0 0.08in;
         font-family: "Courier New", "VT323", monospace;
-        font-size: 8.7pt;
-        line-height: 1.22;
+        font-size: 8.35pt;
+        line-height: 1.08;
+    }}
+    .toc-row {{
+        display: flex;
+        align-items: baseline;
+        gap: 0.05in;
+        white-space: nowrap;
         break-inside: avoid;
         page-break-inside: avoid;
+    }}
+    .toc-title {{
+        overflow: hidden;
+        text-overflow: clip;
+    }}
+    .toc-dots {{
+        flex: 1 1 auto;
+        min-width: 0.18in;
+        border-bottom: 1px dotted var(--ink);
+        transform: translateY(-0.06em);
+    }}
+    .toc-page {{
+        min-width: 0.24in;
+        text-align: right;
+    }}
+    .toc-heading {{
+        margin: 0.04in 0 0.01in;
+        font-family: "Courier New", "VT323", monospace;
+        font-size: 10pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        break-after: avoid;
     }}
     .page-meta {{
         column-span: all;
