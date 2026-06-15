@@ -53,9 +53,6 @@ if ($InstalledHash -ne $ReqHash) {
     Set-Content -Path $StampFile -Value $ReqHash -Encoding ASCII
 }
 
-Write-Host "Checking Playwright Chromium..."
-& $VenvPython -m playwright install chromium
-
 Write-Host ""
 Write-Host "Starting Delta Green PDF Translator Web UI..."
 Write-Host "Project: $ProjectRoot"

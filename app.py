@@ -28,8 +28,10 @@ from webui.runtime import (
     ensure_dir,
     existing_output_files,
     format_duration,
+    install_playwright_chromium,
     make_html_asset_bundle,
     make_output_path,
+    playwright_chromium_installed,
     render_downloads,
     safe_filename_stem,
     save_uploaded_pdf_for_preview,
@@ -855,6 +857,58 @@ if launch_pressed:
                         f"⚠️ 字体 '{typeset_font_family}' 及备选字体均不可用，"
                         "将使用系统默认 serif 字体。"
                     )
+
+            if not playwright_chromium_installed():
+                st.warning("本次导出纯重绘 PDF 需要先加载浏览器内核插件。")
+                browser_progress_bar = st.progress(0)
+                browser_status = st.empty()
+                browser_log = st.empty()
+                browser_progress_state = {"value": 0.02}
+                browser_log_lines = []
+
+                def update_browser_install_progress(message: str, percent: int | None):
+                    browser_log_lines.append(message)
+                    del browser_log_lines[:-12]
+                    if percent is not None:
+                        browser_progress_state["value"] = max(
+                            browser_progress_state["value"],
+                            min(percent / 100, 0.99),
+                        )
+                    else:
+                        browser_progress_state["value"] = min(
+                            browser_progress_state["value"] + 0.06,
+                            0.9,
+                        )
+                    try:
+                        browser_progress_bar.progress(
+                            browser_progress_state["value"],
+                            text=f"浏览器内核加载中 {int(browser_progress_state['value'] * 100)}%",
+                        )
+                    except TypeError:
+                        browser_progress_bar.progress(browser_progress_state["value"])
+                    browser_status.info(message)
+                    browser_log.markdown(
+                        "```text\n" + "\n".join(browser_log_lines) + "\n```"
+                    )
+
+                install_ok, _ = install_playwright_chromium(
+                    progress_callback=update_browser_install_progress,
+                )
+                if not install_ok:
+                    browser_status.error("浏览器内核插件加载失败，已停止本次纯重绘 PDF 导出。")
+                    st.code(
+                        r".\.venv\Scripts\python.exe -m playwright install chromium",
+                        language="powershell",
+                    )
+                    extractor.close()
+                    st.stop()
+                try:
+                    browser_progress_bar.progress(1.0, text="浏览器内核加载完成")
+                except TypeError:
+                    browser_progress_bar.progress(1.0)
+                browser_status.success("浏览器内核插件已就绪，开始执行纯重绘 PDF。")
+            else:
+                st.caption("浏览器内核已就绪，将直接执行纯重绘 PDF。")
 
             render_status_flow(active_index=1)
             st.info(f"📐 纯重绘管线：第 {start_page + 1}-{end_page} 页")

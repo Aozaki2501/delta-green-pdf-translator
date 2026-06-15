@@ -4,7 +4,9 @@ from webui.runtime import (
     contains_cjk,
     existing_output_files,
     format_duration,
+    install_playwright_chromium,
     make_html_asset_bundle,
+    playwright_chromium_installed,
     safe_filename_stem,
 )
 from webui.theme import render_app_theme
@@ -50,6 +52,74 @@ def test_make_html_asset_bundle_includes_html_and_assets(tmp_path):
 
     assert bundle == str(tmp_path / "book.html_assets.zip")
     assert Path(bundle).exists()
+
+
+def test_playwright_chromium_installed_checks_executable_path(tmp_path, monkeypatch):
+    browser = tmp_path / "chrome.exe"
+    browser.write_bytes(b"")
+    monkeypatch.setattr(
+        "webui.runtime._playwright_chromium_executable_path",
+        lambda: str(browser),
+    )
+    assert playwright_chromium_installed() is True
+
+    monkeypatch.setattr(
+        "webui.runtime._playwright_chromium_executable_path",
+        lambda: str(tmp_path / "missing.exe"),
+    )
+    assert playwright_chromium_installed() is False
+
+
+def test_install_playwright_chromium_streams_progress(monkeypatch):
+    events = []
+    commands = []
+
+    class FakeProcess:
+        stdout = iter(["Downloading Chromium 45%\n", "Download complete\n"])
+
+        def wait(self):
+            return 0
+
+    def fake_popen(command, **kwargs):
+        commands.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr("webui.runtime.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("webui.runtime.playwright_chromium_installed", lambda: True)
+
+    ok, logs = install_playwright_chromium(
+        progress_callback=lambda message, percent: events.append((message, percent)),
+        python_executable="C:/Python/python.exe",
+    )
+
+    assert ok is True
+    assert commands == [["C:/Python/python.exe", "-m", "playwright", "install", "chromium"]]
+    assert logs == ["Downloading Chromium 45%", "Download complete"]
+    assert events[0] == ("准备加载浏览器内核插件…", 0)
+    assert ("Downloading Chromium 45%", 45) in events
+    assert events[-1] == ("浏览器内核插件加载完成。", 100)
+
+
+def test_install_playwright_chromium_reports_missing_browser_after_install(monkeypatch):
+    events = []
+
+    class FakeProcess:
+        stdout = iter(["Download complete\n"])
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("webui.runtime.subprocess.Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr("webui.runtime.playwright_chromium_installed", lambda: False)
+
+    ok, logs = install_playwright_chromium(
+        progress_callback=lambda message, percent: events.append((message, percent)),
+        python_executable="C:/Python/python.exe",
+    )
+
+    assert ok is False
+    assert logs[-1] == "安装命令已完成，但没有检测到 Chromium 内核。"
+    assert events[-1] == ("安装命令已完成，但没有检测到 Chromium 内核。", None)
 
 
 def test_render_app_theme_calls_streamlit_markdown(monkeypatch):

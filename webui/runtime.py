@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import subprocess
+import sys
 import uuid
 import zipfile
 from pathlib import Path
@@ -15,6 +17,7 @@ from webui.history import is_final_output_file
 
 
 APP_DIR = Path(__file__).resolve().parent.parent
+PLAYWRIGHT_PERCENT_PATTERN = re.compile(r"(\d{1,3})%")
 
 
 def make_output_path(output_base, extension):
@@ -100,3 +103,75 @@ def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
         with open(target, "wb") as f:
             f.write(uploaded_file.getvalue())
     return target
+
+
+def _playwright_chromium_executable_path() -> str | None:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        return p.chromium.executable_path
+
+
+def playwright_chromium_installed() -> bool:
+    try:
+        executable = _playwright_chromium_executable_path()
+    except Exception:
+        return False
+    return bool(executable) and Path(executable).exists()
+
+
+def _extract_playwright_progress_percent(line: str) -> int | None:
+    match = PLAYWRIGHT_PERCENT_PATTERN.search(line or "")
+    if not match:
+        return None
+    value = int(match.group(1))
+    if 0 <= value <= 100:
+        return value
+    return None
+
+
+def install_playwright_chromium(progress_callback=None, python_executable: str | None = None):
+    command = [
+        python_executable or sys.executable,
+        "-m",
+        "playwright",
+        "install",
+        "chromium",
+    ]
+    logs = []
+
+    def emit(message: str, percent: int | None = None):
+        if progress_callback is not None:
+            progress_callback(message, percent)
+
+    emit("准备加载浏览器内核插件…", 0)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    if process.stdout is not None:
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            logs.append(line)
+            emit(line, _extract_playwright_progress_percent(line))
+
+    return_code = process.wait()
+    if return_code != 0:
+        emit("浏览器内核插件加载失败。", None)
+        return False, logs
+
+    if not playwright_chromium_installed():
+        message = "安装命令已完成，但没有检测到 Chromium 内核。"
+        logs.append(message)
+        emit(message, None)
+        return False, logs
+
+    emit("浏览器内核插件加载完成。", 100)
+    return True, logs

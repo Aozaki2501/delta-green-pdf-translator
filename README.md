@@ -365,7 +365,7 @@ python rerender_output.py --progress output\book_cn\book_cn.progress.json --pdf 
 
 ## 纯重绘 PDF
 
-纯重绘 PDF 会重新提取页面结构，用 HTML/CSS 重建页面，再导出 `_typeset.pdf`。它比普通 Word/HTML 更接近原 PDF 版面，但也更挑 PDF 结构。
+纯重绘 PDF 会重新提取页面结构，用 HTML/CSS 重建页面，再导出 `_typeset.pdf`。它比普通 Word/HTML 更接近原 PDF 版面，但也更挑 PDF 结构。首次在 Web 里使用时，如果本机还没有对应浏览器内核，页面会先提示加载并显示进度。
 
 ```mermaid
 flowchart TD
@@ -385,10 +385,11 @@ flowchart TD
 
 1. 上传 PDF。
 2. 输出格式只选择“纯重绘 PDF（_typeset）”。
-3. 如有需要，填写中文字体。
-4. 如果已有 `layout_hints.json`，填入路径。
-5. 如果要让多模态模型审稿，勾选“自动生成 layout hints”。
-6. 点击执行。
+3. 如果页面提示加载浏览器内核插件，等待进度完成。
+4. 如有需要，填写中文字体。
+5. 如果已有 `layout_hints.json`，填入路径。
+6. 如果要让多模态模型审稿，勾选“自动生成 layout hints”。
+7. 点击执行。
 
 ### layout hints 的作用
 
@@ -543,19 +544,19 @@ DGtranslate/
 运行全部测试：
 
 ```powershell
-python -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 
 语法检查：
 
 ```powershell
-python -m py_compile app.py translate_pdf.py rerender_output.py
+.\.venv\Scripts\python.exe -m py_compile app.py translate_pdf.py rerender_output.py
 ```
 
 环境检查：
 
 ```powershell
-python test_setup.py
+.\.venv\Scripts\python.exe test_setup.py
 ```
 
 ## 使用提醒

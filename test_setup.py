@@ -101,12 +101,12 @@ def main():
         check("python-docx: 未安装（Word输出不可用）", False, "pip install python-docx")
         print(f"     {WARN} 这不是必须的，只影响 Word 输出")
 
-    # gradio
+    # streamlit
     try:
-        import gradio
-        check(f"Gradio: {gradio.__version__}", True)
+        import streamlit
+        check(f"Streamlit: {streamlit.__version__}", True)
     except ImportError:
-        check("Gradio: 未安装（Web界面不可用）", False, "pip install gradio")
+        check("Streamlit: 未安装（Web界面不可用）", False, "pip install streamlit")
         print(f"     {WARN} 这不是必须的，命令行翻译不受影响")
 
     # ============ 项目文件 ============
