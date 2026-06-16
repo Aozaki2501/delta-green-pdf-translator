@@ -1,5 +1,5 @@
 """
-HTML exporter — generates a printable dual-column HTML document from
+HTML exporter — generates a printable multi-column HTML document from
 translated page blocks.
 
 Dependencies: exporters._shared (for pagination and text helpers)
@@ -26,6 +26,7 @@ from exporters._shared import (
     _collect_strict_markdown_table,
     _layout_uses_columns,
     _normalize_heading_markup,
+    _normalize_inline_toc_fences,
     _normalize_marker_line,
     _strip_single_cell_pipe_fragment,
     _strip_list_marker,
@@ -252,6 +253,7 @@ def _html_toc_card(lines: list[str]) -> str:
 
 def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str = "") -> str:
     parts = []
+    text = _normalize_inline_toc_fences(text)
     lines = text.split("\n")
     idx = 0
     while idx < len(lines):
@@ -398,14 +400,14 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
                       source_page_labels: Optional[dict] = None,
                       page_layouts: Optional[dict] = None,
                       image_assets: Optional[dict] = None):
-    """Write translated content as a printable dual-column HTML document."""
+    """Write translated content as a printable multi-column HTML document."""
     min_chars = int(min_chars)
     max_chars = int(max_chars)
     columns = int(columns)
     if min_chars < 1 or max_chars < min_chars:
         raise ValueError("HTML 阅读页字数范围无效")
-    if columns not in (1, 2):
-        raise ValueError("HTML 正文分栏只支持 1 或 2 栏")
+    if columns not in (1, 2, 3):
+        raise ValueError("HTML 正文分栏只支持 1、2 或 3 栏")
 
     ensure_output_parent(html_output)
     translated_pages = _without_image_blocks(translated_pages)
@@ -472,6 +474,12 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         column-count: {columns};
         column-gap: 0.52in;
         font-size: 12pt;
+    }}
+    .sheet.three_columns .content {{
+        column-count: 3;
+        column-gap: 0.28in;
+        font-size: 10.2pt;
+        line-height: 1.5;
     }}
     h1, h2, h3, h4 {{
         break-after: avoid;

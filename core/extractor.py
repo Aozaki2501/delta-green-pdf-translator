@@ -204,6 +204,9 @@ class PDFExtractor:
 
     def _sort_blocks_layout_aware(self, blocks, page_width, page_height=None):
         sorted_input = sorted(blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        if self._has_three_column_signal(sorted_input, page_width, page_height):
+            return self._sort_three_column_blocks(sorted_input, page_width, page_height)
+
         non_full_blocks = [
             b for b in sorted_input
             if (
@@ -255,6 +258,118 @@ class PDFExtractor:
                 right_blocks.append(block)
 
         flush_columns()
+        return output_blocks
+
+    def _has_three_column_signal(self, blocks, page_width, page_height=None) -> bool:
+        clusters = self._x_column_clusters(
+            blocks,
+            page_width,
+            page_height,
+            max_block_width_ratio=0.46,
+        )
+        if len(clusters) < 3:
+            return False
+        useful_clusters = [
+            cluster for cluster in clusters
+            if sum(max(1, self._block_line_count(block)) for block in cluster) >= 3
+        ]
+        if len(useful_clusters) < 3:
+            return False
+        centers = sorted(
+            sum(self._block_center_x(block) for block in cluster) / len(cluster)
+            for cluster in useful_clusters
+        )
+        return centers[-1] - centers[0] >= page_width * 0.42
+
+    def _x_column_clusters(self, blocks, page_width, page_height=None,
+                           max_block_width_ratio=0.46):
+        candidates = []
+        median_size = self._median_font_size(blocks)
+        for block in blocks:
+            if block.get("type") != 0:
+                continue
+            if self._is_title_card_block(block, page_width, page_height, median_size):
+                continue
+            if self._block_width(block) <= page_width * max_block_width_ratio:
+                candidates.append(block)
+
+        if len(candidates) < 3:
+            return []
+
+        centers = sorted(
+            ((self._block_center_x(block), idx, block) for idx, block in enumerate(candidates)),
+            key=lambda item: (item[0], item[1]),
+        )
+        clusters = []
+        for center, _, block in centers:
+            if not clusters:
+                clusters.append([(center, block)])
+                continue
+            prev_center = sum(item[0] for item in clusters[-1]) / len(clusters[-1])
+            if abs(center - prev_center) >= page_width * 0.13:
+                clusters.append([(center, block)])
+            else:
+                clusters[-1].append((center, block))
+
+        return [
+            [block for _, block in cluster]
+            for cluster in clusters
+            if cluster
+        ]
+
+    def _sort_three_column_blocks(self, sorted_input, page_width, page_height=None):
+        output_blocks = []
+        segment = []
+
+        def flush_segment():
+            nonlocal segment
+            if not segment:
+                return
+            clusters = self._x_column_clusters(
+                segment,
+                page_width,
+                page_height,
+                max_block_width_ratio=0.52,
+            )
+            if len(clusters) >= 3:
+                ordered_clusters = sorted(
+                    clusters,
+                    key=lambda cluster: sum(self._block_center_x(block) for block in cluster) / len(cluster),
+                )
+                clustered_ids = {
+                    id(block)
+                    for cluster in ordered_clusters
+                    for block in cluster
+                }
+                for cluster in ordered_clusters:
+                    output_blocks.extend(sorted(cluster, key=lambda block: block["bbox"][1]))
+                leftovers = [
+                    block for block in segment
+                    if id(block) not in clustered_ids
+                ]
+                output_blocks.extend(sorted(leftovers, key=lambda block: (block["bbox"][1], block["bbox"][0])))
+            else:
+                output_blocks.extend(sorted(segment, key=lambda block: (block["bbox"][1], block["bbox"][0])))
+            segment = []
+
+        median_size = self._median_font_size(sorted_input)
+        for block in sorted_input:
+            if block.get("type") != 0:
+                flush_segment()
+                output_blocks.append(block)
+                continue
+            is_title_card = self._is_title_card_block(block, page_width, page_height, median_size)
+            is_full_width = self._block_width(block) > page_width * 0.6
+            if is_full_width or is_title_card:
+                flush_segment()
+                if is_title_card:
+                    block = dict(block)
+                    block["_dg_title_card"] = True
+                output_blocks.append(block)
+                continue
+            segment.append(block)
+
+        flush_segment()
         return output_blocks
 
     def _merge_columns_for_reading(self, left_blocks, right_blocks, median_size):
@@ -493,6 +608,56 @@ class PDFExtractor:
                     positions.append(x)
         return len(positions)
 
+    def _monospace_label_table_signal(self, block) -> bool:
+        labels = {"name", "position", "background", "shift", "administration"}
+        for words in self._extract_monospace_lines(block):
+            clean_words = [
+                re.sub(r"[^A-Za-z]", "", word["text"]).lower()
+                for word in words
+            ]
+            if sum(1 for word in clean_words if word in labels) >= 2:
+                return True
+        return False
+
+    def _monospace_aligned_grid_signal(self, block) -> bool:
+        row_cells = []
+        for words in self._extract_monospace_lines(block):
+            words = sorted(words, key=lambda word: word["x"])
+            wide_gaps = sum(
+                1
+                for left, right in zip(words, words[1:])
+                if right["x"] - left["bbox"][2] >= 24
+            )
+            if len(words) < 3 or wide_gaps < 2:
+                continue
+            row_cells.append(words)
+        if len(row_cells) < 2:
+            return False
+
+        clusters = []
+        cluster_hits = []
+        compact_rows = 0
+        for words in row_cells:
+            row_cluster_indexes = set()
+            row_text = " ".join(word["text"] for word in words)
+            if len(row_text) <= 120 and max(len(word["text"]) for word in words) <= 48:
+                compact_rows += 1
+            for word in words:
+                for idx, x in enumerate(clusters):
+                    if abs(word["x"] - x) <= 18:
+                        clusters[idx] = (x + word["x"]) / 2
+                        row_cluster_indexes.add(idx)
+                        break
+                else:
+                    clusters.append(word["x"])
+                    cluster_hits.append(0)
+                    row_cluster_indexes.add(len(clusters) - 1)
+            for idx in row_cluster_indexes:
+                cluster_hits[idx] += 1
+
+        stable_columns = sum(1 for hits in cluster_hits if hits >= 2)
+        return stable_columns >= 3 and compact_rows >= 2
+
     def _is_table_block(self, block, page_width):
         if not self._is_monospace_block(block):
             return False
@@ -501,12 +666,12 @@ class PDFExtractor:
             return False
         text = self._extract_block_text(block)
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        separator_signal = bool(re.search(r"_{8,}|\+[-_ ]+|-{3,}\s+-{3,}", text))
+        separator_signal = bool(re.search(r"_{8,}|\+[-_ ]*[-_][-_ ]+|-{3,}\s+-{3,}", text))
         pipe_signal = "|" in text
         keyword_signal = bool(re.search(r"\b(CLUE|RESULT|ROLL|DAMAGE|SKILL|EFFECT)\b", text, re.IGNORECASE))
         aligned_columns = sum(1 for line in lines if len(re.split(r"\s{2,}", line)) >= 3)
-        label_signal = bool(re.search(r"^>>|\b(Name|Position|Background|Shift|Administration)\b", text, re.IGNORECASE))
-        multi_column_signal = self._monospace_column_count(block) >= 2 and self._block_line_count(block) <= 8
+        label_signal = text.lstrip().startswith(">>") or self._monospace_label_table_signal(block)
+        multi_column_signal = self._monospace_aligned_grid_signal(block)
         return pipe_signal or separator_signal or (keyword_signal and aligned_columns >= 2) or label_signal or multi_column_signal
 
     def _is_contents_block(self, block):
@@ -516,24 +681,24 @@ class PDFExtractor:
             self._clean_contents_line(self._extract_line_text(line))
             for line in block.get("lines", [])
         ]
-        pair_hits = 0
-        previous_entry = False
-        for line in lines:
-            if not line:
-                continue
-            if re.fullmatch(r"\d{1,4}", line):
-                if previous_entry:
-                    pair_hits += 1
-                previous_entry = False
-                continue
-            previous_entry = bool(re.search(r"[A-Za-z]", line))
-        return bool(re.search(r"\bContents\b", text, re.IGNORECASE)) or (
+        has_contents_title = any(
+            self._looks_like_contents_title(line)
+            for line in lines[:3]
+        )
+        return has_contents_title or (
             text.count(".") >= 20 and len(leader_hits) >= 3
-        ) or pair_hits >= 3
+        )
 
     def _looks_like_contents_title(self, text: str) -> bool:
         compact = re.sub(r"[^A-Za-z]", "", str(text or "")).lower()
-        return (compact.startswith("contents") and len(compact) <= 32) or compact == "index"
+        raw = str(text or "")
+        decorated_contents = "//" in raw and compact.startswith("contents")
+        repeated_contents = compact.startswith("contents") and compact.endswith("contents")
+        return (
+            compact in {"contents", "index"}
+            or decorated_contents
+            or (repeated_contents and len(compact) <= 64)
+        )
 
     def _clean_contents_line(self, text: str) -> str:
         text = str(text or "").replace("\b", " ")
@@ -609,6 +774,108 @@ class PDFExtractor:
         ):
             return True
         return False
+
+    def _stat_signal_count(self, text: str) -> int:
+        return self._stat_label_count(text) + self._stat_number_count(text)
+
+    def _stat_label_count(self, text: str) -> int:
+        return len(re.findall(
+            r"(?im)^\s*(?:General Abilities|Abilities|Hypergeometry|Hit Threshold|"
+            r"Alertness Modifier|Stealth Modifier|Attack|Armor|Stability Loss|"
+            r"Xin Energy)\s*:",
+            text,
+        ))
+
+    def _stat_number_count(self, text: str) -> int:
+        return len(re.findall(
+            r"\b(?:Athletics|Fighting|Health|Melee Weapons|Unarmed Combat|"
+            r"Firearms|Drive|Alertness Modifier|Stealth Modifier)\s*[+-]?\d+\b",
+            text,
+            flags=re.IGNORECASE,
+        ))
+
+    def _is_stat_candidate_block(self, block) -> bool:
+        return self._stat_signal_count(self._extract_block_text(block)) > 0
+
+    def _is_likely_stat_title_block(self, block, median_size) -> bool:
+        text = self._extract_block_text(block).strip()
+        text = re.sub(r"^#{1,6}\s*", "", text).strip()
+        if not text or len(text) > 64:
+            return False
+        if self._block_line_count(block) > 2:
+            return False
+        if re.search(r"[.!?。！？]$", text):
+            return False
+        avg_size = self._block_avg_font_size(block)
+        uppercaseish = text == text.upper() and re.search(r"[A-Z]", text)
+        return uppercaseish or avg_size >= median_size * 1.10
+
+    def _is_stat_continuation_block(self, block, median_size) -> bool:
+        if self._is_stat_candidate_block(block):
+            return True
+        if self._is_likely_stat_title_block(block, median_size):
+            return False
+        text = self._extract_block_text(block).strip()
+        if not text:
+            return False
+        return self._is_monospace_block(block) or self._block_line_count(block) <= 3
+
+    def _find_stat_card_groups(self, content_blocks, page_width, page_height, excluded_ids=None):
+        excluded_ids = excluded_ids or set()
+        median_size = self._median_font_size(content_blocks)
+        grouped_ids = set()
+        groups = []
+        sorted_blocks = sorted(content_blocks, key=lambda block: (block["bbox"][1], block["bbox"][0]))
+        candidates = [
+            block for block in sorted_blocks
+            if id(block) not in excluded_ids
+            and self._is_stat_candidate_block(block)
+        ]
+
+        for start in candidates:
+            if id(start) in grouped_ids:
+                continue
+            column_blocks = [
+                block for block in sorted_blocks
+                if id(block) not in excluded_ids
+                and id(block) not in grouped_ids
+                and self._blocks_share_column(start, block, page_width)
+            ]
+            if start not in column_blocks:
+                continue
+            start_index = column_blocks.index(start)
+            group = [start]
+
+            cursor = start_index - 1
+            while cursor >= 0:
+                prev = column_blocks[cursor]
+                gap = group[0]["bbox"][1] - prev["bbox"][3]
+                if gap > page_height * 0.045:
+                    break
+                if self._is_stat_candidate_block(prev) or self._is_likely_stat_title_block(prev, median_size):
+                    group.insert(0, prev)
+                    cursor -= 1
+                    continue
+                break
+
+            cursor = start_index + 1
+            while cursor < len(column_blocks):
+                block = column_blocks[cursor]
+                gap = block["bbox"][1] - group[-1]["bbox"][3]
+                if gap > page_height * 0.045:
+                    break
+                if self._is_stat_continuation_block(block, median_size):
+                    group.append(block)
+                    cursor += 1
+                    continue
+                break
+
+            group_text = "\n".join(self._extract_block_text(block) for block in group)
+            if self._is_stat_text(group_text):
+                groups.append(group)
+                grouped_ids.update(id(block) for block in group)
+
+        return groups
 
     def _is_non_body_font_block(self, block, body_fonts: set) -> bool:
         """检测文本块是否使用了与正文不同的字体族（卡片/侧栏的特征）。"""
@@ -767,6 +1034,16 @@ class PDFExtractor:
             and self._is_card_text_block(block, page_width, page_height, median_size)
         ]
         for group in self._group_card_blocks(loose_card_blocks, page_width, page_height):
+            for block in group:
+                card_ids.add(id(block))
+            card_groups.append(group)
+
+        for group in self._find_stat_card_groups(
+            content_blocks,
+            page_width,
+            page_height,
+            excluded_ids=card_ids,
+        ):
             for block in group:
                 card_ids.add(id(block))
             card_groups.append(group)
@@ -1169,6 +1446,11 @@ class PDFExtractor:
                     right_count += 1
 
         has_two_column_signal = left_count >= 1 and right_count >= 1
+        has_three_column_signal = self._has_three_column_signal(
+            content_blocks,
+            page_width,
+            page_height,
+        )
         full_width_ratio = full_width_height / max(total_height, 1)
         if page_text_len <= 500 and (image_count >= 4 or drawing_count >= 8 or len(content_blocks) <= 4):
             return "art"
@@ -1196,6 +1478,8 @@ class PDFExtractor:
             and not has_two_column_signal
         ):
             return "character"
+        if has_three_column_signal and full_width_ratio < 0.45:
+            return "three_columns"
         if has_two_column_signal and full_width_ratio < 0.45:
             return "columns"
 
@@ -1233,6 +1517,8 @@ class PDFExtractor:
 
         if full_width_ratio >= 0.45:
             return "single"
+        if has_three_column_signal:
+            return "three_columns"
         if has_two_column_signal:
             return "columns"
         if len(content_blocks) <= 3 and full_width_height > page_height * 0.18:
@@ -1250,7 +1536,7 @@ class PDFExtractor:
         notes = [f"layout: {layout}"]
         table_count = sum(1 for block in content_blocks if self._is_table_block(block, page_width))
         handout_count = sum(1 for block in content_blocks if self._is_handout_block(block))
-        if any(self._is_contents_block(block) for block in content_blocks):
+        if layout == "toc":
             notes.append("contents page preserved as TOC")
         if table_count:
             notes.append(f"{table_count} table-like block(s)")
@@ -1264,6 +1550,8 @@ class PDFExtractor:
             notes.append("short-line credits/list page detected")
         elif layout == "art":
             notes.append("art-divider page detected")
+        elif layout == "three_columns":
+            notes.append("three-column reading layout detected")
         return notes
 
     def _context_from_extracted_text(self, text: str, layout: str) -> str:
@@ -1341,10 +1629,14 @@ class PDFExtractor:
         attr_number_hits = sum(1 for attr in attributes if re.search(rf"\b{attr}\s*\d+", upper))
         has_secondary_stats = bool(re.search(r"\b(?:HP|WP|SAN)\s*\d+", upper))
         has_game_sections = bool(re.search(r"(?m)^\s*(?:SKILLS|ATTACKS|ARMOR|DISORDER)\s*:", upper))
+        fodg_labels = self._stat_label_count(text)
+        fodg_numbers = self._stat_number_count(text)
         return (
             attr_number_hits >= 4
             or (attr_number_hits >= 2 and has_secondary_stats)
             or (attr_number_hits >= 1 and has_game_sections)
+            or fodg_labels >= 2
+            or (fodg_labels >= 1 and fodg_numbers >= 2)
         )
 
     def _is_stat_group(self, group) -> bool:
@@ -1711,14 +2003,17 @@ class PDFExtractor:
         return clean_text
 
     def _extract_contents_page(self, content_blocks):
-        toc_blocks = [
-            block for block in content_blocks
-            if self._is_monospace_block(block) or self._is_contents_block(block)
-        ]
         title_blocks = [
-            block for block in toc_blocks
+            block for block in content_blocks
             if self._looks_like_contents_title(self._extract_block_text(block))
         ]
+        if title_blocks:
+            toc_blocks = list(content_blocks)
+        else:
+            toc_blocks = [
+                block for block in content_blocks
+                if self._is_monospace_block(block) or self._is_contents_block(block)
+            ]
         body_blocks = [block for block in toc_blocks if block not in title_blocks]
         body_blocks = sorted(body_blocks, key=lambda b: (b["bbox"][0], b["bbox"][1]))
 

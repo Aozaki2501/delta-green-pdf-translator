@@ -127,6 +127,98 @@ def test_stat_group_uses_stat_block_marker():
     assert sections[0].startswith("[STAT_BLOCK]")
 
 
+def test_fodg_monospace_stat_card_is_detected_from_split_blocks():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    body = _block("Ordinary body text outside the stat card.", 45, 90, 202, 120, font="FuturaPT-Book")
+    title = _block("MING YUAN", 91, 288, 154, 303, font="CourierPrime-Bold")
+    stats = [
+        _block("General Abilities:", 54, 310, 174, 323, font="CourierPrime-Bold"),
+        _block("Athletics 8, Fighting 8, Health 6", 63, 322, 195, 347, font="CourierPrime"),
+        _block("Hypergeometry: 12", 54, 351, 156, 364, font="CourierPrime-Bold"),
+        _block("Hit Threshold: 4", 54, 367, 150, 380, font="CourierPrime-Bold"),
+        _block("Alertness Modifier: +2", 54, 384, 180, 397, font="CourierPrime-Bold"),
+        _block("Stealth Modifier: +0", 54, 400, 168, 413, font="CourierPrime-Bold"),
+        _block("Attack: Sacrificial", 54, 417, 168, 430, font="CourierPrime-Bold"),
+        _block("Dagger (-1)", 63, 429, 129, 442, font="CourierPrime"),
+        _block("Armor: His bizarre", 54, 445, 168, 458, font="CourierPrime-Bold"),
+        _block("flesh means he’s got Armour 2.", 63, 457, 183, 482, font="CourierPrime"),
+    ]
+
+    body_blocks, card_groups, _ = extractor._split_card_blocks(
+        _FakePage(),
+        [body, title] + stats,
+        page_width=612,
+        page_height=792,
+    )
+    sections = extractor._interleaved_body_and_card_sections(
+        body_blocks,
+        card_groups,
+        page_width=612,
+        page_height=792,
+    )
+
+    text = "\n\n".join(sections)
+    assert body in body_blocks
+    assert "[STAT_BLOCK]" in text
+    assert "MING YUAN" in text
+    assert "General Abilities" in text
+
+
+def test_fodg_futura_stat_card_is_detected_from_split_blocks():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    body = _block("The caster writes a ritual sign on the wall.", 399, 376, 553, 571, font="FuturaPT-Book")
+    title = _block("Large Poppet", 399, 149, 496, 170, font="FuturaPT-Demi")
+    stats = [
+        _block("Abilities: Athletics 4,", 399, 172, 494, 186, font="FuturaPT-Demi"),
+        _block("Health 5, Melee Weapons 3, Unarmed Combat 5 Hit Threshold: 4 Alertness Modifier: -1 Stealth Modifier: +1 Attack: Paper Cut (d-1) or knife", 399, 186, 538, 270, font="FuturaPT-Book"),
+        _block("(d-1) Armor: Resilient (anything", 399, 270, 516, 298, font="FuturaPT-Book"),
+        _block("except fire) Stability Loss: +0", 399, 298, 476, 326, font="FuturaPT-Book"),
+    ]
+
+    body_blocks, card_groups, _ = extractor._split_card_blocks(
+        _FakePage(),
+        [title] + stats + [body],
+        page_width=612,
+        page_height=792,
+    )
+    sections = extractor._interleaved_body_and_card_sections(
+        body_blocks,
+        card_groups,
+        page_width=612,
+        page_height=792,
+    )
+
+    text = "\n\n".join(sections)
+    assert body in body_blocks
+    assert "[STAT_BLOCK]" in text
+    assert "Large Poppet" in text
+    assert "Stability Loss" in text
+
+
+def test_fodg_skill_list_without_stat_labels_is_not_stat_block():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    skill_lines = [
+        _block("Drive", 84, 465, 130, 477, font="FuturaPT-Book"),
+        _block("5", 150, 465, 160, 477, font="FuturaPT-Book"),
+        _block("Firearms", 84, 525, 145, 537, font="FuturaPT-Book"),
+        _block("12", 150, 525, 163, 537, font="FuturaPT-Book"),
+        _block("Melee Weapons", 84, 585, 150, 597, font="FuturaPT-Book"),
+        _block("9", 155, 585, 162, 597, font="FuturaPT-Book"),
+        _block("Unarmed Combat", 84, 719, 156, 731, font="FuturaPT-Book"),
+        _block("8", 160, 719, 166, 731, font="FuturaPT-Book"),
+    ]
+
+    body_blocks, card_groups, _ = extractor._split_card_blocks(
+        _FakePage(),
+        skill_lines,
+        page_width=612,
+        page_height=792,
+    )
+
+    assert body_blocks == skill_lines
+    assert card_groups == []
+
+
 def test_image_region_uses_image_marker():
     extractor = PDFExtractor.__new__(PDFExtractor)
     rect = extractor._rect_from_bbox((70, 120, 540, 260))
@@ -377,6 +469,66 @@ def _mono_table_block():
     }
 
 
+def test_monospace_table_block_is_detected():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+
+    assert extractor._is_table_block(_mono_table_block(), page_width=612)
+
+
+def test_monospace_body_paragraph_is_not_detected_as_table():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    paragraph = {
+        "bbox": (63, 120, 519, 158),
+        "type": 0,
+        "lines": [
+            _mono_line(
+                [
+                    "Almousin is a holy name used in the Grand Grimoire to conjure demons.",
+                    "th",
+                    "-century",
+                ],
+                [63, 464, 471],
+                120,
+            ),
+            _mono_line(
+                ["ry", "Grand Grimoire", "to conjure and command demons."],
+                [63, 81, 165],
+                134,
+            ),
+            _mono_line(
+                ["Arabic", "al-Muhsi,", "the Numberer, one of the Names of Allah."],
+                [63, 105, 159],
+                148,
+            ),
+        ],
+    }
+    name_paragraph = _block(
+        "Metraton is a less common spelling of Metatron, in Kabbalah the name of an emanation of God.",
+        63,
+        162,
+        519,
+        198,
+        font="Courier",
+    )
+
+    assert not extractor._is_table_block(paragraph, page_width=612)
+    assert not extractor._is_table_block(name_paragraph, page_width=612)
+
+
+def test_monospace_body_with_plus_sign_is_not_detected_as_table():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    paragraph = _block(
+        "After a long flight (10+ hours), check for jet lag. A blade does 4+ Health damage.",
+        101,
+        399,
+        387,
+        461,
+        font="Courier",
+    )
+
+    assert not extractor._is_table_block(paragraph, page_width=612)
+
+
 def test_non_body_font_table_is_not_grouped_as_card():
     extractor = PDFExtractor.__new__(PDFExtractor)
     body = _block("Body text.", 40, 180, 260, 240, font="Sabon")
@@ -424,6 +576,76 @@ def test_two_column_single_line_blocks_stay_columns():
     extractor.doc = _FakeDoc([_FakeLayoutPage(blocks)])
 
     assert extractor.detect_page_layout(0) == "columns"
+
+
+def test_three_column_blocks_are_detected_and_sorted_left_to_right():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    blocks = []
+    for idx in range(3):
+        y = 100 + idx * 30
+        blocks.append(_block(f"left {idx}", 70, y, 220, y + 18, font="Futura"))
+        blocks.append(_block(f"middle {idx}", 248, y, 398, y + 18, font="Futura"))
+        blocks.append(_block(f"right {idx}", 426, y, 576, y + 18, font="Futura"))
+    extractor.doc = _FakeDoc([_FakeLayoutPage(blocks)])
+
+    sorted_blocks = extractor._sort_blocks_layout_aware(
+        blocks,
+        page_width=612,
+        page_height=792,
+    )
+
+    assert extractor.detect_page_layout(0) == "three_columns"
+    assert [extractor._extract_block_text(block) for block in sorted_blocks] == [
+        "left 0",
+        "left 1",
+        "left 2",
+        "middle 0",
+        "middle 1",
+        "middle 2",
+        "right 0",
+        "right 1",
+        "right 2",
+    ]
+
+
+def test_body_text_with_contents_word_is_not_classified_as_toc():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    body = _block(
+        "The bizarre contents of the vessel are dangerous but this is ordinary body text.",
+        54,
+        110,
+        540,
+        160,
+        font="Futura",
+    )
+    extractor.doc = _FakeDoc([_FakeLayoutPage([body])])
+
+    assert not extractor._is_contents_block(body)
+    assert extractor.detect_page_layout(0) != "toc"
+
+
+def test_contents_phrase_heading_is_not_classified_as_toc_title():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+
+    assert not extractor._looks_like_contents_title("contents of the next shipment")
+    assert extractor._looks_like_contents_title("// Contents // // Iconoclasts //")
+
+
+def test_table_numbers_without_contents_title_are_not_classified_as_toc():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    table = _block("", 54, 110, 540, 220, font="Futura")
+    table["lines"] = [
+        _line("Buddhist Militia Buddhist Militia", 10, 110, font="Futura"),
+        _line("4", 10, 124, font="Futura"),
+        _line("Buddhist Militia Viet Cong", 10, 138, font="Futura"),
+        _line("5", 10, 152, font="Futura"),
+        _line("Cowboys Ghouls", 10, 166, font="Futura"),
+        _line("6", 10, 180, font="Futura"),
+    ]
+    extractor.doc = _FakeDoc([_FakeLayoutPage([table])])
+
+    assert not extractor._is_contents_block(table)
+    assert extractor.detect_page_layout(0) != "toc"
 
 
 def test_contents_title_with_decorators_is_classified_as_toc():

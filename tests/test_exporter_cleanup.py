@@ -282,6 +282,14 @@ def test_html_renders_toc_as_compact_rows():
     assert "```toc" not in html
 
 
+def test_html_renders_inline_toc_fence_as_compact_rows():
+    html = _html_block("# Contents```tocChapter One ........ 12\n```")
+
+    assert "<h1>Contents</h1>" in html
+    assert '<span class="toc-title">Chapter One</span>' in html
+    assert "```toc" not in html
+
+
 def test_html_toc_preserves_abbreviation_periods():
     html = _html_block("```toc\nM.O.S. ........ 13\nPlaying V.C. ........ 176\n```")
 

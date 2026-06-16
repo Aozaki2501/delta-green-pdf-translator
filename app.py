@@ -218,7 +218,7 @@ with st.sidebar:
     provider = "deepseek"
     base_url = "https://api.deepseek.com"
     model = "deepseek-v4-pro"
-    workers = 32
+    workers = 8
     rate_limit = 60
     cooldown = 1.0
     max_split_depth = 10
@@ -262,7 +262,7 @@ with st.sidebar:
     with st.expander("高级任务控制", expanded=False):
         base_url = st.text_input("接口地址", value=base_url, placeholder="https://api.deepseek.com")
         model = st.text_input("模型名称", value=model)
-        workers = st.slider("并发数", 1, 64, 32, help="并行 API 调用数量")
+        workers = st.slider("并发数", 1, 64, 8, help="并行 API 调用数量")
         rate_limit = st.number_input(
             "速率限制（次/分钟）", value=60, min_value=1, max_value=1000, step=10,
             help="每分钟最大 API 调用次数"
@@ -288,7 +288,12 @@ with st.sidebar:
         with st.expander("文档档案输出", expanded=False):
             word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
             word_line_spacing = st.slider("正文行距", 1.0, 2.0, 1.5, 0.05)
-            word_columns = st.selectbox("正文分栏", [1, 2], index=1, format_func=lambda n: f"{n} 栏")
+            word_columns = st.selectbox(
+                "正文分栏",
+                [1, 2, 3],
+                index=1,
+                format_func=lambda n: {1: "单栏", 2: "双栏", 3: "三栏"}[n],
+            )
             word_min_chars = st.number_input("阅读页最少字数", value=1000, min_value=300, max_value=3000, step=100)
             word_max_chars = st.number_input("阅读页最多字数", value=1500, min_value=500, max_value=5000, step=100)
             word_hard_page_breaks = st.checkbox(
@@ -1157,11 +1162,11 @@ if launch_pressed:
             display_pages = ", ".join(str(p + 1) for p in sorted(retranslate_pages))
             st.info(f"已标记重翻页：{display_pages}（清理 {cleared} 条旧进度）。")
         if retry_failed_pages:
-            if failed_from_progress:
-                pages_filter = failed_from_progress
+            pages_filter = failed_from_progress | retranslate_pages
+            if pages_filter:
                 tracker.clear_failed_pages(pages_filter)
                 st.info(
-                    "本次只重试失败页："
+                    "本次重试页："
                     + ", ".join(str(p + 1) for p in sorted(pages_filter))
                 )
             else:

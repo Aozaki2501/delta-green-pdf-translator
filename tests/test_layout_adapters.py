@@ -35,6 +35,7 @@ def _typeset_block(block_id="b1", region_id="r1", role=SemanticRole.BODY_COLUMN)
 
 def test_layout_helper_distinguishes_columns_from_single_column_modes():
     assert _layout_uses_columns("columns") is True
+    assert _layout_uses_columns("three_columns") is True
     assert _layout_uses_columns("character") is False
     assert _layout_uses_columns("document") is False
     assert _layout_uses_columns("credits") is False
@@ -82,6 +83,7 @@ def test_typeset_layout_merge_preserves_special_reading_layouts():
             1: "handout",
             2: "character",
             3: "columns",
+            5: "columns",
         },
         {
             0: "single",
@@ -89,6 +91,7 @@ def test_typeset_layout_merge_preserves_special_reading_layouts():
             2: "single",
             3: "single",
             4: "art",
+            5: "three_columns",
         },
     )
 
@@ -97,6 +100,7 @@ def test_typeset_layout_merge_preserves_special_reading_layouts():
     assert merged[2] == "character"
     assert merged[3] == "single"
     assert merged[4] == "art"
+    assert merged[5] == "three_columns"
 
 
 def test_paginate_translated_blocks_splits_when_layout_changes():
@@ -147,6 +151,23 @@ def test_html_output_emits_layout_class(tmp_path):
     html = out.read_text(encoding="utf-8")
     assert 'class="sheet character"' in html
     assert 'class="sheet credits"' in html
+
+
+def test_html_output_supports_three_column_layout(tmp_path):
+    out = tmp_path / "three.html"
+
+    write_html_output(
+        [(0, "第一段正文。")],
+        str(out),
+        "Layout Demo",
+        columns=3,
+        page_layouts={0: "three_columns"},
+    )
+
+    html = out.read_text(encoding="utf-8")
+    assert 'class="sheet three_columns"' in html
+    assert ".sheet.three_columns .content" in html
+    assert "column-count: 3" in html
 
 
 def test_html_output_uses_source_page_labels_in_footer(tmp_path):
@@ -318,3 +339,46 @@ def test_word_output_renders_toc_as_two_column_compact_leaders(tmp_path):
     assert "Appendix" in document_xml
     assert "```toc" not in document_xml
     assert "[[TOC]]" not in document_xml
+
+
+def test_word_output_renders_inline_toc_fence(tmp_path):
+    if not HAS_DOCX:
+        return
+
+    out = tmp_path / "inline_toc.docx"
+    write_word_output(
+        [(0, "# Contents```tocChapter One ........ 12\n```")],
+        str(out),
+        "Layout Demo",
+        min_chars=1,
+        max_chars=1000,
+        page_layouts={0: "toc"},
+    )
+
+    with zipfile.ZipFile(out) as zf:
+        document_xml = zf.read("word/document.xml").decode("utf-8")
+
+    assert "Contents" in document_xml
+    assert "Chapter One" in document_xml
+    assert "```toc" not in document_xml
+
+
+def test_word_output_supports_three_columns(tmp_path):
+    if not HAS_DOCX:
+        return
+
+    out = tmp_path / "three.docx"
+    write_word_output(
+        [(0, "第一段正文。")],
+        str(out),
+        "Layout Demo",
+        min_chars=1,
+        max_chars=1000,
+        columns=3,
+        page_layouts={0: "three_columns"},
+    )
+
+    with zipfile.ZipFile(out) as zf:
+        document_xml = zf.read("word/document.xml").decode("utf-8")
+
+    assert 'w:num="3"' in document_xml

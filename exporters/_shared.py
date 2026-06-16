@@ -61,6 +61,13 @@ def _normalize_marker_line(line: str) -> str:
     return MARKER_ALIASES.get(stripped, stripped)
 
 
+def _normalize_inline_toc_fences(text: str) -> str:
+    if "```toc" not in text:
+        return text
+    text = re.sub(r"(?<!\n)(```toc)", r"\n\1", text)
+    return re.sub(r"```toc\s*(?=\S)", "```toc\n", text)
+
+
 def _strip_list_marker(line: str) -> Optional[str]:
     stripped = line.strip()
     match = LIST_MARKER_RE.match(stripped)

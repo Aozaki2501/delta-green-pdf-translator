@@ -26,6 +26,7 @@ SPECIALIZED_READING_LAYOUTS = frozenset({
 
 ORDINARY_READING_LAYOUTS = frozenset({
     "columns",
+    "three_columns",
     "single",
     "art",
 })
@@ -80,8 +81,10 @@ def layout_label_from_page_content(page: PageContent) -> str:
     if page.page_type in (PageType.COVER, PageType.SINGLE):
         return "single"
     if page.page_type == PageType.COLUMNS:
-        return "columns"
+        return "three_columns" if len(page.columns) >= 3 else "columns"
     if page.page_type == PageType.MIXED:
+        if len(page.columns) >= 3:
+            return "three_columns"
         return "columns" if len(page.columns) >= 2 else "single"
     return "columns"
 

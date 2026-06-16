@@ -29,6 +29,7 @@ from exporters._shared import (
     _strip_single_cell_pipe_fragment,
     _strip_list_marker,
     _strip_quote_prefix,
+    _normalize_inline_toc_fences,
 )
 from core.utils import ensure_output_parent
 
@@ -128,6 +129,8 @@ def set_section_page_layout(section, columns=1):
 
 
 def _columns_for_layout(layout: str, default_columns: int) -> int:
+    if layout == "three_columns":
+        return 3
     if layout == "toc":
         return 2
     return int(default_columns) if _layout_uses_columns(layout) else 1
@@ -382,6 +385,7 @@ def _split_card_segments(text: str):
     """Split block text into segments: normal (dual-column), card (single-column),
     and table (single-column). This allows the Word renderer to switch column
     layout around cards and tables."""
+    text = _normalize_inline_toc_fences(text)
     segments = []
     normal_lines = []
     card_lines = []
@@ -1002,8 +1006,8 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
     line_spacing = float(line_spacing)
     if min_chars < 1 or max_chars < min_chars:
         raise ValueError("Word 阅读页字数范围无效")
-    if columns not in (1, 2):
-        raise ValueError("Word 正文分栏只支持 1 或 2 栏")
+    if columns not in (1, 2, 3):
+        raise ValueError("Word 正文分栏只支持 1、2 或 3 栏")
     if not 6 <= body_font_size <= 24:
         raise ValueError("Word 正文字号超出支持范围")
     if not 0.8 <= line_spacing <= 3.0:

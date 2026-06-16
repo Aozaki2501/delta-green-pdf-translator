@@ -2,6 +2,14 @@
 
 本文件适用于整个仓库。处理本项目时，优先遵守这里的规则。
 
+## 全局工作台
+
+- 开始新项目或整理项目资料前，先读取 `Workspace/00_GLOBAL_WORKBENCH.md`。
+- 每个新项目必须在 `Workspace/projects/` 下创建 `projectNNN_项目名称` 文件夹。
+- 项目相关输入、中间文件、输出、日志必须放入对应项目文件夹，不能散落到电脑其它位置。
+- 犯错、踩坑、绕路、形成可复用方法时，更新 `Workspace/01_COMPOUND_LESSONS_LOG.md`。
+- 新项目创建和归档流程按 `Workspace/02_NEW_PROJECT_SOP.md` 执行。
+
 ## 核心原则
 
 - 从目标需求出发。先确认要解决的问题、完成条件和验证方式。

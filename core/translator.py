@@ -92,7 +92,7 @@ class Translator:
 
 Translation rules:
 0. If the source starts with [[TOC]], translate table-of-contents entry titles to Chinese, but preserve [[TOC]], ```toc fences, dotted leaders, line order, and page numbers.
-1. Follow the glossary strictly for proper nouns. If glossary entries overlap, the longest matching phrase wins.
+1. Follow the glossary strictly for proper nouns when glossary entries are provided in the user message. If glossary entries overlap, the longest matching phrase wins.
 2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
 3. Output in Markdown format with preserved heading levels, - bullet lists, paragraph spacing.
 4. Professional, fluent Chinese. Maintain horror atmosphere. Precise rule descriptions.
@@ -107,14 +107,12 @@ Translation rules:
 13. Preserve [CARD] and [/CARD] marker lines exactly. Text inside a card must stay inside the card and must not be merged into surrounding body text.
 14. Preserve [FULL_WIDTH_TITLE] and [/FULL_WIDTH_TITLE] marker lines exactly. Text inside marks a full-width section title; translate only the title text inside.
 15. Preserve [STAT_BLOCK], [/STAT_BLOCK], [IMAGE], and [/IMAGE] marker lines exactly. Translate stat-block labels only when they are prose; do not translate game abbreviations. Do not translate "Illustration placeholder" inside image markers.
-16. If the source contains [BLOCK id] marker lines, preserve those marker lines exactly. Return one translated block for each source block and no text outside the block markers.
-
-{glossary_section}"""
+16. If the source contains [BLOCK id] marker lines, preserve those marker lines exactly. Return one translated block for each source block and no text outside the block markers."""
 
     SYSTEM_PROMPT_MARKDOWN = """You are a professional TRPG translator. Translate the following Markdown content from English to Chinese.
 
 Translation rules:
-1. Follow the glossary strictly for proper nouns. The longest matching phrase wins.
+1. Follow the glossary strictly for proper nouns when glossary entries are provided in the user message. The longest matching phrase wins.
 2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
 3. Preserve Markdown structure exactly: heading levels (#), bullet lists (- or *), numbered lists, paragraph spacing.
 4. Professional, fluent Chinese. Maintain horror/thriller atmosphere. Precise rule descriptions.
@@ -124,23 +122,19 @@ Translation rules:
 8. Preserve blockquotes (> lines) exactly as blockquotes.
 9. Do NOT translate image links (![...](...)). Keep them exactly as-is.
 10. Do NOT add any Markdown syntax that was not in the source.
-11. Preserve [BLOCK n] and [/BLOCK n] marker lines exactly. Return one translated block for each source block and no text outside the block markers.
-
-{glossary_section}"""
+11. Preserve [BLOCK n] and [/BLOCK n] marker lines exactly. Return one translated block for each source block and no text outside the block markers."""
 
     SYSTEM_PROMPT_DOCX = """You are a professional TRPG translator. Translate the following text from English to Chinese.
 
 Translation rules:
-1. Follow the glossary strictly for proper nouns. The longest matching phrase wins.
+1. Follow the glossary strictly for proper nouns when glossary entries are provided in the user message. The longest matching phrase wins.
 2. Keep untranslated: dice notations (1D6, 3D6), attributes (STR, CON, DEX, INT, POW, CHA, SAN, WP, HP), skill checks (1/1D6 SAN), abbreviations (FBI, CIA, MJ-12, A-Cell).
 3. Professional, fluent Chinese. Maintain horror/thriller atmosphere. Precise rule descriptions.
 4. Keep the translation concise. Do not expand, explain, embellish, or add content not in the source.
 5. If previous context is provided, ensure continuity. Do not re-translate previous content.
 6. If the source contains inline format markers like <b>...</b> or <i>...</i>, preserve them exactly in the translation. These markers indicate bold and italic formatting boundaries that must be maintained.
 7. Translate ONLY the text content. Do not add explanations, notes, or commentary.
-8. If the source contains [BLOCK n] and [/BLOCK n] marker lines, preserve them exactly. Return one translated block for each source block and no text outside the block markers.
-
-{glossary_section}"""
+8. If the source contains [BLOCK n] and [/BLOCK n] marker lines, preserve them exactly. Return one translated block for each source block and no text outside the block markers."""
 
     def __init__(self, api_key: str, model: str = "deepseek-v4-pro",
                  base_url: str = "https://api.deepseek.com", stats: TokenStats = None,
@@ -168,6 +162,16 @@ Translation rules:
             return ""
         glossary_lines = [f"   - {eng} -> {chn}" for eng, chn in relevant.items()]
         return "\nGlossary (this section):\n" + "\n".join(glossary_lines)
+
+    def _append_glossary_to_user_prompt(self, user_prompt: str, glossary_section: str) -> str:
+        if not glossary_section:
+            return user_prompt
+        return (
+            user_prompt
+            + "\n\n---\n\n"
+            + "Use these glossary entries while translating the source above."
+            + glossary_section
+        )
 
     def _find_relevant_glossary_terms(self, text: str) -> dict:
         if self._glossary_matcher:
@@ -205,7 +209,7 @@ Translation rules:
         if not text.strip():
             return ""
         glossary_section = self._build_glossary_for_chunk(text)
-        system_prompt = self.SYSTEM_PROMPT.format(glossary_section=glossary_section)
+        system_prompt = self.SYSTEM_PROMPT
 
         page_info = f" (page {page_num + 1})" if page_num is not None else ""
         if prev_context:
@@ -216,6 +220,7 @@ Translation rules:
             )
         else:
             user_prompt = f"Translate the following{page_info}:\n\n{text}"
+        user_prompt = self._append_glossary_to_user_prompt(user_prompt, glossary_section)
 
         cache_key = self._translation_cache_key(system_prompt, user_prompt)
         cached_translation = self._cached_translation_or_empty(cache, cache_key)
@@ -280,9 +285,9 @@ Translation rules:
 
         glossary_section = self._build_glossary_for_chunk(text)
         if source_type == "docx":
-            system_prompt = self.SYSTEM_PROMPT_DOCX.format(glossary_section=glossary_section)
+            system_prompt = self.SYSTEM_PROMPT_DOCX
         else:
-            system_prompt = self.SYSTEM_PROMPT_MARKDOWN.format(glossary_section=glossary_section)
+            system_prompt = self.SYSTEM_PROMPT_MARKDOWN
 
         block_info = f" (block {block_index + 1})" if block_index is not None else ""
         if prev_context:
@@ -293,6 +298,7 @@ Translation rules:
             )
         else:
             user_prompt = f"Translate the following{block_info}:\n\n{text}"
+        user_prompt = self._append_glossary_to_user_prompt(user_prompt, glossary_section)
 
         cache_key = self._translation_cache_key(system_prompt, user_prompt)
         cached_translation = self._cached_translation_or_empty(cache, cache_key)
