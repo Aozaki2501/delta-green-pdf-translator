@@ -1,5 +1,5 @@
 """
-Import smoke tests for the module-refactor.
+Import smoke tests for the public module layout.
 
 Verifies:
 - All 15 Public_API symbols are importable from translate_pdf
@@ -7,7 +7,6 @@ Verifies:
 - Each exporter module can be imported individually without circular import errors
 - HAS_DOCX is a boolean
 
-Requirements: 10.1, 10.6
 """
 
 import importlib
