@@ -11,6 +11,11 @@ from typing import Any
 HISTORY_SUFFIX_LABELS = (
     ("_extraction_report.md", "提取诊断"),
     ("_glossary_report.md", "术语报告"),
+    ("_glossary_candidates.md", "术语候选"),
+    ("_glossary_candidates.tsv", "术语候选 TSV"),
+    ("_quality_report.md", "质量检查"),
+    ("_run_report.md", "效果报告"),
+    ("_manifest.json", "运行清单"),
     ("_audit.json", "审计记录"),
     (".progress.json", "进度"),
     (".pdf", "PDF"),
@@ -24,6 +29,11 @@ HISTORY_SUFFIX_LABELS = (
 INTERNAL_OUTPUT_SUFFIXES = (
     "_extraction_report.md",
     "_glossary_report.md",
+    "_glossary_candidates.md",
+    "_glossary_candidates.tsv",
+    "_quality_report.md",
+    "_run_report.md",
+    "_manifest.json",
     "_audit.json",
     ".progress.json",
 )

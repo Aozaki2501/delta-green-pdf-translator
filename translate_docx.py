@@ -23,7 +23,7 @@ from core.docx_extractor import (
 )
 from core.translator import Translator, TokenStats
 from core.progress import ProgressTracker
-from core.glossary import load_glossary, build_glossary_matcher
+from core.glossary import load_glossary, build_glossary_matcher, select_core_glossary_terms
 from core.dispatcher import ConcurrentDispatcher, DispatcherConfig
 from core.utils import file_sha256, configure_console_output
 from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
@@ -188,6 +188,14 @@ def translate_docx_file(
     translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats,
                             glossary_matcher=glossary_matcher)
     translator.set_glossary(glossary)
+    if glossary:
+        translator.set_core_glossary(
+            select_core_glossary_terms(
+                (block.text for block in translatable),
+                glossary,
+                matcher=glossary_matcher,
+            )
+        )
 
     # Translate Word blocks one by one. Grouped DOCX requests are faster, but
     # models often drop block markers and cause silent partial English output.

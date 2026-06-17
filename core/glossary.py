@@ -10,6 +10,7 @@ Dependencies: core.utils (for ensure_output_parent), standard library only.
 
 import os
 import re
+from dataclasses import dataclass
 
 from core.utils import ensure_output_parent
 
@@ -111,28 +112,155 @@ def find_relevant_glossary_terms(text: str, glossary: dict,
     return _find_relevant_glossary_terms_regex(text, glossary)
 
 
+def select_core_glossary_terms(texts, glossary: dict, limit: int = 80,
+                               matcher: "ACGlossaryMatcher | None" = None) -> dict:
+    """Select frequently used glossary terms for a stable prompt prefix.
+
+    Frequency is counted by how many source chunks actually hit each term,
+    using the same matching path as normal per-chunk glossary injection.
+    """
+    if not glossary or limit <= 0:
+        return {}
+
+    if isinstance(texts, dict):
+        iterable = (texts[key] for key in sorted(texts))
+    else:
+        iterable = texts
+
+    hit_counts = {}
+    for text in iterable:
+        if not text:
+            continue
+        hits = find_relevant_glossary_terms(str(text), glossary, matcher=matcher)
+        for eng in hits:
+            hit_counts[eng] = hit_counts.get(eng, 0) + 1
+
+    selected = sorted(
+        hit_counts,
+        key=lambda eng: (-hit_counts[eng], eng.lower(), eng),
+    )[:limit]
+    return {eng: glossary[eng] for eng in selected}
+
+
+@dataclass
+class GlossaryCandidate:
+    term: str
+    count: int
+    pages: list[int]
+
+
+def build_glossary_candidates(
+    pages_text: dict[int, str],
+    glossary: dict,
+    matcher: "ACGlossaryMatcher | None" = None,
+    min_pages: int = 2,
+    limit: int = 80,
+) -> list[GlossaryCandidate]:
+    if limit <= 0:
+        return []
+
+    known_terms = {term.lower() for term in glossary or {}}
+    stats: dict[str, dict] = {}
+    for page_num in sorted(pages_text):
+        text = pages_text.get(page_num, "")
+        if not text:
+            continue
+        hits = find_relevant_glossary_terms(text, glossary or {}, matcher=matcher)
+        known_on_page = known_terms | {term.lower() for term in hits}
+        for candidate in _iter_unlisted_proper_noun_candidates(text, known_on_page):
+            item = stats.setdefault(candidate, {"count": 0, "pages": set()})
+            item["count"] += 1
+            item["pages"].add(page_num)
+
+    rows = [
+        GlossaryCandidate(term=term, count=item["count"], pages=sorted(item["pages"]))
+        for term, item in stats.items()
+        if len(item["pages"]) >= max(1, min_pages)
+    ]
+    rows.sort(key=lambda row: (-len(row.pages), -row.count, row.term.lower(), row.term))
+    return rows[:limit]
+
+
+def render_glossary_candidate_report(candidates: list[GlossaryCandidate], title: str = "") -> str:
+    lines = [
+        f"# {title} — 术语候选报告" if title else "# 术语候选报告",
+        "",
+        "本报告只列出疑似未收录专名，不会自动修改术语表。",
+        "",
+        "## 候选清单",
+        "",
+    ]
+    if not candidates:
+        lines.append("- 暂无。")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.extend([
+        "| 候选英文 | 出现次数 | 页码 |",
+        "| --- | ---: | --- |",
+    ])
+    for row in candidates:
+        pages = _format_page_ranges(row.pages)
+        lines.append(f"| `{row.term}` | {row.count} | {pages} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_glossary_candidate_tsv(candidates: list[GlossaryCandidate]) -> str:
+    lines = [
+        "# 填好中文列后，可把非注释行复制到 glossary.tsv",
+        "# 中文\t英文",
+    ]
+    for row in candidates:
+        lines.append(f"\t{row.term}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_glossary_candidate_report(
+    candidates: list[GlossaryCandidate],
+    report_output: str,
+    title: str = "",
+) -> None:
+    ensure_output_parent(report_output)
+    with open(report_output, "w", encoding="utf-8") as f:
+        f.write(render_glossary_candidate_report(candidates, title))
+
+
+def write_glossary_candidate_tsv(candidates: list[GlossaryCandidate], output_path: str) -> None:
+    ensure_output_parent(output_path)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(render_glossary_candidate_tsv(candidates))
+
+
 def _find_unlisted_proper_nouns(text: str, glossary_hits: dict) -> list[str]:
     known = {term.lower() for term in glossary_hits}
+    candidates = {}
+    for candidate in _iter_unlisted_proper_noun_candidates(text, known):
+        candidates[candidate] = candidates.get(candidate, 0) + 1
+    return [
+        term for term, _ in sorted(candidates.items(), key=lambda item: (-item[1], item[0].lower()))[:20]
+    ]
+
+
+def _iter_unlisted_proper_noun_candidates(text: str, known: set[str]):
     stopwords = {
         "A", "An", "And", "Are", "As", "At", "Be", "But", "By", "For", "From", "He",
         "Her", "His", "If", "In", "Into", "Is", "It", "Its", "Of", "On", "Or", "She",
         "The", "Their", "They", "This", "To", "Was", "Were", "When", "With", "You",
         "Chapter", "Page", "Table", "Figure",
     }
-    candidates = {}
     pattern = re.compile(r"\b(?:[A-Z][A-Za-z''.-]+)(?:\s+(?:of|the|and|&|[A-Z][A-Za-z''.-]+))*\b")
     for match in pattern.finditer(text):
         candidate = match.group(0).strip(" -.,:;!?()[]{}\"""")
+        candidate = re.sub(r"^(The|A|An)\s+", "", candidate)
         if len(candidate) < 3 or candidate in stopwords:
             continue
         if candidate.isupper() and len(candidate) <= 6:
             continue
         if candidate.lower() in known:
             continue
-        candidates[candidate] = candidates.get(candidate, 0) + 1
-    return [
-        term for term, _ in sorted(candidates.items(), key=lambda item: (-item[1], item[0].lower()))[:20]
-    ]
+        yield candidate
 
 
 def _format_page_ranges(page_nums):
@@ -222,9 +350,6 @@ def write_glossary_report(pages_text: dict, glossary: dict, report_output: str, 
 # ============================================================
 # AC AUTOMATON GLOSSARY MATCHER
 # ============================================================
-
-from dataclasses import dataclass
-
 
 @dataclass
 class GlossaryMatch:

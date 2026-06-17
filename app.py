@@ -11,7 +11,9 @@ from translate_pdf import (
     load_glossary, translate_batch_concurrent,
     write_markdown_output, write_html_output, write_word_output, HAS_DOCX,
     build_progress_metadata, parse_page_selection, write_glossary_report,
-    normalize_page_range, is_failed_translation, build_extraction_diagnostics_report
+    normalize_page_range, is_failed_translation, build_extraction_diagnostics_report,
+    select_core_glossary_terms, build_glossary_candidates,
+    write_glossary_candidate_report, write_glossary_candidate_tsv
 )
 from webui.components import (
     make_dossier_id,
@@ -34,6 +36,7 @@ from webui.runtime import (
     playwright_chromium_installed,
     render_downloads,
     safe_filename_stem,
+    save_uploaded_file_once,
     save_uploaded_pdf_for_preview,
     uploaded_file_digest,
 )
@@ -46,7 +49,15 @@ from core.md_extractor import MarkdownExtractor
 from core.docx_extractor import DocxExtractor, HAS_DOCX as HAS_DOCX_LIB
 from core.glossary import build_glossary_matcher
 from core.layout_adapters import build_pdf_output_layout_context, merge_output_page_layouts
-from core.utils import looks_incomplete_translation, looks_untranslated_page
+from core.quality import build_quality_report, write_quality_report
+from core.run_report import (
+    build_run_effect,
+    build_run_manifest,
+    write_run_effect_report,
+    write_run_manifest,
+)
+from core.utils import file_sha256, looks_incomplete_translation, looks_untranslated_page
+from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -547,19 +558,11 @@ if launch_pressed:
         ensure_dir(output_dir)
 
         file_stem = safe_filename_stem(source_file.name)
-        file_ext = Path(source_file.name).suffix.lower()
-        upload_name = f"_upload_{file_stem}_{uuid.uuid4().hex[:8]}{file_ext}"
-        source_path = str(upload_dir / upload_name)
-        with open(source_path, "wb") as f:
-            f.write(source_file.getvalue())
+        source_path = str(save_uploaded_file_once(source_file, upload_dir))
 
         glossary_path = str(DEFAULT_GLOSSARY_PATH) if DEFAULT_GLOSSARY_PATH.exists() else None
         if glossary_file:
-            glossary_suffix = Path(glossary_file.name).suffix.lower() or ".tsv"
-            glossary_upload_name = f"_upload_{safe_filename_stem(glossary_file.name, 'glossary')}_{uuid.uuid4().hex[:8]}{glossary_suffix}"
-            glossary_path = str(upload_dir / glossary_upload_name)
-            with open(glossary_path, "wb") as f:
-                f.write(glossary_file.getvalue())
+            glossary_path = str(save_uploaded_file_once(glossary_file, upload_dir, "glossary"))
 
         document_output_dir = output_dir / f"{file_stem}_cn"
         ensure_dir(document_output_dir)
@@ -735,18 +738,11 @@ if launch_pressed:
 
         # Save uploaded files to uploads/
         pdf_stem = safe_filename_stem(pdf_file.name)
-        pdf_upload_name = f"_upload_{pdf_stem}_{uuid.uuid4().hex[:8]}.pdf"
-        pdf_path = str(upload_dir / pdf_upload_name)
-        with open(pdf_path, "wb") as f:
-            f.write(pdf_file.getvalue())
+        pdf_path = str(save_uploaded_file_once(pdf_file, upload_dir))
 
         glossary_path = str(DEFAULT_GLOSSARY_PATH) if DEFAULT_GLOSSARY_PATH.exists() else None
         if glossary_file:
-            glossary_suffix = Path(glossary_file.name).suffix.lower() or ".tsv"
-            glossary_upload_name = f"_upload_{safe_filename_stem(glossary_file.name, 'glossary')}_{uuid.uuid4().hex[:8]}{glossary_suffix}"
-            glossary_path = str(upload_dir / glossary_upload_name)
-            with open(glossary_path, "wb") as f:
-                f.write(glossary_file.getvalue())
+            glossary_path = str(save_uploaded_file_once(glossary_file, upload_dir, "glossary"))
 
         try:
             start_page = int(display_start_page) - 1
@@ -1229,6 +1225,14 @@ if launch_pressed:
         cost_metric = metric_cols[4].empty()
         pages_list = sorted(pages_filter)
         total_to_do = len(pages_list)
+        if glossary:
+            translator.set_core_glossary(
+                select_core_glossary_terms(
+                    (pages_text.get(pn, "") for pn in pages_list),
+                    glossary,
+                    matcher=glossary_matcher,
+                )
+            )
         pages_data = []
         prev_text = ""
         for pn in pages_list:
@@ -1362,6 +1366,77 @@ if launch_pressed:
             extractor.close()
             st.stop()
 
+        quality_report = build_quality_report(
+            pages_text={pn: pages_text.get(pn, "") for pn in range(start_page, end_page)},
+            translations={
+                pn: tracker.get_translation(pn)
+                for pn in range(start_page, end_page)
+                if tracker.get_translation(pn).strip()
+            },
+            page_layouts=page_layouts,
+            glossary=glossary,
+            glossary_matcher=glossary_matcher,
+            failed_reasons={
+                pn: tracker.failed_pages.get(str(pn), "")
+                for pn in tracker.get_failed_pages()
+                if start_page <= pn < end_page
+            },
+            title=f"{pdf_stem} — 质量检查报告",
+        )
+        st.subheader("质量检查")
+        qa_cols = st.columns(5)
+        qa_cols[0].metric("检查页", quality_report.total_pages)
+        qa_cols[1].metric("有译文", quality_report.translated_pages)
+        qa_cols[2].metric("失败页", len(quality_report.failed_pages))
+        qa_cols[3].metric("待检查", quality_report.warning_count)
+        qa_cols[4].metric("术语遗漏", quality_report.glossary_misses)
+        if quality_report.issues:
+            with st.expander("查看问题页", expanded=True):
+                for issue in quality_report.issues[:30]:
+                    detail = f"；{issue.detail}" if issue.detail else ""
+                    st.markdown(f"**第 {issue.page_num} 页：{issue.message}{detail}**")
+                    left, right = st.columns(2)
+                    left.caption("英文原文")
+                    left.text_area(
+                        f"source_{issue.page_num}_{issue.kind}",
+                        issue.source_excerpt or "无",
+                        height=140,
+                        label_visibility="collapsed",
+                        disabled=True,
+                    )
+                    right.caption("中文译文")
+                    right.text_area(
+                        f"translation_{issue.page_num}_{issue.kind}",
+                        issue.translation_excerpt or "无",
+                        height=140,
+                        label_visibility="collapsed",
+                        disabled=True,
+                    )
+        else:
+            st.success("质量检查未发现明显问题。")
+
+        glossary_candidates = build_glossary_candidates(
+            pages_text,
+            glossary,
+            matcher=glossary_matcher,
+        )
+        st.subheader("术语候选")
+        if glossary_candidates:
+            st.dataframe(
+                [
+                    {
+                        "英文候选": row.term,
+                        "出现次数": row.count,
+                        "页数": len(row.pages),
+                    }
+                    for row in glossary_candidates[:30]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("没有发现高频疑似未收录专名。")
+
         # Stats
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("📄 页数", f"{len(translated_pages_sorted)}")
@@ -1390,10 +1465,28 @@ if launch_pressed:
             f.write("\n")
         generated_files.append(diagnostics_path)
 
+        quality_path = make_output_path(output_base, "_quality_report.md")
+        write_quality_report(quality_report, quality_path)
+        generated_files.append(quality_path)
+
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
             write_glossary_report(pages_text, glossary, report_path, pdf_stem)
             generated_files.append(report_path)
+
+        candidates_report_path = make_output_path(output_base, "_glossary_candidates.md")
+        write_glossary_candidate_report(glossary_candidates, candidates_report_path, pdf_stem)
+        generated_files.append(candidates_report_path)
+        candidates_tsv_path = make_output_path(output_base, "_glossary_candidates.tsv")
+        write_glossary_candidate_tsv(glossary_candidates, candidates_tsv_path)
+        generated_files.append(candidates_tsv_path)
+        if glossary_candidates:
+            with open(candidates_tsv_path, "rb") as f:
+                st.download_button(
+                    "下载术语候选 TSV",
+                    f,
+                    file_name=Path(candidates_tsv_path).name,
+                )
 
         if "markdown" in formats:
             md_path = make_output_path(output_base, ".md")
@@ -1447,6 +1540,61 @@ if launch_pressed:
                 except Exception as e:
                     export_errors.append(f"文档排版输出失败：{e}")
 
+        final_output_names = [
+            Path(path).name
+            for path in existing_output_files(generated_files, final_only=True)
+        ]
+        internal_report_names = [
+            Path(path).name
+            for path in existing_output_files(generated_files)
+            if Path(path).name not in final_output_names
+        ]
+        run_effect = build_run_effect(
+            stats,
+            total_pages=end_page - start_page,
+            translated_pages=len(translated_pages_sorted),
+            failed_pages=failed_pages,
+            quality_issues=quality_report.warning_count,
+            glossary_candidates=len(glossary_candidates),
+            elapsed_seconds=time.time() - translation_started_at,
+        )
+        run_report_path = make_output_path(output_base, "_run_report.md")
+        write_run_effect_report(run_effect, run_report_path, pdf_stem)
+        generated_files.append(run_report_path)
+        internal_report_names.append(Path(run_report_path).name)
+        manifest_path = make_output_path(output_base, "_manifest.json")
+        write_run_manifest(
+            build_run_manifest(
+                source_file=pdf_file.name,
+                source_sha256=source_digest,
+                provider=provider,
+                model=model,
+                page_range=f"{start_page + 1}-{end_page}",
+                formats=formats,
+                prompt_version=PROMPT_VERSION,
+                extractor_version=EXTRACTOR_VERSION,
+                glossary_name=Path(glossary_path).name if glossary_path else "",
+                glossary_sha256=file_sha256(glossary_path) if glossary_path else "",
+                status="export_failed" if export_errors else (
+                    "completed_with_failures" if failed_pages else "completed"
+                ),
+                effect=run_effect,
+                output_files=final_output_names,
+                internal_reports=internal_report_names,
+                quality_report=Path(quality_path).name,
+                run_report=Path(run_report_path).name,
+            ),
+            manifest_path,
+        )
+        generated_files.append(manifest_path)
+        st.subheader("效果报告")
+        effect_cols = st.columns(5)
+        effect_cols[0].metric("缓存命中率", f"{run_effect['cache_hit_rate']:.1%}")
+        effect_cols[1].metric("API 调用", run_effect["api_calls"])
+        effect_cols[2].metric("API 失败", run_effect["failed_calls"])
+        effect_cols[3].metric("平均每页", f"¥{run_effect['cost_per_page']:.3f}")
+        effect_cols[4].metric("本地缓存", run_effect["translation_cache_hits"])
+
         if export_errors:
             audit_record = {
                 "dossier_id": dossier_id,
@@ -1468,6 +1616,12 @@ if launch_pressed:
                 "output_options": output_options,
                 "retryable_export": True,
                 "export_errors": export_errors,
+                "quality_issues": quality_report.warning_count,
+                "quality_report": Path(quality_path).name,
+                "glossary_candidates": len(glossary_candidates),
+                "glossary_candidate_report": Path(candidates_report_path).name,
+                "run_report": Path(run_report_path).name,
+                "manifest": Path(manifest_path).name,
                 "outputs": [],
             }
             write_audit_record(audit_path, audit_record)
@@ -1503,6 +1657,12 @@ if launch_pressed:
                 "output_options": output_options,
                 "retryable_export": False,
                 "export_errors": [],
+                "quality_issues": quality_report.warning_count,
+                "quality_report": Path(quality_path).name,
+                "glossary_candidates": len(glossary_candidates),
+                "glossary_candidate_report": Path(candidates_report_path).name,
+                "run_report": Path(run_report_path).name,
+                "manifest": Path(manifest_path).name,
                 "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
             }
             write_audit_record(audit_path, audit_record)

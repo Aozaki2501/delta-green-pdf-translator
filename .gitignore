@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 .streamlit/
 .codex_logs/
+logs/
 uploads/
 output/
 dist/

@@ -150,18 +150,41 @@ Translation rules:
         self.retry_delay = 5
         self.stats = stats or TokenStats()
         self._glossary_matcher = glossary_matcher
+        self.core_glossary = {}
 
     def set_glossary(self, glossary: dict):
         self.glossary = glossary
+
+    def set_core_glossary(self, glossary: dict):
+        self.core_glossary = dict(glossary or {})
 
     def _build_glossary_for_chunk(self, text: str) -> str:
         if not self.glossary:
             return ""
         relevant = self._find_relevant_glossary_terms(text)
+        if self.core_glossary:
+            relevant = {
+                eng: chn for eng, chn in relevant.items()
+                if eng not in self.core_glossary
+            }
         if not relevant:
             return ""
         glossary_lines = [f"   - {eng} -> {chn}" for eng, chn in relevant.items()]
         return "\nGlossary (this section):\n" + "\n".join(glossary_lines)
+
+    def _prepend_core_glossary_to_user_prompt(self, user_prompt: str) -> str:
+        if not self.core_glossary:
+            return user_prompt
+        glossary_lines = [
+            f"   - {eng} -> {chn}"
+            for eng, chn in self.core_glossary.items()
+        ]
+        return (
+            "Use these core glossary entries throughout this translation job:\n"
+            + "\n".join(glossary_lines)
+            + "\n\n---\n\n"
+            + user_prompt
+        )
 
     def _append_glossary_to_user_prompt(self, user_prompt: str, glossary_section: str) -> str:
         if not glossary_section:
@@ -220,6 +243,7 @@ Translation rules:
             )
         else:
             user_prompt = f"Translate the following{page_info}:\n\n{text}"
+        user_prompt = self._prepend_core_glossary_to_user_prompt(user_prompt)
         user_prompt = self._append_glossary_to_user_prompt(user_prompt, glossary_section)
 
         cache_key = self._translation_cache_key(system_prompt, user_prompt)
@@ -298,6 +322,7 @@ Translation rules:
             )
         else:
             user_prompt = f"Translate the following{block_info}:\n\n{text}"
+        user_prompt = self._prepend_core_glossary_to_user_prompt(user_prompt)
         user_prompt = self._append_glossary_to_user_prompt(user_prompt, glossary_section)
 
         cache_key = self._translation_cache_key(system_prompt, user_prompt)
@@ -364,6 +389,7 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
     completed_count = 0
     total_count = len(pages_data)
     max_workers = max(1, int(max_workers or 1))
+    warmed_pages = set()
 
     def report(page_num, translation):
         nonlocal completed_count
@@ -379,6 +405,20 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
             tracker.mark_failed(page_num, translation)
         return page_num, translation
 
+    if max_workers > 1:
+        for page_num, text, page_context in pages_data:
+            if tracker.is_completed(page_num) or not text.strip():
+                continue
+            print(f"   Cache warm-up: p{page_num + 1}", end="", flush=True)
+            page_num, translation = translate_one(page_num, text, page_context)
+            warmed_pages.add(page_num)
+            results[page_num] = translation or ""
+            report(page_num, translation)
+            if not _is_failed_translation(translation):
+                print(" done", end="", flush=True)
+            print()
+            break
+
     group_size = max_workers
 
     for group_start in range(0, len(pages_data), group_size):
@@ -386,6 +426,8 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for page_num, text, page_context in group:
+                if page_num in warmed_pages:
+                    continue
                 if tracker.is_completed(page_num):
                     translation = tracker.get_translation(page_num)
                     results[page_num] = translation

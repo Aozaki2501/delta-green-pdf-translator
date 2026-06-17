@@ -9,7 +9,14 @@ Requirements: 10.4, 10.7
 
 import pytest
 
-from core.glossary import find_relevant_glossary_terms, load_glossary
+from core.glossary import (
+    build_glossary_candidates,
+    find_relevant_glossary_terms,
+    load_glossary,
+    render_glossary_candidate_report,
+    render_glossary_candidate_tsv,
+    select_core_glossary_terms,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +219,65 @@ class TestFindRelevantGlossaryTerms:
         text = "The Greenhouse was empty."
         result = find_relevant_glossary_terms(text, glossary)
         assert "Green" not in result
+
+
+class TestSelectCoreGlossaryTerms:
+    def test_selects_terms_by_source_chunk_frequency(self):
+        glossary = {
+            "Agent": "特工",
+            "Delta Green": "绿色三角洲",
+            "Handler": "管理者",
+        }
+        texts = [
+            "The Agent met a Handler from Delta Green.",
+            "Another Agent reported to Delta Green.",
+            "The Agent waited.",
+        ]
+
+        result = select_core_glossary_terms(texts, glossary, limit=2)
+
+        assert list(result) == ["Agent", "Delta Green"]
+        assert result == {
+            "Agent": "特工",
+            "Delta Green": "绿色三角洲",
+        }
+
+    def test_empty_or_zero_limit_returns_empty(self):
+        assert select_core_glossary_terms([], {"Agent": "特工"}) == {}
+        assert select_core_glossary_terms(["Agent"], {"Agent": "特工"}, limit=0) == {}
+
+
+class TestGlossaryCandidates:
+    def test_builds_candidates_by_page_frequency(self):
+        pages = {
+            0: "The Borellus Connection mentions Agent Smith.",
+            1: "Borellus Connection returns with Agent Smith.",
+            2: "Agent Smith appears here.",
+        }
+        glossary = {"Agent": "特工"}
+
+        candidates = build_glossary_candidates(pages, glossary, min_pages=2)
+
+        assert candidates[0].term == "Agent Smith"
+        assert candidates[0].count == 3
+        assert candidates[0].pages == [0, 1, 2]
+        assert any(row.term == "Borellus Connection" for row in candidates)
+        assert all(row.term != "Agent" for row in candidates)
+
+    def test_candidate_outputs_are_manual_templates(self):
+        candidates = build_glossary_candidates(
+            {
+                0: "Borellus Connection appears.",
+                1: "Borellus Connection appears again.",
+            },
+            {},
+            min_pages=2,
+        )
+
+        report = render_glossary_candidate_report(candidates, "测试")
+        tsv = render_glossary_candidate_tsv(candidates)
+
+        assert "术语候选报告" in report
+        assert "Borellus Connection" in report
+        assert "# 中文\t英文" in tsv
+        assert "\tBorellus Connection" in tsv

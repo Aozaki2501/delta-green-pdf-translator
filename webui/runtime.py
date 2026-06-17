@@ -94,6 +94,31 @@ def uploaded_file_digest(uploaded_file) -> str:
     return hashlib.sha256(uploaded_file.getvalue()).hexdigest()
 
 
+def file_digest(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def save_uploaded_file_once(uploaded_file, upload_dir: Path, default_name: str = "document") -> Path:
+    ensure_dir(upload_dir)
+    data = uploaded_file.getvalue()
+    digest = hashlib.sha256(data).hexdigest()
+    suffix = Path(uploaded_file.name or "").suffix.lower()
+    stem = safe_filename_stem(uploaded_file.name, default_name)
+
+    for existing in sorted(upload_dir.glob(f"*{suffix}")):
+        if existing.is_file() and file_digest(existing) == digest:
+            return existing
+
+    target = upload_dir / f"_upload_{stem}_{digest}{suffix}"
+    with open(target, "wb") as f:
+        f.write(data)
+    return target
+
+
 def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
     upload_dir = APP_DIR / "uploads"
     ensure_dir(upload_dir)

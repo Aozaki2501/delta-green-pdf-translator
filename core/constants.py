@@ -5,7 +5,7 @@ This module is a leaf node in the dependency graph — it has no imports
 from other project modules.
 """
 
-PROMPT_VERSION = "2026-06-16-cache-friendly-glossary-v13"
+PROMPT_VERSION = "2026-06-17-cache-warmup-core-glossary-v14"
 EXTRACTOR_VERSION = "2026-05-20-diagnostics-assets-v1"
 SUPPORTED_OUTPUT_FORMATS = {"markdown", "html", "word", "both", "all"}
 TRANSLATION_FAILURE_PREFIX = "[Translation failed:"

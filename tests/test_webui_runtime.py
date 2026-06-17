@@ -8,6 +8,7 @@ from webui.runtime import (
     make_html_asset_bundle,
     playwright_chromium_installed,
     safe_filename_stem,
+    save_uploaded_file_once,
 )
 from webui.theme import render_app_theme
 
@@ -27,6 +28,25 @@ def test_format_duration_compacts_seconds():
 def test_contains_cjk_detects_chinese_text():
     assert contains_cjk("正文 mixed text") is True
     assert contains_cjk("plain text") is False
+
+
+def test_save_uploaded_file_once_reuses_same_content(tmp_path):
+    class Upload:
+        name = "Book.pdf"
+
+        def __init__(self, data):
+            self._data = data
+
+        def getvalue(self):
+            return self._data
+
+    first = save_uploaded_file_once(Upload(b"same"), tmp_path)
+    second = save_uploaded_file_once(Upload(b"same"), tmp_path)
+    third = save_uploaded_file_once(Upload(b"different"), tmp_path)
+
+    assert first == second
+    assert third != first
+    assert len(list(tmp_path.glob("*.pdf"))) == 2
 
 
 def test_existing_output_files_can_filter_internal_files(tmp_path):

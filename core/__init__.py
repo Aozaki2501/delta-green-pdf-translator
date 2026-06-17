@@ -26,10 +26,17 @@ from core.utils import (
 
 # glossary — depends on utils
 from core.glossary import (
+    GlossaryCandidate,
     load_glossary,
     find_relevant_glossary_terms,
+    select_core_glossary_terms,
+    build_glossary_candidates,
     build_glossary_report,
+    render_glossary_candidate_report,
+    render_glossary_candidate_tsv,
     write_glossary_report,
+    write_glossary_candidate_report,
+    write_glossary_candidate_tsv,
 )
 
 # extractor — depends on constants
@@ -54,6 +61,24 @@ from core.progress import (
     compare_progress_metadata,
 )
 
+# quality — depends on glossary and utils
+from core.quality import (
+    QualityIssue,
+    QualityReport,
+    build_quality_report,
+    render_quality_report_markdown,
+    write_quality_report,
+)
+
+# run reports — plain helpers for manifest and effect report output
+from core.run_report import (
+    build_run_effect,
+    build_run_manifest,
+    render_run_effect_markdown,
+    write_run_effect_report,
+    write_run_manifest,
+)
+
 __all__ = [
     # constants
     "PROMPT_VERSION",
@@ -69,10 +94,17 @@ __all__ = [
     "parse_page_selection",
     "file_sha256",
     # glossary
+    "GlossaryCandidate",
     "load_glossary",
     "find_relevant_glossary_terms",
+    "select_core_glossary_terms",
+    "build_glossary_candidates",
     "build_glossary_report",
+    "render_glossary_candidate_report",
+    "render_glossary_candidate_tsv",
     "write_glossary_report",
+    "write_glossary_candidate_report",
+    "write_glossary_candidate_tsv",
     # extractor
     "PDFExtractor",
     "ChapterDetector",
@@ -86,4 +118,16 @@ __all__ = [
     "ProgressTracker",
     "build_progress_metadata",
     "compare_progress_metadata",
+    # quality
+    "QualityIssue",
+    "QualityReport",
+    "build_quality_report",
+    "render_quality_report_markdown",
+    "write_quality_report",
+    # run reports
+    "build_run_effect",
+    "build_run_manifest",
+    "render_run_effect_markdown",
+    "write_run_effect_report",
+    "write_run_manifest",
 ]

@@ -61,10 +61,22 @@ from core import (
     ProgressTracker,
     build_progress_metadata,
     compare_progress_metadata,
+    # quality
+    build_quality_report,
+    write_quality_report,
+    # run reports
+    build_run_effect,
+    build_run_manifest,
+    write_run_effect_report,
+    write_run_manifest,
     # glossary
     load_glossary,
     find_relevant_glossary_terms,
+    select_core_glossary_terms,
+    build_glossary_candidates,
     build_glossary_report,
+    write_glossary_candidate_report,
+    write_glossary_candidate_tsv,
     write_glossary_report,
 )
 from core.layout_adapters import (
@@ -231,6 +243,15 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 "   Extraction warnings: "
                 + ", ".join(str(item["page"] + 1) for item in risky_pages[:20])
             )
+        if glossary:
+            core_glossary = select_core_glossary_terms(
+                (pages_text.get(page_num, "") for page_num in start_end_pages),
+                glossary,
+                matcher=glossary_matcher,
+            )
+            translator.set_core_glossary(core_glossary)
+            if core_glossary:
+                print(f"   Core glossary prefix: {len(core_glossary)} terms")
         print()
 
         print("Translating...")
@@ -334,18 +355,76 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         if failed_pages:
             print("⚠️  以下页翻译失败且未写入进度缓存: " + ", ".join(map(str, failed_pages[:20])))
 
+        generated_outputs = []
+        internal_suffixes = (
+            "_quality_report.md",
+            "_extraction_report.md",
+            "_glossary_report.md",
+            "_glossary_candidates.md",
+            "_glossary_candidates.tsv",
+            "_run_report.md",
+            "_manifest.json",
+            ".progress.json",
+        )
+
+        quality_report = build_quality_report(
+            pages_text={
+                page_num: pages_text.get(page_num, "")
+                for page_num in range(start_page, end_page)
+            },
+            translations={
+                page_num: tracker.get_translation(page_num)
+                for page_num in range(start_page, end_page)
+                if tracker.get_translation(page_num).strip()
+            },
+            page_layouts=page_layouts,
+            glossary=glossary,
+            glossary_matcher=glossary_matcher,
+            failed_reasons={
+                page_num: tracker.failed_pages.get(str(page_num), "")
+                for page_num in tracker.get_failed_pages()
+                if start_page <= page_num < end_page
+            },
+            title=f"{Path(pdf_path).stem} — 质量检查报告",
+        )
+        quality_output = output_base + "_quality_report.md"
+        print(f"  生成质量检查报告: {quality_output}")
+        write_quality_report(quality_report, quality_output)
+        generated_outputs.append(quality_output)
+        print("   ✓ 质量检查输出完成")
+
         diagnostics_output = output_base + "_extraction_report.md"
         print(f"  生成提取诊断报告: {diagnostics_output}")
         with open(diagnostics_output, "w", encoding="utf-8") as f:
             f.write(build_extraction_diagnostics_report(page_diagnostics, Path(pdf_path).stem))
             f.write("\n")
+        generated_outputs.append(diagnostics_output)
         print("   ✓ 提取诊断输出完成")
 
         if glossary:
             report_output = output_base + "_glossary_report.md"
             print(f"  生成术语命中报告: {report_output}")
             write_glossary_report(pages_text, glossary, report_output, Path(pdf_path).stem)
+            generated_outputs.append(report_output)
             print("   ✓ 术语报告输出完成")
+
+        glossary_candidates = build_glossary_candidates(
+            pages_text,
+            glossary,
+            matcher=glossary_matcher,
+        )
+        candidates_report_output = output_base + "_glossary_candidates.md"
+        print(f"  生成术语候选报告: {candidates_report_output}")
+        write_glossary_candidate_report(
+            glossary_candidates,
+            candidates_report_output,
+            Path(pdf_path).stem,
+        )
+        generated_outputs.append(candidates_report_output)
+        candidates_tsv_output = output_base + "_glossary_candidates.tsv"
+        write_glossary_candidate_tsv(glossary_candidates, candidates_tsv_output)
+        generated_outputs.append(candidates_tsv_output)
+        print("   ✓ 术语候选输出完成")
 
         # HTML output
         if output_format in ("html", "both", "all"):
@@ -358,6 +437,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 source_page_labels=source_page_labels,
                 page_layouts=page_layouts,
             )
+            generated_outputs.append(html_output)
             print("   ✅ HTML 输出完成")
 
         # Markdown output
@@ -371,6 +451,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 toc,
                 page_layouts=page_layouts,
             )
+            generated_outputs.append(md_output)
             print("   ✅ Markdown 输出完成")
 
         # Word output
@@ -388,9 +469,55 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     source_page_labels=source_page_labels,
                     page_layouts=page_layouts,
                 )
+                generated_outputs.append(docx_output)
                 print("   ✓ Word 输出完成")
 
         page_count = len([t for _, t in translated_pages_sorted if t.strip()])
+        run_effect = build_run_effect(
+            stats,
+            total_pages=end_page - start_page,
+            translated_pages=page_count,
+            failed_pages=failed_pages,
+            quality_issues=quality_report.warning_count,
+            glossary_candidates=len(glossary_candidates),
+            elapsed_seconds=elapsed,
+        )
+        run_report_output = output_base + "_run_report.md"
+        print(f"  生成效果报告: {run_report_output}")
+        write_run_effect_report(run_effect, run_report_output, Path(pdf_path).stem)
+        generated_outputs.append(run_report_output)
+        output_file_names = [
+            Path(path).name for path in generated_outputs
+            if not any(Path(path).name.endswith(suffix) for suffix in internal_suffixes)
+        ]
+        internal_report_names = [
+            Path(path).name for path in generated_outputs
+            if any(Path(path).name.endswith(suffix) for suffix in internal_suffixes)
+        ]
+        manifest_output = output_base + "_manifest.json"
+        print(f"  生成运行清单: {manifest_output}")
+        write_run_manifest(
+            build_run_manifest(
+                source_file=Path(pdf_path).name,
+                source_sha256=file_sha256(pdf_path),
+                provider=provider,
+                model=model,
+                page_range=f"{start_page + 1}-{end_page}",
+                formats=[output_format],
+                prompt_version=PROMPT_VERSION,
+                extractor_version=EXTRACTOR_VERSION,
+                glossary_name=Path(glossary_path).name if glossary_path else "",
+                glossary_sha256=file_sha256(glossary_path) if glossary_path else "",
+                status="completed_with_failures" if failed_pages else "completed",
+                effect=run_effect,
+                output_files=output_file_names,
+                internal_reports=internal_report_names,
+                quality_report=Path(quality_output).name,
+                run_report=Path(run_report_output).name,
+            ),
+            manifest_output,
+        )
+        generated_outputs.append(manifest_output)
         print(f"\n  共翻译 {page_count} 页")
 
         print()
