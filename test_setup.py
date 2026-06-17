@@ -63,8 +63,8 @@ def main():
     py_ver = sys.version_info
     ok = check(
         f"Python 版本: {py_ver.major}.{py_ver.minor}.{py_ver.micro}",
-        py_ver >= (3, 9),
-        "需要 Python 3.9+，请升级: https://python.org"
+        py_ver >= (3, 10),
+        "需要 Python 3.10+，请升级: https://python.org"
     )
     if not ok:
         critical_fail = True

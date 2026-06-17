@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import tempfile
 import threading
@@ -22,15 +21,12 @@ from pathlib import Path
 from typing import Callable
 
 from core.constants import TRANSLATION_FAILURE_PREFIX
-from core.glossary import find_relevant_glossary_terms
 from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
+from core.utils import replace_with_retry
 from core.typeset_models import (
     ContentBlock,
     PageContent,
     PageContentDocument,
-    PageType,
-    SemanticRole,
-    PAGE_CONTENT_SCHEMA_VERSION,
 )
 
 
@@ -98,7 +94,7 @@ class TypesetTranslationProgress:
                 tmp_path = Path(f.name)
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.write("\n")
-            _replace_with_retry(tmp_path, progress_path)
+            replace_with_retry(tmp_path, progress_path)
 
     # -- Query methods --
 
@@ -444,110 +440,6 @@ def _translate_typeset_unit(
         raise last_error
     raise RuntimeError(f"{TRANSLATION_FAILURE_PREFIX} empty translation]")
 
-
-def _translate_typeset_content_sequential_legacy(
-    content: PageContentDocument,
-    translator,
-    progress: TypesetTranslationProgress,
-    glossary: dict,
-    progress_callback: Callable[[int, int, str, bool], None] | None = None,
-) -> PageContentDocument:
-    if glossary:
-        translator.set_glossary(glossary)
-
-    page_units = _collect_translation_units(content, progress)
-    total_units = len(page_units)
-    previous_context = ""
-
-    for done, (page_index, blocks) in enumerate(page_units, start=1):
-        unit_id = blocks[0].id if len(blocks) == 1 else f"p{page_index + 1:04d}"
-        expected_ids = {block.id for block in blocks}
-
-        # Check translation cache by source text hash
-        all_cached = True
-        for block in blocks:
-            cache_key = _source_text_hash(block.source_text)
-            cached = progress.translation_cache.get(cache_key)
-            if cached:
-                if not progress.is_completed(block.id):
-                    progress.mark_completed(block.id, cached)
-            else:
-                all_cached = False
-
-        if all_cached and all(progress.is_completed(b.id) for b in blocks):
-            if progress_callback:
-                progress_callback(done, total_units, f"{unit_id} (cached)", True)
-            progress.last_translated_page = page_index
-            progress.save()
-            continue
-
-        # Filter to only blocks not yet completed
-        pending_blocks = [b for b in blocks if not progress.is_completed(b.id)]
-        if not pending_blocks:
-            if progress_callback:
-                progress_callback(done, total_units, f"{unit_id} (resumed)", True)
-            progress.last_translated_page = page_index
-            progress.save()
-            continue
-
-        # Build marked translation request
-        source_text = _build_marked_text(pending_blocks)
-        pending_ids = {block.id for block in pending_blocks}
-
-        # Call translator with retry
-        translation = _translate_with_retry(
-            translator,
-            source_text,
-            page_num=page_index,
-            prev_context=previous_context[-900:],
-            cache=progress,
-        )
-
-        # Handle translation failure
-        if translation and translation.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
-            for block in pending_blocks:
-                progress.mark_failed(block.id, translation)
-            if progress_callback:
-                progress_callback(done, total_units, unit_id, False)
-            continue
-
-        # Parse marked translations
-        try:
-            parsed = _parse_marked_translations(translation, pending_ids)
-        except ValueError as exc:
-            message = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
-            for block in pending_blocks:
-                progress.mark_failed(block.id, message)
-            if progress_callback:
-                progress_callback(done, total_units, unit_id, False)
-            continue
-
-        # Record successful translations
-        for block_id, block_translation in parsed.items():
-            progress.mark_completed(block_id, block_translation)
-            # Also cache by source text hash for future reuse
-            source_block = next((b for b in pending_blocks if b.id == block_id), None)
-            if source_block:
-                cache_key = _source_text_hash(source_block.source_text)
-                if cache_key not in progress.translation_cache:
-                    progress.translation_cache[cache_key] = block_translation
-
-        # Update context for next unit
-        previous_context = "\n".join(
-            block.source_text for block in blocks if block.source_text
-        )
-
-        # Update page progress
-        progress.last_translated_page = page_index
-        progress.save()
-
-        if progress_callback:
-            progress_callback(done, total_units, f"{unit_id} / {len(pending_blocks)} 块", True)
-
-    # Build translated document
-    return _build_translated_document(content, progress)
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -579,11 +471,9 @@ def _build_translated_document(
 ) -> PageContentDocument:
     """Build a new PageContentDocument with translated_text filled from progress."""
     from core.typeset_models import (
-        ColumnInfo,
         ContentBlock,
         PageContent,
         PageContentDocument,
-        StyledTextRun,
     )
 
     translated_pages = []
@@ -622,23 +512,6 @@ def _build_translated_document(
 # ---------------------------------------------------------------------------
 # File I/O helpers
 # ---------------------------------------------------------------------------
-
-
-def _replace_with_retry(tmp_path: Path, target_path: Path, attempts: int = 20):
-    """Atomically replace a progress file, tolerating short Windows file locks."""
-    last_error = None
-    for attempt in range(max(1, attempts)):
-        try:
-            os.replace(tmp_path, target_path)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            if attempt == attempts - 1:
-                break
-            time.sleep(min(0.05 * (attempt + 1), 0.5))
-    raise PermissionError(
-        f"无法写入进度文件，目标可能被其他程序占用：{target_path}"
-    ) from last_error
 
 
 def save_translated_content(content: PageContentDocument, output_path: str):

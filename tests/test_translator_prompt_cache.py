@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import core.translator as translator_module
 from core.translator import Translator, translate_batch_concurrent
 
 
@@ -135,3 +136,39 @@ def test_batch_translation_warms_first_page_before_parallel_work():
         1: "译文 2",
         2: "译文 3",
     }
+
+
+def test_batch_translation_uses_rate_limit_and_cooldown(monkeypatch):
+    rate_calls = []
+    sleeps = []
+
+    class FakeRateLimiter:
+        def __init__(self, calls_per_minute):
+            rate_calls.append(("init", calls_per_minute))
+
+        def wait_if_needed(self):
+            rate_calls.append(("wait", None))
+
+    monkeypatch.setattr(translator_module, "RateLimiter", FakeRateLimiter)
+    monkeypatch.setattr(translator_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    translator = _BatchTranslator()
+    tracker = _BatchTracker()
+    pages_data = [
+        (0, "First page", ""),
+        (1, "Second page", ""),
+        (2, "Third page", ""),
+    ]
+
+    translate_batch_concurrent(
+        pages_data,
+        translator,
+        tracker,
+        max_workers=2,
+        rate_limit=7,
+        cooldown=0.25,
+    )
+
+    assert ("init", 7) in rate_calls
+    assert len([call for call in rate_calls if call[0] == "wait"]) == 3
+    assert sleeps == [0.25]

@@ -13,7 +13,7 @@ Dependencies: core.translator (via Protocol), core.progress (via Protocol).
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
-from core.constants import TRANSLATION_FAILURE_PREFIX
+from core.utils import is_failed_translation
 
 
 class TranslateFunc(Protocol):
@@ -54,11 +54,6 @@ class SplitResult:
     failed_indices: list[int] = field(default_factory=list)
     split_count: int = 0
     total_api_calls: int = 0
-
-
-def _is_failed_translation(text: str) -> bool:
-    """Check if a translation result is a failure marker."""
-    return bool(text and text.lstrip().startswith(TRANSLATION_FAILURE_PREFIX))
 
 
 def recursive_translate_group(
@@ -151,7 +146,7 @@ def _recursive_translate(
         )
 
         # 判断翻译是否成功
-        if translated and not _is_failed_translation(translated) and translated.strip():
+        if translated and not is_failed_translation(translated) and translated.strip():
             result.translations[block.index] = translated.strip()
             if progress_callback:
                 progress_callback(block.index, translated.strip())
@@ -172,7 +167,7 @@ def _recursive_translate(
     )
 
     # 完全失败：空响应或失败标记
-    if not translated or _is_failed_translation(translated) or not translated.strip():
+    if not translated or is_failed_translation(translated) or not translated.strip():
         # 二分拆分
         result.split_count += 1
         mid = len(group) // 2

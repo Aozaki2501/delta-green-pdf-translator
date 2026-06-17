@@ -12,14 +12,12 @@ Dependencies: python-docx, lxml
 """
 
 import re
-import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 try:
     from docx import Document as DocxDocument
-    from docx.shared import Pt, RGBColor
     from docx.oxml.ns import qn
     HAS_DOCX = True
 except ImportError:
@@ -364,84 +362,6 @@ class DocxExtractor:
         except Exception:
             pass
         return None
-
-
-# ============================================================
-# BLOCK MERGING FOR API EFFICIENCY
-# ============================================================
-
-def merge_docx_blocks_for_translation(blocks: list[DocxBlock],
-                                       max_chars: int = 3000) -> list[list[DocxBlock]]:
-    """
-    Merge consecutive translatable blocks into groups for efficient API calls.
-
-    Rules:
-    - Table cells from same table are grouped together (whole table at once)
-    - Text box paragraphs from same text box are grouped together
-    - Regular paragraphs can be merged with nearby paragraphs
-    - Max characters per group
-    """
-    groups: list[list[DocxBlock]] = []
-    current_group: list[DocxBlock] = []
-    current_chars = 0
-    last_table = -1
-    last_textbox = -1
-
-    for block in blocks:
-        if not block.translatable:
-            continue
-
-        # Table cells: group by table
-        if block.block_type == "table_cell":
-            if block.table_index != last_table:
-                if current_group:
-                    groups.append(current_group)
-                    current_group = []
-                    current_chars = 0
-            last_table = block.table_index
-            last_textbox = -1
-            current_group.append(block)
-            current_chars += len(block.text)
-            if current_chars >= max_chars:
-                groups.append(current_group)
-                current_group = []
-                current_chars = 0
-            continue
-
-        # Text box paragraphs: group by text box
-        if block.block_type == "textbox_para":
-            if block.textbox_index != last_textbox:
-                if current_group:
-                    groups.append(current_group)
-                    current_group = []
-                    current_chars = 0
-            last_textbox = block.textbox_index
-            last_table = -1
-            current_group.append(block)
-            current_chars += len(block.text)
-            if current_chars >= max_chars:
-                groups.append(current_group)
-                current_group = []
-                current_chars = 0
-            continue
-
-        # Regular paragraphs
-        last_table = -1
-        last_textbox = -1
-        block_chars = len(block.text)
-        if current_group and current_chars + block_chars > max_chars:
-            groups.append(current_group)
-            current_group = []
-            current_chars = 0
-
-        current_group.append(block)
-        current_chars += block_chars
-
-    if current_group:
-        groups.append(current_group)
-
-    return groups
-
 
 def serialize_runs_with_markers(runs: list[RunMeta]) -> str:
     """

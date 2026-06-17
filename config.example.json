@@ -6,10 +6,9 @@
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
     "format": "all",
-    "workers": 32,
+    "workers": 8,
     "rate_limit": 60,
     "cooldown": 1.0,
-    "max_split_depth": 10,
     "fuzzy_matching": false,
     "start": 0,
     "end": null

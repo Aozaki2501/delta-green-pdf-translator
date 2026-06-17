@@ -11,18 +11,28 @@ if (-not (Test-Path $Requirements)) {
 $VenvDir = Join-Path $ProjectRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
+function Test-PythonVersion {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments = @()
+    )
+
+    & $Executable @Arguments -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" *> $null
+    return $LASTEXITCODE -eq 0
+}
+
 function Get-BasePython {
     $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyLauncher) {
-        return @("py", "-3")
+    if ($pyLauncher -and (Test-PythonVersion -Executable $pyLauncher.Source -Arguments @("-3"))) {
+        return @($pyLauncher.Source, "-3")
     }
 
     $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) {
-        return @("python")
+    if ($python -and (Test-PythonVersion -Executable $python.Source)) {
+        return @($python.Source)
     }
 
-    throw "Python 3 was not found. Install Python 3.10+ once, then run start_web.bat again."
+    throw "Python 3.10+ was not found. Install Python 3.10 or newer once, then run start_web.bat again."
 }
 
 if (-not (Test-Path $VenvPython)) {
@@ -37,6 +47,10 @@ if (-not (Test-Path $VenvPython)) {
 
 if (-not (Test-Path $VenvPython)) {
     throw "Failed to create .venv."
+}
+
+if (-not (Test-PythonVersion -Executable $VenvPython)) {
+    throw "Existing .venv uses Python older than 3.10. Delete .venv after installing Python 3.10+, then run start_web.bat again."
 }
 
 $ReqHash = (Get-FileHash $Requirements -Algorithm SHA256).Hash

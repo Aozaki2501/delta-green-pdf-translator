@@ -74,7 +74,7 @@ python -m streamlit run app.py
 copy config.example.json config.json
 ```
 
-编辑 `config.json` 后运行：
+编辑 `config.json` 后运行。这个文件已被 `.gitignore` 忽略，不要把真实 API Key 写进示例文件。
 
 ```powershell
 python translate_pdf.py --config config.json
@@ -83,7 +83,7 @@ python translate_pdf.py --config config.json
 也可以直接传参数：
 
 ```powershell
-python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 32
+python translate_pdf.py "book.pdf" --api-key sk-xxx --glossary glossary.tsv --format all --workers 8
 ```
 
 ## Web 界面怎么用
@@ -155,10 +155,9 @@ Web 里的 PDF 页码从 1 开始，和阅读器看到的页码更接近。
   "base_url": "https://api.deepseek.com",
   "model": "deepseek-v4-pro",
   "format": "all",
-  "workers": 32,
+  "workers": 8,
   "rate_limit": 60,
   "cooldown": 1.0,
-  "max_split_depth": 10,
   "fuzzy_matching": false,
   "start": 0,
   "end": null
@@ -217,6 +216,8 @@ python translate_pdf.py "book.pdf" --api-key sk-xxx --retry-failed
 | `--model` | 模型名 |
 | `--format` | `markdown`、`html`、`word`、`both`、`all` |
 | `--workers` | 并发数，范围 1 到 64 |
+| `--rate-limit` | 每分钟最大 API 调用数 |
+| `--cooldown` | 每批次之间的等待秒数 |
 | `--start` | 起始页，从 0 开始 |
 | `--end` | 结束页，不包含这一页 |
 | `--retry-failed` | 只重试失败页 |
@@ -451,6 +452,19 @@ powershell -ExecutionPolicy Bypass -File .\pack_release.ps1
 | 提示词泄露 | 没有内部翻译规则文字 | 出现“你是专业翻译”等内容 |
 | 导出状态 | 审计记录为 completed | export_failed 或 failed |
 
+## 常见失败案例与处理方式
+
+| 失败情况 | 常见表现 | 处理方式 |
+| --- | --- | --- |
+| PDF 没有文本层 | 提取预览为空，输出没有正文 | 先用 OCR 工具把 PDF 处理成“可复制文字”的版本，再重新上传。 |
+| 双栏顺序混乱 | 右栏内容跑到左栏前面，段落读起来不连贯 | 先用少量页测试；普通输出不满意时，改用纯重绘 PDF，复杂页再配 `layout_hints.json`。 |
+| 页眉页脚混进正文 | 每页都反复出现书名、页码、章节栏 | 先看 `_extraction_report.md` 和质量检查的问题页；确认后只重翻受影响页。 |
+| 表格错乱 | 表格变成散乱文字，或正文被当成表格 | 优先下载 HTML 或 Word 校对；如果是少数页，填写“重翻页码”后重跑。 |
+| 图片没有回填 | HTML/Word 里看不到原图，或只有插图占位 | 检查输出目录里的 `assets/` 是否存在；缺图时重新运行，不要只复制单个 `.html` 或 `.docx`。 |
+| API 调用失败 | 任务停住，出现 401、429、连接失败等错误 | 401 检查 API Key；429 降低并发或等待后重试；连接失败检查网络、代理和 Base URL。 |
+| 断点续跑没有复用 | 重新运行后从头翻译，提示进度指纹不一致 | 确认 PDF、术语表、模型、Base URL、页码范围没有变化；变化后旧进度不会复用。 |
+| 纯重绘 PDF 字体错误 | 中文乱码、缺字，或字体看起来不对 | 在纯重绘配置里填写本机已有中文字体，例如 `Microsoft YaHei`、`SimSun` 或 `Noto Serif SC`。 |
+
 ## 常见问题
 
 ### Web 页面打不开
@@ -533,7 +547,7 @@ DGtranslate/
 ├─ exporters/                     Markdown、HTML、Word、typeset PDF 输出
 ├─ webui/                         Web 组件、历史、主题、运行时工具
 ├─ experiments/                   多模态 layout hints 实验脚本
-├─ docs/                          设计、路线图、计划和测试说明
+├─ docs/                          精简指南和便携启动说明
 ├─ tests/                         自动测试
 ├─ uploads/                       Web 上传临时目录
 └─ output/                        默认输出目录

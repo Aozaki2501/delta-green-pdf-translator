@@ -4,14 +4,13 @@ Delta Green PDF Translator — Web UI (Streamlit)
 """
 import streamlit as st
 import time
-import uuid
 from pathlib import Path
 from translate_pdf import (
     PDFExtractor, Translator, ProgressTracker, TokenStats,
     load_glossary, translate_batch_concurrent,
     write_markdown_output, write_html_output, write_word_output, HAS_DOCX,
     build_progress_metadata, parse_page_selection, write_glossary_report,
-    normalize_page_range, is_failed_translation, build_extraction_diagnostics_report,
+    normalize_page_range, build_extraction_diagnostics_report,
     select_core_glossary_terms, build_glossary_candidates,
     write_glossary_candidate_report, write_glossary_candidate_tsv
 )
@@ -45,8 +44,6 @@ from webui.theme import render_app_theme, render_workstation_effects
 # MD / DOCX translation support
 from translate_md import translate_md_file
 from translate_docx import translate_docx_file
-from core.md_extractor import MarkdownExtractor
-from core.docx_extractor import DocxExtractor, HAS_DOCX as HAS_DOCX_LIB
 from core.glossary import build_glossary_matcher
 from core.layout_adapters import build_pdf_output_layout_context, merge_output_page_layouts
 from core.quality import build_quality_report, write_quality_report
@@ -284,7 +281,7 @@ with st.sidebar:
         )
         max_split_depth = st.slider(
             "最大拆分深度", 1, 20, 10,
-            help="递归拆分失败组的最大深度"
+            help="仅 Markdown 和 Word 翻译失败拆分时生效"
         )
         fuzzy_matching = st.checkbox(
             "模糊术语匹配", value=False,
@@ -823,7 +820,7 @@ if launch_pressed:
             def _check_font_available(font_name: str) -> bool:
                 """Check if a font is likely available on the system."""
                 try:
-                    from matplotlib.font_manager import findSystemFonts, FontProperties, findfont
+                    from matplotlib.font_manager import FontProperties, findfont
                     prop = FontProperties(family=font_name)
                     result = findfont(prop, fallback_to_default=False)
                     return result is not None
@@ -1287,6 +1284,8 @@ if launch_pressed:
                 tracker,
                 max_workers=max(1, int(workers)),
                 progress_callback=update_translation_progress,
+                rate_limit=rate_limit,
+                cooldown=cooldown,
             )
         else:
             results = {}

@@ -14,7 +14,6 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 from core.docx_extractor import DocxBlock, RunMeta, parse_marked_translation
 

@@ -16,7 +16,7 @@ v2.0 Features:
 
 Usage:
     python translate_pdf.py input.pdf --api-key YOUR_KEY
-    python translate_pdf.py input.pdf --api-key YOUR_KEY --format html --workers 32
+    python translate_pdf.py input.pdf --api-key YOUR_KEY --format html --workers 8
 """
 
 import argparse
@@ -83,6 +83,7 @@ from core.layout_adapters import (
     build_pdf_output_layout_context,
     merge_output_page_layouts,
 )
+from core.dispatcher import RateLimiter
 from core.glossary import build_glossary_matcher
 
 from exporters import (
@@ -105,9 +106,10 @@ configure_console_output()
 
 def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                   model="deepseek-v4-pro", start_page=0, end_page=None,
-                  output_format="markdown", max_workers=32,
+                  output_format="markdown", max_workers=8,
                   provider="deepseek", base_url="https://api.deepseek.com",
-                  retry_failed=False, fuzzy_matching=False):
+                  retry_failed=False, fuzzy_matching=False,
+                  rate_limit=60, cooldown=1.0):
     print("=" * 60)
     print("  DG TRPG PDF Translator v2.0")
     print("=" * 60)
@@ -123,8 +125,14 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         raise ValueError("Base URL 不能为空")
     if not provider or not str(provider).strip():
         raise ValueError("服务名称不能为空")
-    max_workers = 32 if max_workers is None else int(max_workers)
+    max_workers = 8 if max_workers is None else int(max_workers)
     max_workers = max(1, min(64, max_workers))
+    rate_limit = int(rate_limit or 60)
+    cooldown = float(cooldown or 0.0)
+    if rate_limit < 1:
+        raise ValueError("速率限制必须大于 0")
+    if cooldown < 0:
+        raise ValueError("批次冷却不能小于 0")
     output_base = output_path
     for ext in (".md", ".pdf", ".docx", ".html"):
         if output_base.endswith(ext):
@@ -144,6 +152,8 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         start_page, end_page = normalize_page_range(start_page, end_page, total)
         print(f"   Range: page {start_page + 1} to {end_page}")
         print(f"   Workers: {max_workers}")
+        print(f"   Rate limit: {rate_limit}/min")
+        print(f"   Cooldown: {cooldown}s")
         print(f"   Format: {output_format}")
         print()
 
@@ -269,7 +279,14 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 context_text = extractor.get_context_text(page_num)
                 if context_text.strip():
                     prev_text = context_text
-            results = translate_batch_concurrent(pages_data, translator, tracker, max_workers)
+            results = translate_batch_concurrent(
+                pages_data,
+                translator,
+                tracker,
+                max_workers,
+                rate_limit=rate_limit,
+                cooldown=cooldown,
+            )
             translated_pages = [(pn, t) for pn, t in results.items() if t.strip()]
         else:
             translated_pages = []
@@ -277,6 +294,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             pages_to_process = list(start_end_pages)
             total_to_do = len(pages_to_process)
             done_count = 0
+            rate_limiter = RateLimiter(rate_limit)
 
             for page_num in pages_to_process:
                 done_count += 1
@@ -296,6 +314,9 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     tracker.mark_completed(page_num, "")
                     continue
 
+                if done_count > 1 and cooldown:
+                    time.sleep(cooldown)
+                rate_limiter.wait_if_needed()
                 print(f"  [{progress_pct:.0f}%] Page {page_num + 1}/{total}", end="", flush=True)
                 translation = translator.translate_chunk(
                     text,
@@ -316,7 +337,6 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 else:
                     print(f" empty result")
                     tracker.mark_completed(page_num, "")
-                time.sleep(0.3)
 
         elapsed = time.time() - start_time
         print("-" * 40)
@@ -536,6 +556,25 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
 # CLI with Config File Support
 # ============================================================
 
+PDF_CONFIG_KEYS = {
+    "pdf",
+    "api_key",
+    "output",
+    "glossary",
+    "provider",
+    "base_url",
+    "model",
+    "format",
+    "workers",
+    "rate_limit",
+    "cooldown",
+    "fuzzy_matching",
+    "retry_failed",
+    "start",
+    "end",
+}
+
+
 def load_config(config_path: str) -> dict:
     """Load configuration from a JSON file."""
     if not os.path.exists(config_path):
@@ -550,6 +589,10 @@ def load_config(config_path: str) -> dict:
     if not isinstance(config, dict):
         print("❌ 配置文件顶层必须是 JSON 对象。")
         sys.exit(1)
+    unknown_keys = sorted(set(config) - PDF_CONFIG_KEYS)
+    if unknown_keys:
+        print("❌ 配置文件包含 PDF 命令行不支持的字段: " + ", ".join(unknown_keys))
+        sys.exit(1)
     return config
 
 
@@ -563,7 +606,7 @@ def main():
   python translate_pdf.py --config config.json
 
   # 命令行参数
-  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format html --workers 32
+  python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx --format html --workers 8
 
   # 指定术语表和范围
   python translate_pdf.py "THE MILLENNIUM.pdf" --api-key sk-xxx \
@@ -586,7 +629,11 @@ def main():
     parser.add_argument("--format", "-f", choices=["markdown", "html", "word", "both", "all"],
                         default=None, help="输出格式: markdown/html/word/both/all（默认: markdown）")
     parser.add_argument("--workers", "-w", type=int, default=None,
-                        help="并发线程数（默认: 32，上限: 64）")
+                        help="并发线程数（默认: 8，上限: 64）")
+    parser.add_argument("--rate-limit", type=int, default=None,
+                        help="每分钟最大 API 调用数（默认: 60）")
+    parser.add_argument("--cooldown", type=float, default=None,
+                        help="每批次之间的等待秒数（默认: 1.0）")
     parser.add_argument("--start", type=int, default=None, help="起始页码（从0开始）")
     parser.add_argument("--end", type=int, default=None, help="结束页码（不含）")
     parser.add_argument("--retry-failed", action="store_true", help="只重试 progress.json 里记录的失败页")
@@ -608,7 +655,9 @@ def main():
     provider = args.provider or config.get("provider", "deepseek")
     base_url = args.base_url or config.get("base_url", "https://api.deepseek.com")
     output_format = args.format or config.get("format", "markdown")
-    workers = args.workers if args.workers is not None else config.get("workers", 32)
+    workers = args.workers if args.workers is not None else config.get("workers", 8)
+    rate_limit = args.rate_limit if args.rate_limit is not None else config.get("rate_limit", 60)
+    cooldown = args.cooldown if args.cooldown is not None else config.get("cooldown", 1.0)
     start_page = args.start if args.start is not None else config.get("start", 0)
     end_page = args.end if args.end is not None else config.get("end")
     fuzzy_matching = bool(args.fuzzy_matching or config.get("fuzzy_matching", False))
@@ -640,10 +689,12 @@ def main():
 
     try:
         workers = int(workers)
+        rate_limit = int(rate_limit)
+        cooldown = float(cooldown)
         start_page = int(start_page or 0)
         end_page = None if end_page is None or end_page == "" else int(end_page)
     except (TypeError, ValueError):
-        print("❌ workers/start/end 必须是整数。")
+        print("❌ workers/rate-limit/start/end 必须是整数，cooldown 必须是数字。")
         sys.exit(1)
 
     if workers < 1:
@@ -651,6 +702,12 @@ def main():
     elif workers > 64:
         print("⚠️  并发数上限为 64，已自动调整")
         workers = 64
+    if rate_limit < 1:
+        print("❌ rate_limit 必须大于 0。")
+        sys.exit(1)
+    if cooldown < 0:
+        print("❌ cooldown 不能小于 0。")
+        sys.exit(1)
 
     # Run
     translate_pdf(
@@ -667,6 +724,8 @@ def main():
         max_workers=workers,
         retry_failed=bool(args.retry_failed or config.get("retry_failed", False)),
         fuzzy_matching=fuzzy_matching,
+        rate_limit=rate_limit,
+        cooldown=cooldown,
     )
 
 

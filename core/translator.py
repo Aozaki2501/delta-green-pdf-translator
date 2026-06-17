@@ -17,9 +17,11 @@ from dataclasses import dataclass, field
 
 from openai import OpenAI
 
+from core.dispatcher import RateLimiter
 from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
 from core.glossary import find_relevant_glossary_terms
 from core.translation_validation import ensure_no_prompt_leak
+from core.utils import is_failed_translation
 
 
 # ============================================================
@@ -379,16 +381,21 @@ Translation rules:
 # BATCH CONCURRENT TRANSLATOR
 # ============================================================
 
-def _is_failed_translation(text: str) -> bool:
-    """Check if a translation result is a failure marker."""
-    return bool(text and text.lstrip().startswith(TRANSLATION_FAILURE_PREFIX))
-
-
-def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, progress_callback=None):
+def translate_batch_concurrent(
+    pages_data,
+    translator,
+    tracker,
+    max_workers=4,
+    progress_callback=None,
+    rate_limit: int | None = None,
+    cooldown: float = 0.0,
+):
     results = {}
     completed_count = 0
     total_count = len(pages_data)
     max_workers = max(1, int(max_workers or 1))
+    rate_limiter = RateLimiter(int(rate_limit)) if rate_limit else None
+    cooldown = max(0.0, float(cooldown or 0.0))
     warmed_pages = set()
 
     def report(page_num, translation):
@@ -398,10 +405,12 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
             progress_callback(page_num, translation or "", completed_count, total_count)
 
     def translate_one(page_num, text, prev_ctx):
+        if rate_limiter is not None:
+            rate_limiter.wait_if_needed()
         translation = translator.translate_chunk(text, page_num, prev_ctx, cache=tracker)
-        if translation and not _is_failed_translation(translation):
+        if translation and not is_failed_translation(translation):
             tracker.mark_completed(page_num, translation)
-        elif _is_failed_translation(translation):
+        elif is_failed_translation(translation):
             tracker.mark_failed(page_num, translation)
         return page_num, translation
 
@@ -414,14 +423,16 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
             warmed_pages.add(page_num)
             results[page_num] = translation or ""
             report(page_num, translation)
-            if not _is_failed_translation(translation):
+            if not is_failed_translation(translation):
                 print(" done", end="", flush=True)
             print()
             break
 
     group_size = max_workers
 
-    for group_start in range(0, len(pages_data), group_size):
+    for batch_index, group_start in enumerate(range(0, len(pages_data), group_size)):
+        if batch_index > 0 and cooldown:
+            time.sleep(cooldown)
         group = pages_data[group_start:group_start + group_size]
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
@@ -451,7 +462,7 @@ def translate_batch_concurrent(pages_data, translator, tracker, max_workers=4, p
                     print(f" p{page_num + 1} failed: {exc}", end="", flush=True)
                 results[page_num] = translation or ""
                 report(page_num, translation)
-                if not _is_failed_translation(translation):
+                if not is_failed_translation(translation):
                     print(f" p{page_num + 1} done", end="", flush=True)
 
         print()

@@ -12,13 +12,12 @@ import json
 import os
 import tempfile
 import threading
-import time
 from pathlib import Path
 from typing import Optional
 
 from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
 from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
-from core.utils import file_sha256
+from core.utils import file_sha256, replace_with_retry
 
 
 def build_progress_metadata(pdf_path: str, glossary_path: Optional[str], model: str,
@@ -140,7 +139,7 @@ class ProgressTracker:
                 tmp_path = Path(f.name)
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.write("\n")
-            _replace_with_retry(tmp_path, progress_path)
+            replace_with_retry(tmp_path, progress_path)
 
     def is_completed(self, page_num: int) -> bool:
         """Check whether a page has already been translated."""
@@ -258,18 +257,3 @@ class ProgressTracker:
         if cache_keys:
             self.save()
         return len(cache_keys)
-
-
-def _replace_with_retry(tmp_path: Path, target_path: Path, attempts: int = 20):
-    """Atomically replace a progress file, tolerating short Windows file locks."""
-    last_error = None
-    for attempt in range(max(1, attempts)):
-        try:
-            os.replace(tmp_path, target_path)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            if attempt == attempts - 1:
-                break
-            time.sleep(min(0.05 * (attempt + 1), 0.5))
-    raise PermissionError(f"无法写入进度文件，目标可能被其他程序占用：{target_path}") from last_error

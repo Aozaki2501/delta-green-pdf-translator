@@ -1,5 +1,6 @@
 *.pyc
 *.pdf
+config.json
 __pycache__/
 .pytest_cache/
 .venv/

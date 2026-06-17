@@ -11,11 +11,9 @@ Usage:
 """
 
 import argparse
-import os
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from core.md_extractor import MarkdownExtractor, MdBlock, merge_blocks_for_translation
@@ -24,7 +22,7 @@ from core.progress import ProgressTracker
 from core.glossary import load_glossary, build_glossary_matcher, select_core_glossary_terms
 from core.dispatcher import ConcurrentDispatcher, DispatcherConfig
 from core.utils import file_sha256, configure_console_output
-from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
+from core.constants import PROMPT_VERSION
 from core.translation_validation import ensure_no_prompt_leak
 from exporters.md_preserve import write_md_output
 
@@ -82,19 +80,6 @@ def _parse_marked_md_translation(translated: str, group: list[MdBlock]) -> dict[
     if not found:
         raise ValueError("Markdown 翻译块标记完全无法解析，未找到任何有效 [BLOCK n] 标记")
     return found
-
-
-def _report_progress(progress_callback, block_idx: int, text: str,
-                     completed: int, total: int, stats: TokenStats) -> None:
-    if not progress_callback:
-        return
-    try:
-        progress_callback(block_idx, text, completed, total, stats)
-    except TypeError as exc:
-        try:
-            progress_callback(block_idx, text, completed, total)
-        except TypeError:
-            raise exc
 
 
 def build_md_progress_metadata(md_path: str, glossary_path: str | None,

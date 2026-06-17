@@ -20,9 +20,6 @@ except ImportError:
             "PyMuPDF not installed. Run: pip install pymupdf"
         )
 
-from core.constants import EXTRACTOR_VERSION
-
-
 # ============================================================
 # CHAPTER / HEADING DETECTION
 # ============================================================

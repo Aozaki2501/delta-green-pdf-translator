@@ -10,7 +10,6 @@ Dependencies: core.md_extractor (for MdBlock type)
 
 import re
 from pathlib import Path
-from typing import Optional
 
 from core.md_extractor import MdBlock
 
@@ -101,48 +100,3 @@ def _reassemble_table(block: MdBlock, translated: str) -> str:
         return translated
     # Fallback: return original table structure with translated content
     return translated
-
-
-# ============================================================
-# HELPER: Split merged translation back to individual blocks
-# ============================================================
-
-def split_merged_translation(merged_text: str, blocks: list[MdBlock]) -> dict[int, str]:
-    """
-    Split a merged translation (multiple blocks translated together)
-    back into individual block translations.
-
-    Strategy:
-    - If only 1 block in the group, return it directly
-    - If multiple blocks, split by double newline (paragraph boundary)
-    - If split count doesn't match block count, distribute proportionally
-    """
-    if len(blocks) == 1:
-        return {blocks[0].index: merged_text.strip()}
-
-    # Try splitting by double newline
-    parts = re.split(r'\n\n+', merged_text.strip())
-
-    result = {}
-    if len(parts) == len(blocks):
-        for block, part in zip(blocks, parts):
-            result[block.index] = part.strip()
-    elif len(parts) > len(blocks):
-        # More parts than blocks: merge extra parts into last block
-        for i, block in enumerate(blocks[:-1]):
-            result[block.index] = parts[i].strip()
-        result[blocks[-1].index] = "\n\n".join(parts[len(blocks) - 1:]).strip()
-    else:
-        # Fewer parts than blocks: distribute single newline splits
-        single_parts = merged_text.strip().splitlines()
-        # Simple distribution: give each block roughly equal lines
-        lines_per_block = max(1, len(single_parts) // len(blocks))
-        for i, block in enumerate(blocks):
-            start = i * lines_per_block
-            if i == len(blocks) - 1:
-                result[block.index] = "\n".join(single_parts[start:]).strip()
-            else:
-                end = start + lines_per_block
-                result[block.index] = "\n".join(single_parts[start:end]).strip()
-
-    return result

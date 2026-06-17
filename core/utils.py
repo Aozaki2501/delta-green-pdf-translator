@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from core.constants import TRANSLATION_FAILURE_PREFIX
@@ -65,6 +66,21 @@ def normalize_page_range(start_page, end_page, total_pages: int) -> tuple[int, i
 
 def is_failed_translation(text: str) -> bool:
     return bool(text and text.lstrip().startswith(TRANSLATION_FAILURE_PREFIX))
+
+
+def replace_with_retry(tmp_path: Path, target_path: Path, attempts: int = 20):
+    """Atomically replace a file, tolerating short Windows file locks."""
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        try:
+            os.replace(tmp_path, target_path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt == attempts - 1:
+                break
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
+    raise PermissionError(f"无法写入文件，目标可能被其他程序占用：{target_path}") from last_error
 
 
 def count_cjk_chars(text: str) -> int:
