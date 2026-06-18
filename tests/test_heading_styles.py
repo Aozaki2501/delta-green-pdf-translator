@@ -40,6 +40,64 @@ def test_extract_block_marks_four_heading_levels():
     assert "Regular body text continues here." in text
 
 
+def test_bold_font_name_subheading_at_body_plus_twenty_percent():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    block = {
+        "bbox": (40, 40, 300, 120),
+        "lines": [
+            _line("Finding Jesus", 12, 40, flags=20, font="SabonLTStd-Bold"),
+            _line("Keeler says he found Jesus years ago.", 10, 58, flags=4, font="SabonLTStd-Roman"),
+        ],
+    }
+
+    text = extractor._extract_block_text(block, page_median_size=10)
+
+    assert "#### Finding Jesus" in text
+    assert "#### Finding Jesus\n\nKeeler says" in text
+
+
+def test_inline_bold_body_text_does_not_become_heading():
+    extractor = PDFExtractor.__new__(PDFExtractor)
+    block = {
+        "bbox": (40, 40, 300, 80),
+        "lines": [
+            {
+                "bbox": (40, 40, 300, 52),
+                "spans": [
+                    {
+                        "text": "An Agent who succeeds at a ",
+                        "size": 10,
+                        "flags": 4,
+                        "color": 0,
+                        "font": "SabonLTStd-Roman",
+                        "bbox": (40, 40, 160, 52),
+                    },
+                    {
+                        "text": "HUMINT",
+                        "size": 10,
+                        "flags": 20,
+                        "color": 0,
+                        "font": "SabonLTStd-Bold",
+                        "bbox": (160, 40, 200, 52),
+                    },
+                    {
+                        "text": " roll can tell he is truthful.",
+                        "size": 10,
+                        "flags": 4,
+                        "color": 0,
+                        "font": "SabonLTStd-Roman",
+                        "bbox": (200, 40, 300, 52),
+                    },
+                ],
+            }
+        ],
+    }
+
+    text = extractor._extract_block_text(block, page_median_size=10)
+
+    assert text == "An Agent who succeeds at a HUMINT roll can tell he is truthful."
+
+
 def test_large_heading_with_abbreviation_period_is_preserved():
     extractor = PDFExtractor.__new__(PDFExtractor)
     block = {

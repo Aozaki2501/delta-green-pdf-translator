@@ -1186,7 +1186,13 @@ class PDFExtractor:
         return sum(sizes) / len(sizes)
 
     def _line_is_bold(self, line) -> bool:
-        return any(span.get("flags", 0) & 2 for span in line.get("spans", []))
+        for span in line.get("spans", []):
+            if span.get("flags", 0) & 2:
+                return True
+            font_name = str(span.get("font") or "").lower()
+            if re.search(r"(bold|heavy|black)", font_name):
+                return True
+        return False
 
     def _line_text_color(self, line) -> Optional[int]:
         colors = [
@@ -1228,7 +1234,9 @@ class PDFExtractor:
             return 1
         if ratio >= 1.75:
             return 3
-        if ratio >= 1.22 and (bold or is_all_caps):
+        if bold and ratio >= 1.18:
+            return 4
+        if ratio >= 1.22 and is_all_caps:
             return 4
         if is_all_caps and ratio >= 1.08:
             return 4

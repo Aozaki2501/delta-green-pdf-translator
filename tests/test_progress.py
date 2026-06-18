@@ -76,6 +76,24 @@ class TestSaveLoadRoundTrip:
         assert tracker2.get_cached_prompt_translation("bad-2") == ""
         assert tracker2.get_cached_prompt_translation("good") == "complete translation"
 
+    def test_clear_pages_removes_matching_prompt_cache(self, tmp_path):
+        progress_file = str(tmp_path / "clear_page_cache.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.mark_completed(1, "old page translation")
+        tracker.mark_completed(2, "kept page translation")
+        tracker.mark_cached_prompt_translation("old-cache", "old page translation")
+        tracker.mark_cached_prompt_translation("kept-cache", "kept page translation")
+
+        assert tracker.clear_pages({1}) == 1
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.is_completed(1) is False
+        assert tracker2.get_translation(1) == ""
+        assert tracker2.is_completed(2) is True
+        assert tracker2.get_cached_prompt_translation("old-cache") == ""
+        assert tracker2.get_cached_prompt_translation("kept-cache") == "kept page translation"
+
     def test_prompt_leak_cache_is_not_reused(self, tmp_path):
         progress_file = str(tmp_path / "cache_leak.progress.json")
 

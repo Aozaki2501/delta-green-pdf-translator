@@ -244,6 +244,10 @@ with st.sidebar:
     word_hard_page_breaks = False
     word_header_left = "绿色三角洲"
     word_header_right = ""
+    requested_quality_retranslate = st.session_state.pop("quality_retranslate_pages", "")
+    if requested_quality_retranslate:
+        st.session_state["retranslate_pages_input"] = requested_quality_retranslate
+        st.session_state["retry_failed_pages_input"] = False
     st.checkbox("低动效模式", value=False, key="reduce_motion")
     st.caption("开启后会关闭入场遮罩和主要动画，适合远程部署或低性能浏览器。")
 
@@ -287,8 +291,12 @@ with st.sidebar:
             "模糊术语匹配", value=False,
             help="启用 OCR 字符替换容错匹配（0↔O, 1↔l↔I, 5↔S, 8↔B）"
         )
-        retranslate_pages_str = st.text_input("重翻页码", value="", placeholder="如：8, 12-15")
-        retry_failed_pages = st.checkbox("只重试失败页", value=False)
+        retranslate_pages_str = st.text_input(
+            "重翻页码",
+            key="retranslate_pages_input",
+            placeholder="如：8, 12-15",
+        )
+        retry_failed_pages = st.checkbox("只重试失败页", value=False, key="retry_failed_pages_input")
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
@@ -470,7 +478,10 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-launch_pressed = st.button("执行翻译任务", type="primary", use_container_width=True)
+auto_launch_translation = bool(st.session_state.pop("auto_launch_translation", False))
+launch_pressed = st.button("执行翻译任务", type="primary", use_container_width=True) or auto_launch_translation
+if auto_launch_translation:
+    st.info("已从质量检查选择问题页，开始重翻。")
 
 if pdf_file and show_extraction_preview:
     preview_path = save_uploaded_pdf_for_preview(pdf_file)
@@ -1391,26 +1402,44 @@ if launch_pressed:
         qa_cols[4].metric("术语遗漏", quality_report.glossary_misses)
         if quality_report.issues:
             with st.expander("查看问题页", expanded=True):
-                for issue in quality_report.issues[:30]:
-                    detail = f"；{issue.detail}" if issue.detail else ""
-                    st.markdown(f"**第 {issue.page_num} 页：{issue.message}{detail}**")
-                    left, right = st.columns(2)
-                    left.caption("英文原文")
-                    left.text_area(
-                        f"source_{issue.page_num}_{issue.kind}",
-                        issue.source_excerpt or "无",
-                        height=140,
-                        label_visibility="collapsed",
-                        disabled=True,
+                issues_by_page = {}
+                for issue in quality_report.issues:
+                    issues_by_page.setdefault(issue.page_num, []).append(issue)
+                selected_quality_pages = []
+                for page_num in quality_report.issue_pages:
+                    checked = st.checkbox(
+                        f"第 {page_num} 页",
+                        value=True,
+                        key=f"quality_retry_page_{dossier_id}_{page_num}",
                     )
-                    right.caption("中文译文")
-                    right.text_area(
-                        f"translation_{issue.page_num}_{issue.kind}",
-                        issue.translation_excerpt or "无",
-                        height=140,
-                        label_visibility="collapsed",
-                        disabled=True,
+                    if checked:
+                        selected_quality_pages.append(page_num)
+                    for issue_index, issue in enumerate(issues_by_page[page_num]):
+                        detail = f"；{issue.detail}" if issue.detail else ""
+                        st.markdown(f"**{issue.message}{detail}**")
+                        left, right = st.columns(2)
+                        left.caption("英文原文")
+                        left.text_area(
+                            f"source_{issue.page_num}_{issue.kind}_{issue_index}",
+                            issue.source_excerpt or "无",
+                            height=140,
+                            label_visibility="collapsed",
+                            disabled=True,
+                        )
+                        right.caption("中文译文")
+                        right.text_area(
+                            f"translation_{issue.page_num}_{issue.kind}_{issue_index}",
+                            issue.translation_excerpt or "无",
+                            height=140,
+                            label_visibility="collapsed",
+                            disabled=True,
+                        )
+                if st.button("重翻选中的问题页", disabled=not selected_quality_pages):
+                    st.session_state["quality_retranslate_pages"] = ", ".join(
+                        str(page_num) for page_num in selected_quality_pages
                     )
+                    st.session_state["auto_launch_translation"] = True
+                    st.rerun()
         else:
             st.success("质量检查未发现明显问题。")
 

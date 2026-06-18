@@ -108,7 +108,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                   model="deepseek-v4-pro", start_page=0, end_page=None,
                   output_format="markdown", max_workers=8,
                   provider="deepseek", base_url="https://api.deepseek.com",
-                  retry_failed=False, fuzzy_matching=False,
+                  retry_failed=False, retranslate_pages="", fuzzy_matching=False,
                   rate_limit=60, cooldown=1.0):
     print("=" * 60)
     print("  DG TRPG PDF Translator v2.0")
@@ -198,17 +198,30 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 print(f"   - {mismatch}")
             if tracker.ignored_existing_progress:
                 print("   已保留文件但本次不复用旧译文。")
+        retranslate_page_indexes = parse_page_selection(str(retranslate_pages or ""), total)
+        retranslate_page_indexes = {
+            p for p in retranslate_page_indexes
+            if start_page <= p < end_page
+        }
+        if retranslate_page_indexes:
+            cleared = tracker.clear_pages(retranslate_page_indexes)
+            print(
+                "   Retranslate pages: "
+                + ", ".join(str(p + 1) for p in sorted(retranslate_page_indexes))
+                + f" (cleared {cleared} old progress entries)"
+            )
         if retry_failed:
             failed_retry_pages = {
                 p for p in tracker.get_failed_pages()
                 if start_page <= p < end_page
             }
-            if failed_retry_pages:
+            retry_pages = failed_retry_pages | retranslate_page_indexes
+            if retry_pages:
                 print(
                     "   只重试失败页: "
-                    + ", ".join(str(p + 1) for p in sorted(failed_retry_pages))
+                    + ", ".join(str(p + 1) for p in sorted(retry_pages))
                 )
-                start_end_pages = sorted(failed_retry_pages)
+                start_end_pages = sorted(retry_pages)
             else:
                 print("   没有可重试的失败页。")
                 start_end_pages = []
@@ -570,6 +583,7 @@ PDF_CONFIG_KEYS = {
     "cooldown",
     "fuzzy_matching",
     "retry_failed",
+    "retranslate_pages",
     "start",
     "end",
 }
@@ -637,6 +651,7 @@ def main():
     parser.add_argument("--start", type=int, default=None, help="起始页码（从0开始）")
     parser.add_argument("--end", type=int, default=None, help="结束页码（不含）")
     parser.add_argument("--retry-failed", action="store_true", help="只重试 progress.json 里记录的失败页")
+    parser.add_argument("--retranslate-pages", default=None, help="指定重翻页码，如 8,12-15")
     parser.add_argument("--fuzzy-matching", action="store_true", help="启用 OCR 字符替换模糊术语匹配")
 
     args = parser.parse_args()
@@ -660,6 +675,11 @@ def main():
     cooldown = args.cooldown if args.cooldown is not None else config.get("cooldown", 1.0)
     start_page = args.start if args.start is not None else config.get("start", 0)
     end_page = args.end if args.end is not None else config.get("end")
+    retranslate_pages = (
+        args.retranslate_pages
+        if args.retranslate_pages is not None
+        else config.get("retranslate_pages", "")
+    )
     fuzzy_matching = bool(args.fuzzy_matching or config.get("fuzzy_matching", False))
 
     # Validate required params
@@ -723,6 +743,7 @@ def main():
         output_format=output_format,
         max_workers=workers,
         retry_failed=bool(args.retry_failed or config.get("retry_failed", False)),
+        retranslate_pages=retranslate_pages,
         fuzzy_matching=fuzzy_matching,
         rate_limit=rate_limit,
         cooldown=cooldown,

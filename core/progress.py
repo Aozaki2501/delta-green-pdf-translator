@@ -190,6 +190,7 @@ class ProgressTracker:
     def clear_pages(self, page_nums) -> int:
         """Remove specified pages from completed state. Returns count cleared."""
         cleared = 0
+        rejected_translations = []
         with self._lock:
             for page_num in page_nums:
                 page_cleared = False
@@ -197,13 +198,19 @@ class ProgressTracker:
                     self.completed_pages.remove(page_num)
                     page_cleared = True
                 if str(page_num) in self.translations:
-                    self.translations.pop(str(page_num), None)
+                    old_translation = self.translations.pop(str(page_num), None)
+                    if old_translation:
+                        rejected_translations.append(old_translation)
                     page_cleared = True
                 if str(page_num) in self.failed_pages:
                     self.failed_pages.pop(str(page_num), None)
                     page_cleared = True
                 if page_cleared:
                     cleared += 1
+            for old_translation in rejected_translations:
+                for cache_key, cached_translation in list(self.translation_cache.items()):
+                    if cached_translation == old_translation:
+                        self.translation_cache.pop(cache_key, None)
         if cleared:
             self.save()
         return cleared

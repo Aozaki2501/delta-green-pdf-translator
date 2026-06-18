@@ -14,6 +14,7 @@ def test_load_config_accepts_supported_pdf_keys(tmp_path):
             "workers": 8,
             "rate_limit": 60,
             "cooldown": 1.0,
+            "retranslate_pages": "2,4-5",
         }),
         encoding="utf-8",
     )
@@ -23,6 +24,7 @@ def test_load_config_accepts_supported_pdf_keys(tmp_path):
     assert config["workers"] == 8
     assert config["rate_limit"] == 60
     assert config["cooldown"] == 1.0
+    assert config["retranslate_pages"] == "2,4-5"
 
 
 def test_load_config_rejects_unsupported_pdf_keys(tmp_path):
