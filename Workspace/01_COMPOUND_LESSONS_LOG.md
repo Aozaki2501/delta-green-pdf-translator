@@ -68,3 +68,21 @@
 - 修正：保存上传文件前计算 SHA256，已存在相同内容时直接复用。
 - 以后复用的方法：大文件缓存应优先按内容 hash 去重，随机名只适合临时小文件。
 - 需要同步更新的文档：无。
+
+### 2026-06-25｜PowerShell 后台服务日志不能重定向到同一文件
+
+- 场景：启动 Streamlit 做界面截图检查。
+- 问题：`Start-Process` 同时把 stdout 和 stderr 指向同一个日志文件时直接失败。
+- 原因：PowerShell 不允许 `RedirectStandardOutput` 和 `RedirectStandardError` 使用相同目标。
+- 修正：分别写入 `.out.log` 和 `.err.log`。
+- 以后复用的方法：Windows 后台服务启动时，stdout/stderr 分开重定向；需要合并时后续再读两个文件。
+- 需要同步更新的文档：无。
+
+### 2026-06-25｜Playwright 浏览器版本要匹配调用端
+
+- 场景：用 `node_repl` 调 Playwright 做 Streamlit 截图检查。
+- 问题：项目虚拟环境装过 Chromium，但 `node_repl` 仍提示找不到浏览器。
+- 原因：Python Playwright、npx Playwright 和 `node_repl` 内置 Playwright 版本不同，浏览器目录不通用。
+- 修正：先读取 `node_repl` 中 Playwright 的版本，再用 `npx playwright@版本 install chromium` 安装匹配浏览器。
+- 以后复用的方法：截图检查前先确认实际调用端的 Playwright 版本，不要假设其它环境装过的浏览器可复用。
+- 需要同步更新的文档：无。

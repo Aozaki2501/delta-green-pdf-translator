@@ -1,7 +1,7 @@
 import json
 import os
 
-from webui.components import _retry_export_from_audit, make_dossier_id
+from webui.components import _retry_export_from_audit, make_dossier_id, render_dossier_card
 from webui.components import render_output_history
 from webui.history import (
     collect_output_history,
@@ -17,6 +17,41 @@ def test_make_dossier_id_is_stable_for_same_upload():
 
     assert first == second
     assert first.startswith("DG-")
+
+
+def test_make_dossier_id_accepts_office_prefix():
+    identifier = make_dossier_id(
+        "book.pdf",
+        "abcdef123456",
+        created_at=1_700_000_000,
+        prefix="DOC",
+    )
+
+    assert identifier.startswith("DOC-")
+
+
+def test_render_dossier_card_uses_office_copy(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "webui.components.st.markdown",
+        lambda body, unsafe_allow_html=False: calls.append((body, unsafe_allow_html)),
+    )
+
+    render_dossier_card(
+        "DOC-TEST",
+        "book.pdf",
+        "abcdef123456",
+        glossary_name="glossary.tsv",
+        loaded=True,
+        office_mode=True,
+    )
+
+    assert calls
+    assert "DOCUMENT" in calls[0][0]
+    assert "状态：待校对" in calls[0][0]
+    assert "CLASSIFIED" not in calls[0][0]
+    assert "绝密" not in calls[0][0]
+    assert calls[0][1] is True
 
 
 def test_collect_output_history_reads_audit_and_progress(tmp_path):

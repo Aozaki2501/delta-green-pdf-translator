@@ -21,6 +21,7 @@ from webui.history import (
 
 
 STATUS_STEPS = ("接收档案", "提取文本", "匹配术语", "编译译文", "生成输出", "归档完成")
+OFFICE_STATUS_STEPS = ("接收文件", "提取文本", "匹配术语", "编译译文", "生成输出", "完成")
 
 
 def _retryable_formats(audit: dict[str, Any]) -> list[str]:
@@ -91,28 +92,37 @@ def _retry_export_from_audit(entry: dict[str, Any]) -> list[str]:
     return written
 
 
-def make_dossier_id(filename: str, file_digest: str, created_at: float | None = None) -> str:
+def make_dossier_id(
+    filename: str,
+    file_digest: str,
+    created_at: float | None = None,
+    prefix: str = "DG",
+) -> str:
     timestamp = time.strftime("%Y%m%d-%H%M", time.localtime(created_at or time.time()))
     seed = f"{filename}:{file_digest}".encode("utf-8")
     suffix = hashlib.sha256(seed).hexdigest()[:6].upper()
-    return f"DG-{timestamp}-{suffix}"
+    clean_prefix = prefix.strip().upper() if prefix and prefix.strip() else "DG"
+    return f"{clean_prefix}-{timestamp}-{suffix}"
 
 
 def render_dossier_card(dossier_id: str, filename: str, file_digest: str,
-                        glossary_name: str = "", loaded: bool = False) -> None:
+                        glossary_name: str = "", loaded: bool = False,
+                        office_mode: bool = False) -> None:
     state_class = " loaded" if loaded else ""
     digest = file_digest[:12].upper() if file_digest else "待接收"
     glossary = glossary_name or "默认术语表"
+    kicker = "DOCUMENT" if office_mode else "CLASSIFIED DOSSIER"
+    status_label = "状态：待校对" if office_mode else "密级：绝密 / 待校对"
     st.markdown(
         f"""
 <div class="dossier-card{state_class}">
-    <div class="dossier-kicker">CLASSIFIED DOSSIER</div>
+    <div class="dossier-kicker">{kicker}</div>
     <div class="dossier-id">{html.escape(dossier_id)}</div>
     <div class="dossier-meta">
         <span>文件：{html.escape(filename or "待导入")}</span>
         <span>校验：{html.escape(digest)}</span>
         <span>术语：{html.escape(glossary)}</span>
-        <span>密级：绝密 / 待校对</span>
+        <span>{html.escape(status_label)}</span>
     </div>
 </div>
         """,
@@ -120,9 +130,10 @@ def render_dossier_card(dossier_id: str, filename: str, file_digest: str,
     )
 
 
-def render_status_flow(active_index: int = 0, failed: bool = False) -> None:
+def render_status_flow(active_index: int = 0, failed: bool = False, office_mode: bool = False) -> None:
+    steps = OFFICE_STATUS_STEPS if office_mode else STATUS_STEPS
     parts = ['<div class="status-flow">']
-    for idx, label in enumerate(STATUS_STEPS):
+    for idx, label in enumerate(steps):
         if failed and idx == active_index:
             state = "failed"
         elif idx < active_index:
@@ -136,11 +147,12 @@ def render_status_flow(active_index: int = 0, failed: bool = False) -> None:
     st.markdown("\n".join(parts), unsafe_allow_html=True)
 
 
-def render_system_log(lines: list[tuple[str, str]]) -> None:
+def render_system_log(lines: list[tuple[str, str]], office_mode: bool = False) -> None:
+    prefix = "" if office_mode else "&gt; "
     parts = ['<div class="system-log">']
     for level, text in lines:
         safe_level = level if level in {"warn", "fail"} else ""
-        parts.append(f'<div class="system-log-line {safe_level}">&gt; {html.escape(text)}</div>')
+        parts.append(f'<div class="system-log-line {safe_level}">{prefix}{html.escape(text)}</div>')
     parts.append("</div>")
     st.markdown("\n".join(parts), unsafe_allow_html=True)
 
@@ -162,18 +174,22 @@ def render_audit_grid(items: dict[str, Any]) -> None:
     st.markdown("\n".join(parts), unsafe_allow_html=True)
 
 
-def render_output_history(output_dir: Path, limit: int = 8) -> None:
+def render_output_history(output_dir: Path, limit: int = 8, office_mode: bool = False) -> None:
     history_entries = collect_output_history(output_dir, limit=limit)
     if history_entries:
+        section_kicker = "HISTORY" if office_mode else "ARCHIVE VAULT"
+        section_title = "历史输出" if office_mode else "档案库"
+        section_note = "旧输出只保留下载入口，不参与新任务。"
+        id_label = "任务号" if office_mode else "档案号"
         st.markdown(
-            """
+            f"""
 <div class="section-card archive-vault">
     <div class="section-heading">
         <div>
-            <div class="section-kicker">ARCHIVE VAULT</div>
-            <div class="section-title">档案库</div>
+            <div class="section-kicker">{section_kicker}</div>
+            <div class="section-title">{section_title}</div>
         </div>
-        <div class="section-note">旧输出只保留下载入口，不参与新任务。</div>
+        <div class="section-note">{section_note}</div>
     </div>
             """,
             unsafe_allow_html=True,
@@ -204,7 +220,7 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
                     metric_cols[3].metric("失败页", f"{failed_count}")
 
                 audit_items = {
-                    "档案号": audit.get("dossier_id", "未记录"),
+                    id_label: audit.get("dossier_id", "未记录"),
                     "文件": audit.get("source_file", entry["title"]),
                     "模型": audit.get("model", progress.get("model", "未记录")),
                     "页码": audit.get("page_range", "未记录"),
@@ -242,15 +258,18 @@ def render_output_history(output_dir: Path, limit: int = 8) -> None:
                         )
         st.markdown("</div>", unsafe_allow_html=True)
     else:
+        section_kicker = "HISTORY" if office_mode else "ARCHIVE VAULT"
+        section_title = "历史输出" if office_mode else "档案库"
+        section_note = "还没有历史输出。"
         st.markdown(
-            """
+            f"""
 <div class="section-card archive-vault">
     <div class="section-heading">
         <div>
-            <div class="section-kicker">ARCHIVE VAULT</div>
-            <div class="section-title">档案库</div>
+            <div class="section-kicker">{section_kicker}</div>
+            <div class="section-title">{section_title}</div>
         </div>
-        <div class="section-note">还没有历史输出。</div>
+        <div class="section-note">{section_note}</div>
     </div>
 </div>
             """,

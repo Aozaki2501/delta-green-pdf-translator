@@ -5,8 +5,8 @@ from __future__ import annotations
 import streamlit as st
 
 
-def render_app_theme() -> None:
-    st.markdown(APP_THEME_CSS, unsafe_allow_html=True)
+def render_app_theme(office_mode: bool = False) -> None:
+    st.markdown(OFFICE_THEME_CSS if office_mode else APP_THEME_CSS, unsafe_allow_html=True)
 
 
 APP_THEME_CSS = r'''
@@ -737,7 +737,582 @@ APP_THEME_CSS = r'''
 </style>
 '''
 
-def render_workstation_effects(reduced_motion: bool = False) -> None:
+OFFICE_THEME_CSS = r'''
+<style>
+    :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --panel-strong: #ffffff;
+        --line: #d8dee8;
+        --line-hot: #8aa4c2;
+        --green: #2563eb;
+        --green-soft: #1e3a5f;
+        --amber: #9a6700;
+        --red: #b42318;
+        --text: #182233;
+        --muted: #607084;
+        --shadow: rgba(24, 34, 51, 0.08);
+    }
+
+    .stApp, .stAppHeader {
+        background: var(--bg) !important;
+        color: var(--text) !important;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
+    }
+
+    #MainMenu,
+    footer,
+    header[data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"],
+    .stDeployButton,
+    .stApp::before,
+    .stApp::after,
+    .boot-screen,
+    .classified-hero::before,
+    .hero-seal-mark,
+    .radar-track,
+    .radar-fill,
+    .radar-step::before,
+    .terminal-cursor {
+        display: none !important;
+        visibility: hidden !important;
+        animation: none !important;
+    }
+
+    section[data-testid="stSidebar"] {
+        background: #ffffff !important;
+        border-right: 1px solid var(--line) !important;
+        box-shadow: none !important;
+    }
+
+    h1, h2, h3, .hero-title {
+        color: var(--text) !important;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
+        letter-spacing: 0;
+        font-weight: 800;
+    }
+
+    p, label, .stMarkdown {
+        color: var(--text) !important;
+        font-size: 0.95rem;
+    }
+
+    .block-container {
+        max-width: 1220px;
+        padding-top: 1.25rem;
+        padding-bottom: 4rem;
+    }
+
+    .classified-hero {
+        border: 1px solid var(--line);
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 24px;
+        margin-bottom: 16px;
+        box-shadow: 0 8px 24px var(--shadow);
+        animation: none !important;
+    }
+
+    .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(240px, 0.65fr);
+        gap: 20px;
+        align-items: end;
+    }
+
+    .hero-title {
+        font-size: 2.35rem;
+        line-height: 1.08;
+        margin-bottom: 8px;
+        text-shadow: none;
+    }
+
+    .hero-subtitle {
+        color: var(--muted);
+        font-size: 0.96rem;
+        line-height: 1.7;
+    }
+
+    .status-radar {
+        width: min(520px, 100%);
+        margin-top: 16px;
+    }
+
+    .radar-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .radar-label,
+    .radar-step {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #f8fafc;
+        color: var(--muted);
+        padding: 5px 9px;
+        font-size: 0.78rem;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    }
+
+    .hero-seal {
+        min-height: 126px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 16px;
+        display: grid;
+        align-content: center;
+    }
+
+    .hero-seal-code {
+        color: var(--muted);
+        font-family: "Consolas", monospace;
+        font-size: 0.82rem;
+        line-height: 1.7;
+    }
+
+    .intel-grid {
+        display: grid;
+        grid-template-columns: 1.25fr 1fr 1fr;
+        gap: 14px;
+        margin-bottom: 20px;
+    }
+
+    .intel-tile, .section-card {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+        box-shadow: 0 8px 24px var(--shadow);
+        animation: none !important;
+    }
+
+    .intel-tile {
+        min-height: 86px;
+        padding: 16px;
+        display: grid;
+        align-content: space-between;
+    }
+
+    .intel-label,
+    .section-kicker,
+    .launch-kicker,
+    .sidebar-kicker {
+        color: var(--muted);
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        font-family: "Consolas", monospace;
+    }
+
+    .intel-value,
+    .section-title,
+    .launch-title,
+    .sidebar-title {
+        color: var(--text);
+        font-weight: 800;
+    }
+
+    .intel-value {
+        font-size: 1.35rem;
+        margin-top: 2px;
+    }
+
+    .section-card {
+        padding: 22px;
+        margin: 18px 0;
+    }
+
+    .section-card::before {
+        display: none !important;
+    }
+
+    .section-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+        margin-bottom: 18px;
+    }
+
+    .section-title,
+    .launch-title {
+        font-size: 1.35rem;
+        margin-top: 4px;
+    }
+
+    .section-note,
+    .sidebar-note,
+    .sidebar-help-copy {
+        color: var(--muted);
+        line-height: 1.6;
+        font-size: 0.9rem;
+    }
+
+    .launch-panel {
+        display: grid;
+        grid-template-columns: minmax(220px, 0.65fr) minmax(0, 1.35fr);
+        gap: 18px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 18px 20px;
+        margin: 18px 0 10px;
+        box-shadow: 0 8px 24px var(--shadow);
+        animation: none !important;
+    }
+
+    .launch-status {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .launch-status span {
+        min-height: 42px;
+        display: flex;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #f8fafc;
+        color: var(--text);
+        padding: 8px 10px;
+        font-size: 0.86rem;
+    }
+
+    .sidebar-console,
+    .sidebar-help {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 14px;
+        margin: 4px 0 12px;
+    }
+
+    .sidebar-help {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+    }
+
+    .sidebar-help-badge {
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        color: var(--green);
+        font-weight: 800;
+    }
+
+    .sidebar-help-title {
+        color: var(--text);
+        font-size: 0.84rem;
+        font-weight: 800;
+        margin-bottom: 4px;
+    }
+
+    div[data-testid="stFileUploader"] {
+        background: #ffffff !important;
+        border: 1px dashed var(--line-hot) !important;
+        border-radius: 8px !important;
+        padding: 16px;
+    }
+
+    .stTextInput input,
+    .stNumberInput input,
+    .stSelectbox div[data-baseweb="select"],
+    .stMultiSelect div[data-baseweb="select"],
+    textarea {
+        background-color: #ffffff !important;
+        border: 1px solid var(--line) !important;
+        border-radius: 6px !important;
+        color: var(--text) !important;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
+    }
+
+    .stMultiSelect [data-baseweb="tag"] {
+        background: #eff6ff !important;
+        border: 1px solid #bfdbfe !important;
+        border-radius: 6px !important;
+        color: var(--green-soft) !important;
+        min-height: 28px;
+    }
+
+    .stMultiSelect [data-baseweb="tag"] span {
+        color: var(--green-soft) !important;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
+        font-size: 0.82rem !important;
+    }
+
+    .stButton>button {
+        background: #ffffff !important;
+        color: var(--text) !important;
+        border: 1px solid var(--line-hot) !important;
+        border-radius: 6px !important;
+        min-height: 46px;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: none;
+        transition: background 0.16s ease, border-color 0.16s ease;
+    }
+
+    .stButton>button:hover {
+        background: #f1f5f9 !important;
+        color: var(--text) !important;
+        box-shadow: none;
+    }
+
+    .stButton>button[kind="primary"] {
+        background: var(--green) !important;
+        color: #ffffff !important;
+        border: 1px solid var(--green) !important;
+        box-shadow: none;
+        font-size: 1rem;
+        text-shadow: none;
+    }
+
+    .stButton>button[kind="primary"] p,
+    .stButton>button[kind="primary"]:hover p {
+        color: #ffffff !important;
+        text-shadow: none;
+    }
+
+    .stProgress > div > div > div {
+        background-color: var(--green) !important;
+        box-shadow: none;
+    }
+
+    div[data-testid="stMetric"] {
+        background: #ffffff !important;
+        border: 1px solid var(--line) !important;
+        border-radius: 8px !important;
+        padding: 15px;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: var(--text) !important;
+    }
+
+    [data-testid="stExpander"] {
+        background: #ffffff !important;
+        border: 1px solid var(--line) !important;
+        border-radius: 8px !important;
+    }
+
+    @media (max-width: 760px) {
+        .hero-grid,
+        .launch-panel,
+        .launch-status,
+        .intel-grid {
+            grid-template-columns: 1fr;
+        }
+        .section-heading {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        .section-note {
+            max-width: 100%;
+        }
+        .hero-title {
+            font-size: 1.9rem;
+        }
+    }
+</style>
+'''
+
+OFFICE_COMPONENT_CSS = r'''
+<style>
+    .dossier-card {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 16px 18px;
+        margin: 14px 0;
+        box-shadow: 0 8px 24px var(--shadow);
+    }
+
+    .dossier-card.loaded::after,
+    .status-flow::before,
+    .audit-cell::after,
+    div[data-testid="stMetric"]::after,
+    div[data-testid="stAlert"]::after,
+    .stDownloadButton > button::before {
+        display: none !important;
+        animation: none !important;
+    }
+
+    .dossier-kicker {
+        color: var(--muted);
+        font-size: 0.74rem;
+        text-transform: uppercase;
+    }
+
+    .dossier-id {
+        color: var(--text);
+        font: 1.35rem "Consolas", monospace;
+        margin-top: 5px;
+    }
+
+    .dossier-meta {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 12px;
+    }
+
+    .dossier-meta span {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 7px 9px;
+        color: var(--text);
+        background: #f8fafc;
+        font-size: 0.82rem;
+    }
+
+    .status-flow {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+        margin: 14px 0;
+    }
+
+    .status-step {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #ffffff;
+        color: var(--muted);
+        padding: 9px 10px;
+        font-size: 0.82rem;
+        text-align: center;
+    }
+
+    .status-step.done {
+        border-color: #9bb8d9;
+        color: var(--green-soft);
+        background: #f4f8ff;
+    }
+
+    .status-step.active {
+        border-color: var(--green);
+        color: var(--green);
+        background: #eff6ff;
+        animation: none !important;
+    }
+
+    .status-step.failed {
+        border-color: var(--red);
+        color: var(--red);
+        background: #fff5f5;
+    }
+
+    .system-log {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px 14px;
+        margin: 12px 0;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    }
+
+    .system-log-line {
+        color: var(--text);
+        font-size: 0.84rem;
+        line-height: 1.55;
+        animation: none !important;
+    }
+
+    .system-log-line.warn {
+        color: var(--amber);
+    }
+
+    .system-log-line.fail {
+        color: var(--red);
+    }
+
+    .archive-stamp {
+        display: inline-block;
+        border: 1px solid var(--line-hot);
+        border-radius: 6px;
+        color: var(--green-soft);
+        background: #f4f8ff;
+        padding: 7px 14px;
+        margin: 8px 0 4px;
+        font: 1rem "Microsoft YaHei", "Noto Sans SC", sans-serif;
+        letter-spacing: 0;
+        transform: none;
+        animation: none !important;
+    }
+
+    .audit-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin: 10px 0;
+    }
+
+    .audit-cell {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #ffffff;
+        padding: 8px 10px;
+    }
+
+    .audit-label {
+        color: var(--muted);
+        font-size: 0.72rem;
+    }
+
+    .audit-value {
+        color: var(--text);
+        margin-top: 3px;
+        font-size: 0.9rem;
+    }
+
+    div[data-testid="stAlert"] {
+        border-radius: 8px !important;
+        border: 1px solid var(--line) !important;
+        background: #ffffff !important;
+        box-shadow: none !important;
+    }
+
+    div[data-testid="stAlert"] > div,
+    div[data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+    div[data-testid="stAlert"] [data-testid="stMarkdownContainer"] p {
+        background: transparent !important;
+        color: var(--text) !important;
+    }
+
+    div[data-testid="stAlert"] svg {
+        color: var(--green) !important;
+        fill: var(--green) !important;
+    }
+
+    div[data-testid="stAlert"]::before {
+        background: var(--green) !important;
+    }
+
+    @media (max-width: 860px) {
+        .dossier-meta,
+        .status-flow,
+        .audit-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+</style>
+'''
+
+def render_workstation_effects(reduced_motion: bool = False, office_mode: bool = False) -> None:
+    if office_mode:
+        st.markdown(OFFICE_COMPONENT_CSS, unsafe_allow_html=True)
+        return
+
     reduced_motion_css = """
     .stApp::after,
     .boot-screen,

@@ -10,7 +10,7 @@ from webui.runtime import (
     safe_filename_stem,
     save_uploaded_file_once,
 )
-from webui.theme import render_app_theme
+from webui.theme import render_app_theme, render_workstation_effects
 
 
 def test_safe_filename_stem_keeps_readable_name():
@@ -153,4 +153,34 @@ def test_render_app_theme_calls_streamlit_markdown(monkeypatch):
 
     assert calls
     assert "<style>" in calls[0][0]
+    assert calls[0][1] is True
+
+
+def test_render_app_theme_supports_office_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "webui.theme.st.markdown",
+        lambda body, unsafe_allow_html=False: calls.append((body, unsafe_allow_html)),
+    )
+
+    render_app_theme(office_mode=True)
+
+    assert calls
+    assert "--bg: #f6f7f9" in calls[0][0]
+    assert "绝密" not in calls[0][0]
+    assert calls[0][1] is True
+
+
+def test_render_workstation_effects_supports_office_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "webui.theme.st.markdown",
+        lambda body, unsafe_allow_html=False: calls.append((body, unsafe_allow_html)),
+    )
+
+    render_workstation_effects(office_mode=True)
+
+    assert calls
+    assert ".dossier-card" in calls[0][0]
+    assert "传输已授权" not in calls[0][0]
     assert calls[0][1] is True

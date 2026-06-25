@@ -89,6 +89,10 @@ OUTPUT_FORMAT_LABELS = {
     "word": "文档排版",
     "typeset_pdf": "纯重绘 PDF（_typeset）",
 }
+office_mode = bool(st.session_state.get("office_mode", False))
+dossier_id_prefix = "DOC" if office_mode else "DG"
+subject_label = "文件" if office_mode else "档案"
+id_label = "任务号" if office_mode else "档案号"
 
 
 def _extract_texts_for_glossary_review(
@@ -161,15 +165,15 @@ def _clear_ignored_risk_pages(session_key: str) -> None:
 
 # === UI THEME ===
 st.set_page_config(
-    page_title="三角洲翻译终端",
-    page_icon="🖧",
+    page_title="文档翻译工作台" if office_mode else "三角洲翻译终端",
+    page_icon="📄" if office_mode else "🖧",
     layout="wide",
 )
 
-render_app_theme()
-reduce_motion = bool(st.session_state.get("reduce_motion", False))
+render_app_theme(office_mode=office_mode)
+reduce_motion = bool(st.session_state.get("reduce_motion", False)) or office_mode
 try:
-    render_workstation_effects(reduced_motion=reduce_motion)
+    render_workstation_effects(reduced_motion=reduce_motion, office_mode=office_mode)
 except TypeError:
     render_workstation_effects()
     if reduce_motion:
@@ -241,9 +245,78 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+if office_mode:
+    st.markdown(
+        """
+<style>
+    div[data-testid="stAlert"] {
+        border-radius: 8px !important;
+        border: 1px solid var(--line) !important;
+        background: #ffffff !important;
+        box-shadow: none !important;
+    }
+    div[data-testid="stAlert"] > div,
+    div[data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+    div[data-testid="stAlert"] [data-testid="stMarkdownContainer"] p {
+        background: transparent !important;
+        color: var(--text) !important;
+    }
+    div[data-testid="stAlert"]::before {
+        background: var(--green) !important;
+    }
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # === HEADER ===
-boot_screen = "" if reduce_motion else """
+if office_mode:
+    st.markdown(
+        """
+<div class="classified-hero">
+    <div class="hero-grid">
+        <div>
+            <div class="hero-title">文档翻译工作台</div>
+            <div class="hero-subtitle">
+                上传 PDF、Markdown 或 Word，确认术语后生成网页、文档或纯文本稿。
+            </div>
+            <div class="status-radar">
+                <div class="radar-row">
+                    <span class="radar-label">当前流程</span>
+                    <span class="radar-step">导入文件</span>
+                    <span class="radar-step">确认术语</span>
+                    <span class="radar-step">生成输出</span>
+                </div>
+            </div>
+        </div>
+        <div class="hero-seal">
+            <div class="hero-seal-code">
+                WORKSPACE: LOCAL<br>
+                MODE: OFFICE<br>
+                OUTPUT: HTML / WORD / MARKDOWN
+            </div>
+        </div>
+    </div>
+</div>
+<div class="intel-grid">
+    <div class="intel-tile">
+        <div class="intel-label">任务</div>
+        <div class="intel-value">翻译</div>
+    </div>
+    <div class="intel-tile">
+        <div class="intel-label">输出</div>
+        <div class="intel-value">网页 / 文档</div>
+    </div>
+    <div class="intel-tile">
+        <div class="intel-label">模式</div>
+        <div class="intel-value">办公</div>
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    boot_screen = "" if reduce_motion else """
 <div class="boot-screen" aria-hidden="true">
     <div class="boot-panel">
         <div class="boot-title">DELTA GREEN TERMINAL</div>
@@ -257,7 +330,7 @@ boot_screen = "" if reduce_motion else """
     </div>
 </div>
 """
-st.markdown(f"""
+    st.markdown(f"""
 {boot_screen}
 <div class="classified-hero">
     <div class="hero-grid">
@@ -304,12 +377,18 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 with st.sidebar:
+    sidebar_kicker = "SETTINGS" if office_mode else "CONTROL DRAWER"
+    sidebar_note = (
+        "确认密钥、页码和输出格式后，就可以开始翻译。"
+        if office_mode
+        else "参数频道已接入。确认密钥、页码与输出协议后，终端将按当前授权执行档案编译。"
+    )
     st.markdown(
-        """
+        f"""
     <div class="sidebar-console">
-    <div class="sidebar-kicker">CONTROL DRAWER</div>
+    <div class="sidebar-kicker">{sidebar_kicker}</div>
     <div class="sidebar-title">任务参数</div>
-    <div class="sidebar-note">参数频道已接入。确认密钥、页码与输出协议后，终端将按当前授权执行档案编译。</div>
+    <div class="sidebar-note">{sidebar_note}</div>
 </div>
         """,
         unsafe_allow_html=True,
@@ -340,8 +419,13 @@ with st.sidebar:
     if requested_quality_retranslate:
         st.session_state["retranslate_pages_input"] = requested_quality_retranslate
         st.session_state["retry_failed_pages_input"] = False
+    st.checkbox("办公模式", value=False, key="office_mode")
+    st.caption("开启后使用中性界面，并自动关闭主要动画。")
     st.checkbox("低动效模式", value=False, key="reduce_motion")
-    st.caption("开启后会关闭入场遮罩和主要动画，适合远程部署或低性能浏览器。")
+    if office_mode:
+        st.caption("办公模式已自动关闭动画。")
+    else:
+        st.caption("开启后会关闭入场遮罩和主要动画，适合远程部署或低性能浏览器。")
 
     st.caption("必要项")
     api_key = st.text_input("接口密钥", type="password", placeholder="sk-...")
@@ -393,7 +477,7 @@ with st.sidebar:
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
     if "word" in formats:
-        with st.expander("文档档案输出", expanded=False):
+        with st.expander("文档输出设置" if office_mode else "文档档案输出", expanded=False):
             word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
             word_line_spacing = st.slider("正文行距", 1.0, 2.0, 1.5, 0.05)
             word_columns = st.selectbox(
@@ -484,16 +568,23 @@ with st.sidebar:
     )
 
 # === MAIN ===
+main_kicker = "UPLOAD" if office_mode else "INTAKE BAY"
+main_title = "导入文件" if office_mode else "导入机密档案"
+main_note = (
+    "上传 PDF、Markdown 或 Word。默认使用本地 glossary.tsv，需要替换术语时再上传自定义术语表。"
+    if office_mode
+    else "上传 PDF、Markdown 或 Word。默认使用本地 glossary.tsv，只有需要替换术语时再上传自定义术语表。"
+)
 st.markdown(
-    """
+    f"""
 <div class="section-card task-dock">
     <div class="section-heading">
         <div>
-            <div class="section-kicker">INTAKE BAY</div>
-            <div class="section-title">导入机密档案</div>
+            <div class="section-kicker">{main_kicker}</div>
+            <div class="section-title">{main_title}</div>
         </div>
         <div class="section-note">
-            上传 PDF、Markdown 或 Word。默认使用本地 glossary.tsv，只有需要替换术语时再上传自定义术语表。
+            {main_note}
         </div>
     </div>
     """,
@@ -533,7 +624,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 if source_file:
     current_digest = uploaded_file_digest(source_file)
-    current_dossier_id = make_dossier_id(source_file.name, current_digest)
+    current_dossier_id = make_dossier_id(source_file.name, current_digest, prefix=dossier_id_prefix)
     glossary_name = glossary_file.name if glossary_file else "glossary.tsv"
     source_type_label = {"pdf": "PDF", "markdown": "Markdown", "docx": "Word"}.get(source_type, "")
     render_dossier_card(
@@ -542,14 +633,15 @@ if source_file:
         current_digest,
         glossary_name=glossary_name,
         loaded=True,
+        office_mode=office_mode,
     )
-    render_status_flow(active_index=0)
+    render_status_flow(active_index=0, office_mode=office_mode)
     render_system_log([
-        ("info", "档案接收完成"),
-        ("info", f"档案号 {current_dossier_id} 已生成"),
+        ("info", f"{subject_label}接收完成"),
+        ("info", f"{id_label} {current_dossier_id} 已生成"),
         ("info", f"文件类型：{source_type_label}"),
         ("info", "等待执行翻译任务"),
-    ])
+    ], office_mode=office_mode)
 
 glossary_review_rows = []
 glossary_review_error = ""
@@ -625,14 +717,15 @@ if source_file and source_type:
         st.error(f"术语候选扫描失败：{e}")
     st.markdown("</div>", unsafe_allow_html=True)
 
-ready_state = "档案已接收" if source_file else "等待档案"
+ready_state = f"{subject_label}已接收" if source_file else f"等待{subject_label}"
 key_state = "密钥已录入" if api_key else "等待密钥"
 format_state = " / ".join(OUTPUT_FORMAT_LABELS[value] for value in formats) if formats else "未选择输出"
+launch_kicker = "TASK" if office_mode else "MISSION CONTROL"
 st.markdown(
     f"""
 <div class="launch-panel">
     <div>
-        <div class="launch-kicker">MISSION CONTROL</div>
+        <div class="launch-kicker">{launch_kicker}</div>
         <div class="launch-title">启动翻译任务</div>
     </div>
     <div class="launch-status">
@@ -710,7 +803,12 @@ if launch_pressed:
         # ============================================================
         run_started_at = time.time()
         source_digest = uploaded_file_digest(source_file)
-        dossier_id = make_dossier_id(source_file.name, source_digest, created_at=run_started_at)
+        dossier_id = make_dossier_id(
+            source_file.name,
+            source_digest,
+            created_at=run_started_at,
+            prefix=dossier_id_prefix,
+        )
         source_type_label = "Markdown" if source_type == "markdown" else "Word"
         render_dossier_card(
             dossier_id,
@@ -718,14 +816,15 @@ if launch_pressed:
             source_digest,
             glossary_name=glossary_file.name if glossary_file else "glossary.tsv",
             loaded=True,
+            office_mode=office_mode,
         )
-        render_status_flow(active_index=1)
+        render_status_flow(active_index=1, office_mode=office_mode)
         render_system_log([
-            ("info", "接收档案完成"),
-            ("info", f"档案号 {dossier_id}"),
+            ("info", f"接收{subject_label}完成"),
+            ("info", f"{id_label} {dossier_id}"),
             ("info", f"文件类型：{source_type_label}"),
             ("info", "准备提取文本块"),
-        ])
+        ], office_mode=office_mode)
 
         # Save uploaded files
         upload_dir = APP_DIR / "uploads"
@@ -778,7 +877,7 @@ if launch_pressed:
         })
 
         # Progress UI
-        render_status_flow(active_index=3)
+        render_status_flow(active_index=3, office_mode=office_mode)
         st.subheader("翻译进度")
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -880,10 +979,10 @@ if launch_pressed:
             })
             generated_files.append(str(audit_path))
 
-            render_status_flow(active_index=5)
+            render_status_flow(active_index=5, office_mode=office_mode)
             render_completion_stamp("已归档")
             render_audit_grid({
-                "档案号": dossier_id,
+                id_label: dossier_id,
                 "翻译块": result["translated_count"],
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             })
@@ -906,20 +1005,26 @@ if launch_pressed:
     else:
         run_started_at = time.time()
         source_digest = uploaded_file_digest(pdf_file)
-        dossier_id = make_dossier_id(pdf_file.name, source_digest, created_at=run_started_at)
+        dossier_id = make_dossier_id(
+            pdf_file.name,
+            source_digest,
+            created_at=run_started_at,
+            prefix=dossier_id_prefix,
+        )
         render_dossier_card(
             dossier_id,
             pdf_file.name,
             source_digest,
             glossary_name=glossary_file.name if glossary_file else "glossary.tsv",
             loaded=True,
+            office_mode=office_mode,
         )
-        render_status_flow(active_index=1)
+        render_status_flow(active_index=1, office_mode=office_mode)
         render_system_log([
-            ("info", "接收档案完成"),
-            ("info", f"档案号 {dossier_id}"),
+            ("info", f"接收{subject_label}完成"),
+            ("info", f"{id_label} {dossier_id}"),
             ("info", "准备提取文本"),
-        ])
+        ], office_mode=office_mode)
 
         # Create organized directories
         upload_dir = APP_DIR / "uploads"
@@ -1116,7 +1221,7 @@ if launch_pressed:
             else:
                 st.caption("浏览器内核已就绪，将直接执行纯重绘 PDF。")
 
-            render_status_flow(active_index=1)
+            render_status_flow(active_index=1, office_mode=office_mode)
             st.info(f"📐 纯重绘管线：第 {start_page + 1}-{end_page} 页")
 
             # Progress UI for typeset pipeline
@@ -1302,10 +1407,10 @@ if launch_pressed:
             }
             write_audit_record(audit_path, audit_record)
             generated_files.append(str(audit_path))
-            render_status_flow(active_index=5, failed=bool(result.export_errors))
+            render_status_flow(active_index=5, failed=bool(result.export_errors), office_mode=office_mode)
             render_completion_stamp("已归档" if not result.export_errors else "待检查")
             render_audit_grid({
-                "档案号": dossier_id,
+                id_label: dossier_id,
                 "总页数": result.total_pages,
                 "翻译区域": result.translated_regions,
                 "失败区域": result.failed_regions,
@@ -1377,7 +1482,7 @@ if launch_pressed:
             pages_filter = set(range(start_page, end_page))
 
         # Extract
-        render_status_flow(active_index=1)
+        render_status_flow(active_index=1, office_mode=office_mode)
         st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
         source_page_labels = {}
@@ -1415,10 +1520,10 @@ if launch_pressed:
         ]
         if risky_pages:
             extraction_log.append(("warn", f"风险页 {len(risky_pages)} 个"))
-        render_system_log(extraction_log)
+        render_system_log(extraction_log, office_mode=office_mode)
 
         # Translate
-        render_status_flow(active_index=3)
+        render_status_flow(active_index=3, office_mode=office_mode)
         st.subheader("翻译进度")
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -1531,7 +1636,7 @@ if launch_pressed:
             if start_page <= pn < end_page
         ]
         if failed_pages:
-            render_status_flow(active_index=3, failed=True)
+            render_status_flow(active_index=3, failed=True, office_mode=office_mode)
             st.warning(
                 "以下页翻译失败，已记录为失败页，修复网络/API 问题后可勾选“只重试失败页”："
                 + ", ".join(map(str, failed_pages[:20]))
@@ -1740,7 +1845,7 @@ if launch_pressed:
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
         # Output & Download
-        render_status_flow(active_index=4)
+        render_status_flow(active_index=4, office_mode=office_mode)
         output_options = {
             "markdown_min_chars": 1000,
             "markdown_max_chars": 1500,
@@ -1999,10 +2104,11 @@ if launch_pressed:
             }
             write_audit_record(audit_path, audit_record)
             generated_files.append(str(audit_path))
-            render_status_flow(active_index=4, failed=True)
-            st.error("导出失败，已拦住成品。译文进度已保留，可在档案库里点击“重试导出”。")
+            render_status_flow(active_index=4, failed=True, office_mode=office_mode)
+            history_label = "历史输出" if office_mode else "档案库"
+            st.error(f"导出失败，已拦住成品。译文进度已保留，可在{history_label}里点击“重试导出”。")
             render_audit_grid({
-                "档案号": dossier_id,
+                id_label: dossier_id,
                 "完成页": len(translated_pages_sorted),
                 "导出错误": len(export_errors),
             })
@@ -2040,10 +2146,10 @@ if launch_pressed:
             }
             write_audit_record(audit_path, audit_record)
             generated_files.append(str(audit_path))
-            render_status_flow(active_index=5, failed=bool(failed_pages))
+            render_status_flow(active_index=5, failed=bool(failed_pages), office_mode=office_mode)
             render_completion_stamp("待校对" if failed_pages else "已归档")
             final_audit_items = {
-                "档案号": dossier_id,
+                id_label: dossier_id,
                 "完成页": len(translated_pages_sorted),
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             }
@@ -2053,5 +2159,5 @@ if launch_pressed:
             render_downloads(generated_files)
             extractor.close()
 
-with st.expander("档案库", expanded=False):
-    render_output_history(APP_DIR / "output")
+with st.expander("历史输出" if office_mode else "档案库", expanded=False):
+    render_output_history(APP_DIR / "output", office_mode=office_mode)
