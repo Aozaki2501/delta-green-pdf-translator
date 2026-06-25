@@ -20,11 +20,13 @@ from exporters._shared import (
     paginate_translated_blocks,
     _layout_uses_columns,
     _normalize_heading_markup,
+    _normalize_export_line,
     _normalize_marker_line,
     _display_title,
     _header_title as _shared_header_title,
     _without_image_blocks,
     _looks_like_markdown_table_row,
+    _looks_like_dossier_entry_line,
     _collect_strict_markdown_table,
     _strip_single_cell_pipe_fragment,
     _strip_list_marker,
@@ -362,12 +364,42 @@ def _table_cells(line: str) -> list[str]:
 
 def _plain_text(line: str) -> str:
     clean = _strip_quote_prefix(line)
-    clean = _normalize_heading_markup(clean)
+    clean = _normalize_export_line(clean)
     clean = _normalize_marker_line(clean)
     clean = _strip_single_cell_pipe_fragment(clean)
     clean = re.sub(r"\*\*(.+?)\*\*", r"\1", clean)
     clean = re.sub(r"\*(.+?)\*", r"\1", clean)
     return clean.strip()
+
+
+def _target_dossier_heading(line: str) -> bool:
+    clean = re.sub(r"^#{1,6}\s*", "", line.strip())
+    return clean == "目标档案"
+
+
+def _collect_target_dossier_segment(raw_lines: list[str], line_index: int) -> tuple[str, int]:
+    dossier_lines = ["目标档案"]
+    idx = line_index
+    while idx < len(raw_lines):
+        raw_clean = _normalize_marker_line(_normalize_export_line(_strip_quote_prefix(raw_lines[idx]))).strip()
+        clean = _plain_text(raw_lines[idx])
+        if not clean:
+            idx += 1
+            continue
+        if re.match(r"^#{1,6}\s+", clean):
+            break
+        if re.match(r"^\*\*[^*]+?\*\*[。.:：]", raw_clean):
+            if "岛屿" in clean:
+                break
+            dossier_lines.append(clean)
+            idx += 1
+            continue
+        if re.match(r"^(年龄|职业|外貌特征|军衔|直系亲属|注记|犯罪记录|其他关系)[：:]", clean):
+            dossier_lines.append(clean)
+            idx += 1
+            continue
+        break
+    return "\n".join(dossier_lines), idx
 
 
 def _split_toc_entry(line: str) -> tuple[str, str] | None:
@@ -553,6 +585,24 @@ def _split_card_segments(text: str):
             continue
         if in_toc:
             toc_lines.append(raw_line)
+            line_index += 1
+            continue
+
+        clean_for_dossier = _plain_text(raw_line)
+        if _target_dossier_heading(clean_for_dossier):
+            flush_normal()
+            flush_table()
+            flush_quote()
+            flush_toc()
+            dossier_text, line_index = _collect_target_dossier_segment(raw_lines, line_index + 1)
+            segments.append(("card", dossier_text))
+            continue
+        if _looks_like_dossier_entry_line(clean_for_dossier):
+            flush_normal()
+            flush_table()
+            flush_quote()
+            flush_toc()
+            segments.append(("card", clean_for_dossier))
             line_index += 1
             continue
 
@@ -1030,7 +1080,7 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
     title_para = doc.add_heading(display_title, level=1)
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title_para.paragraph_format.first_line_indent = Pt(0)
-    title_para.paragraph_format.space_before = Pt(120)
+    title_para.paragraph_format.space_before = Pt(72)
     title_para.paragraph_format.space_after = Pt(18)
 
     if subtitle:

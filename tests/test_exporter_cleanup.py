@@ -2,13 +2,14 @@ from exporters._shared import (
     _clean_translated_block,
     _display_title,
     _is_plain_heading_line,
+    _normalize_export_line,
     _translation_blocks,
     _without_image_blocks,
     attach_running_headers,
     paginate_translated_blocks,
 )
 from exporters.markdown import _format_markdown_block
-from exporters.html import _html_block
+from exporters.html import _html_block, write_html_output
 from exporters.word import _split_card_segments, _image_asset_path, _image_asset_placement
 
 
@@ -271,6 +272,105 @@ def test_html_renders_guillemet_lines_as_list():
     assert "<ul>" in html
     assert "<li>第一项</li>" in html
     assert "<li>第二项</li>" in html
+
+
+def test_narrative_markdown_heading_is_demoted_to_paragraph():
+    line = _normalize_export_line("#### 随着美国仇恨暴力事件的增加")
+
+    assert line == "随着美国仇恨暴力事件的增加"
+    assert "<h4" not in _html_block("#### 随着美国仇恨暴力事件的增加")
+
+
+def test_damaged_heading_prefix_is_removed_or_dropped():
+    assert _normalize_export_line("### ADAM GAUNUf- RD]N") == ""
+    assert _normalize_export_line("### GHUNTL-网络；为了保持一致性，他继续随身携带公文包。") == (
+        "为了保持一致性，他继续随身携带公文包。"
+    )
+
+
+def test_damaged_heading_is_not_used_as_running_header():
+    pages = [{
+        "layout": "columns",
+        "blocks": [{"text": "### GHUNTL-网络；为了保持一致性，他继续随身携带公文包。"}],
+    }]
+
+    attach_running_headers(pages, "See No Evil")
+
+    assert "GHUNTL" not in pages[0]["running_header"]
+
+
+def test_stat_number_heading_is_demoted_to_paragraph():
+    html = _html_block("#### 11 INT")
+
+    assert "<h4" not in html
+    assert "<p>11 INT</p>" in html
+
+
+def test_target_dossier_renders_as_card_in_html_and_word_segments():
+    text = (
+        "#### 目标档案\n\n"
+        "**彼得·哈姆斯**。化名：无。\n"
+        "年龄：76岁。职业：已退休。\n\n"
+        "**岛屿**。\n"
+        "后续正文。"
+    )
+
+    html = _html_block(text)
+    segments = _split_card_segments(text)
+
+    assert 'class="handout-card"' in html
+    assert "彼得·哈姆斯" in html
+    assert "岛屿" in html
+    assert segments[0][0] == "card"
+    assert "目标档案" in segments[0][1]
+    assert segments[1][0] == "normal"
+    assert "岛屿" in segments[1][1]
+
+
+def test_standalone_dossier_entry_renders_as_card():
+    text = "**彼得·哈姆斯**。化名：无。年龄：76岁。职业：已退休。外貌特征：白人男性。"
+
+    html = _html_block(text)
+    segments = _split_card_segments(text)
+
+    assert 'class="handout-card"' in html
+    assert segments[0][0] == "card"
+    assert "彼得·哈姆斯" in segments[0][1]
+    assert "化名" in segments[0][1]
+
+
+def test_html_cover_is_compact(tmp_path):
+    out = tmp_path / "book.html"
+
+    write_html_output([(0, "正文。")], str(out), "See No Evil", min_chars=1, max_chars=1000)
+    html = out.read_text(encoding="utf-8")
+
+    assert ".sheet.cover" in html
+    assert "min-height: 3.2in" in html
+
+
+def test_html_includes_reading_mode_switcher(tmp_path):
+    out = tmp_path / "book.html"
+
+    write_html_output([(0, "正文。")], str(out), "See No Evil", min_chars=1, max_chars=1000)
+    html = out.read_text(encoding="utf-8")
+
+    assert 'class="reading-toolbar"' in html
+    assert 'data-mode="screen"' in html
+    assert 'data-mode="print"' in html
+    assert 'data-mode="mobile"' in html
+    assert "dg-html-reading-mode" in html
+
+
+def test_html_reading_modes_have_mobile_and_print_rules(tmp_path):
+    out = tmp_path / "book.html"
+
+    write_html_output([(0, "正文。")], str(out), "See No Evil", min_chars=1, max_chars=1000)
+    html = out.read_text(encoding="utf-8")
+
+    assert "body.mode-mobile .content" in html
+    assert "body.mode-mobile .sheet.three_columns .content" in html
+    assert ".reading-toolbar {\n            display: none;" in html
 
 
 def test_html_renders_toc_as_compact_rows():

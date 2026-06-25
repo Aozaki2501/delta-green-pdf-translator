@@ -62,3 +62,12 @@ def test_quality_report_markdown_contains_summary_and_issues():
     assert markdown.startswith("# 测试报告")
     assert "检查页数：1" in markdown
     assert "暂无" in markdown
+
+
+def test_quality_report_includes_rule_symbol_issues():
+    report = build_quality_report(
+        pages_text={0: "The blast costs 1D6 SAN."},
+        translations={0: "爆炸造成理智损失。"},
+    )
+
+    assert any(issue.kind == "rule_symbol" for issue in report.issues)

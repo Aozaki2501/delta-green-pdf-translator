@@ -33,6 +33,23 @@ MARKER_ALIASES = {
 }
 
 LIST_MARKER_RE = re.compile(r"^(?:[-\u2022•]\s+|(?:»\s*){1,3})(.+)$")
+NARRATIVE_HEADING_PREFIXES = (
+    "随着",
+    "以及",
+    "由于",
+    "因为",
+    "然而",
+    "但是",
+    "目前",
+    "现在",
+    "作为",
+    "如果",
+    "当",
+    "这些",
+    "他们",
+    "她们",
+    "它们",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +71,67 @@ def _normalize_heading_markup(line: str) -> str:
     title = re.sub(r"\*(.+?)\*", r"\1", title)
     title = re.sub(r"\s+", " ", title).strip()
     return f"{prefix} {title}" if title else stripped
+
+
+def _strip_damaged_heading_prefix(text: str) -> str:
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    clean = re.sub(
+        r"^[A-Z�][A-Za-z�\-\]\s]{3,}[\u4e00-\u9fff]{0,4}[；;]\s*",
+        "",
+        clean,
+    ).strip()
+    clean = re.sub(
+        r"^[A-Z�][A-Za-z�\-\]\s]{3,}(?=\s*\[原文损坏\])",
+        "",
+        clean,
+    ).strip()
+    return clean
+
+
+def _heading_text_is_exportable(title: str) -> bool:
+    clean = _strip_damaged_heading_prefix(title)
+    if not clean:
+        return False
+    if "�" in clean or "]" in clean:
+        return False
+    visible = re.sub(r"\s+", "", clean)
+    if not (1 <= len(visible) <= 32):
+        return False
+    if clean.startswith(NARRATIVE_HEADING_PREFIXES):
+        return False
+    if re.match(r"^\d+\s+(?:STR|CON|DEX|INT|POW|CHA|SIZ|APP|EDU|SAN|HP)\b", clean, re.IGNORECASE):
+        return False
+    if re.search(r"[。！？!?；;，,、]$", clean):
+        return False
+    if re.search(r"[。！？!?；;，,、]", clean):
+        return False
+    return True
+
+
+def _looks_like_dossier_entry_line(line: str) -> bool:
+    clean = re.sub(r"\*\*(.+?)\*\*", r"\1", str(line or "").strip())
+    clean = re.sub(r"\s+", "", clean)
+    return (
+        bool(re.match(r"^[\u4e00-\u9fffA-Za-z·.' -]{2,32}[。.:：]化名[：:]", clean))
+        and "年龄" in clean
+        and ("职业" in clean or "外貌特征" in clean)
+    )
+
+
+def _normalize_export_line(line: str) -> str:
+    normalized = _normalize_heading_markup(line)
+    match = re.match(r"^(#{1,6})\s+(.+)$", normalized.strip())
+    if not match:
+        return normalized
+    prefix, title = match.groups()
+    title = _strip_damaged_heading_prefix(title)
+    if not title:
+        return ""
+    if ("�" in title or "]" in title) and not re.search(r"[\u4e00-\u9fff]", title):
+        return ""
+    if _heading_text_is_exportable(title):
+        return f"{prefix} {title}"
+    return title
 
 
 def _normalize_marker_line(line: str) -> str:
@@ -684,7 +762,10 @@ def _header_title(title: str) -> str:
 
 
 def _clean_heading_title(text: str) -> Optional[str]:
-    clean = re.sub(r"^#{1,6}\s*", "", text.strip())
+    normalized = _normalize_export_line(text)
+    if re.match(r"^#{1,6}\s+", text.strip()) and not re.match(r"^#{1,6}\s+", normalized.strip()):
+        return None
+    clean = re.sub(r"^#{1,6}\s*", "", normalized.strip())
     clean = re.sub(r"^(?:/\s*){2,}", "", clean)
     clean = re.sub(r"(?:\s*/){2,}$", "", clean)
     clean = re.sub(r"\s+", " ", clean).strip()

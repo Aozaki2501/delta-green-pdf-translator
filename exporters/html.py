@@ -22,10 +22,11 @@ from exporters._shared import (
     attach_running_headers,
     _looks_like_stat_block,
     _looks_like_markdown_table_row,
+    _looks_like_dossier_entry_line,
     _is_markdown_table_separator_row,
     _collect_strict_markdown_table,
     _layout_uses_columns,
-    _normalize_heading_markup,
+    _normalize_export_line,
     _normalize_inline_toc_fences,
     _normalize_marker_line,
     _strip_single_cell_pipe_fragment,
@@ -96,7 +97,7 @@ def _html_list(items: list[str], class_name: str = "") -> str:
 
 def _clean_card_line(line: str) -> str:
     clean = _strip_quote_prefix(line)
-    clean = _normalize_heading_markup(clean)
+    clean = _normalize_export_line(clean)
     clean = _normalize_marker_line(clean)
     clean = _strip_single_cell_pipe_fragment(clean)
     return clean.strip()
@@ -163,6 +164,35 @@ def _html_handout_card(lines: list[str]) -> str:
     _append_card_body(parts, body_lines)
     parts.append("</div>")
     return "".join(parts)
+
+
+def _target_dossier_heading(line: str) -> bool:
+    clean = re.sub(r"^#{1,6}\s*", "", line.strip())
+    return clean == "目标档案"
+
+
+def _collect_target_dossier(lines: list[str], idx: int) -> tuple[list[str], int]:
+    dossier_lines = ["目标档案"]
+    while idx < len(lines):
+        raw = lines[idx]
+        clean = _normalize_marker_line(_normalize_export_line(raw).strip())
+        if not clean:
+            idx += 1
+            continue
+        if re.match(r"^#{1,6}\s+", clean):
+            break
+        if re.match(r"^\*\*[^*]+?\*\*[。.:：]", clean):
+            if "岛屿" in clean:
+                break
+            dossier_lines.append(clean)
+            idx += 1
+            continue
+        if dossier_lines and re.match(r"^(年龄|职业|外貌特征|军衔|直系亲属|注记|犯罪记录|其他关系)[：:]", clean):
+            dossier_lines.append(clean)
+            idx += 1
+            continue
+        break
+    return dossier_lines, idx
 
 
 def _html_stat_block(lines: list[str]) -> str:
@@ -262,7 +292,7 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
         idx += 1
         if not clean_line or clean_line == "---" or clean_line.startswith("<!--"):
             continue
-        clean_line = _normalize_heading_markup(clean_line)
+        clean_line = _normalize_export_line(clean_line)
         clean_line = _normalize_marker_line(clean_line)
         clean_line = _strip_single_cell_pipe_fragment(clean_line).strip()
         if not clean_line:
@@ -329,6 +359,15 @@ def _html_block(text: str, image_paths=None, image_cursor=None, html_output: str
                     image_path = image_paths[cursor]
                 image_cursor[0] = cursor + 1
             parts.append(_html_image_placeholder(image_lines, image_path, html_output))
+            continue
+
+        if _target_dossier_heading(clean_line):
+            dossier_lines, idx = _collect_target_dossier(lines, idx)
+            parts.append(_html_handout_card(dossier_lines))
+            continue
+
+        if _looks_like_dossier_entry_line(clean_line):
+            parts.append(_html_handout_card([clean_line]))
             continue
 
         if clean_line.startswith("```toc"):
@@ -454,6 +493,12 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
         break-after: page;
         page-break-after: always;
+    }}
+    .sheet.cover {{
+        min-height: 3.2in;
+        padding: 0.46in 0.62in;
+        break-after: auto;
+        page-break-after: auto;
     }}
     .running-head {{
         display: flex;
@@ -778,6 +823,8 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
     }}
     .cover .content {{
         column-count: 1;
+        max-width: 6.2in;
+        margin: 0 auto;
     }}
     .sheet.single .content,
     .sheet.character .content,
@@ -856,14 +903,121 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         column-span: none;
     }}
     .cover-title {{
-        margin-top: 1.15in;
-        font: 32pt "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        margin: 0.12in 0 0.08in;
+        padding-bottom: 0.08in;
+        border-bottom: 2px solid var(--ink);
+        font: 26pt "Noto Sans SC", "Microsoft YaHei", sans-serif;
         letter-spacing: 0;
     }}
     .cover-subtitle {{
         color: #2d73b9;
-        font: 14pt "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        font: 12pt "Noto Sans SC", "Microsoft YaHei", sans-serif;
         text-indent: 0;
+    }}
+    .reading-toolbar {{
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        justify-content: center;
+        gap: 6px;
+        padding: 10px 12px;
+        background: rgba(216, 210, 204, 0.94);
+        border-bottom: 1px solid rgba(17, 17, 17, 0.16);
+        backdrop-filter: blur(8px);
+    }}
+    .reading-toolbar button {{
+        min-width: 72px;
+        min-height: 34px;
+        padding: 0 12px;
+        border: 1px solid rgba(17, 17, 17, 0.28);
+        border-radius: 6px;
+        background: rgba(247, 242, 232, 0.82);
+        color: var(--ink);
+        font: 10pt "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        cursor: pointer;
+    }}
+    .reading-toolbar button[aria-pressed="true"] {{
+        background: var(--ink);
+        border-color: var(--ink);
+        color: var(--paper);
+    }}
+    body.mode-mobile {{
+        background: var(--paper);
+    }}
+    body.mode-mobile .reading-toolbar {{
+        justify-content: flex-start;
+        overflow-x: auto;
+    }}
+    body.mode-mobile .sheet {{
+        width: auto;
+        min-height: auto;
+        margin: 0;
+        padding: 22px 18px 28px;
+        box-shadow: none;
+        break-after: auto;
+        page-break-after: auto;
+    }}
+    body.mode-mobile .sheet.cover {{
+        min-height: auto;
+        padding: 24px 18px;
+    }}
+    body.mode-mobile .content,
+    body.mode-mobile .sheet.three_columns .content,
+    body.mode-mobile .toc .content,
+    body.mode-mobile .sheet.single .content,
+    body.mode-mobile .sheet.character .content,
+    body.mode-mobile .sheet.document .content,
+    body.mode-mobile .sheet.credits .content,
+    body.mode-mobile .sheet.art .content {{
+        column-count: 1;
+        max-width: none;
+        font-size: 11.5pt;
+        line-height: 1.66;
+    }}
+    body.mode-mobile h1,
+    body.mode-mobile .full-width-title h1 {{
+        font-size: 20pt;
+    }}
+    body.mode-mobile h2 {{
+        font-size: 16pt;
+    }}
+    body.mode-mobile h3,
+    body.mode-mobile h4 {{
+        font-size: 13.5pt;
+    }}
+    body.mode-mobile p {{
+        text-indent: 0;
+    }}
+    body.mode-mobile .full-width-title {{
+        grid-template-columns: 1fr;
+        gap: 0.06in;
+        text-align: center;
+    }}
+    body.mode-mobile .full-width-title span {{
+        display: none;
+    }}
+    body.mode-mobile .running-head,
+    body.mode-mobile .page-meta {{
+        font-size: 8pt;
+    }}
+    @media (max-width: 760px) {{
+        body:not(.mode-print) {{
+            background: var(--paper);
+        }}
+        body:not(.mode-print) .sheet {{
+            width: auto;
+            min-height: auto;
+            margin: 0;
+            padding: 22px 18px 28px;
+            box-shadow: none;
+        }}
+        body:not(.mode-print) .content,
+        body:not(.mode-print) .sheet.three_columns .content,
+        body:not(.mode-print) .toc .content {{
+            column-count: 1;
+            max-width: none;
+        }}
     }}
     @page {{
         size: Letter;
@@ -873,6 +1027,9 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         html,
         body {{
             background: var(--paper);
+        }}
+        .reading-toolbar {{
+            display: none;
         }}
         .sheet {{
             margin: 0;
@@ -896,7 +1053,12 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         f"<title>{safe_title} - 中文翻译</title>",
         f"<style>{css}</style>",
         "</head>",
-        "<body>",
+        '<body class="mode-screen">',
+        '<nav class="reading-toolbar" aria-label="阅读模式">'
+        '<button type="button" data-mode="screen" aria-pressed="true">屏幕版</button>'
+        '<button type="button" data-mode="print" aria-pressed="false">打印版</button>'
+        '<button type="button" data-mode="mobile" aria-pressed="false">手机版</button>'
+        "</nav>",
         '<section class="sheet cover">',
         '<main class="content">',
         f'<h1 class="cover-title">{safe_title}</h1>',
@@ -932,6 +1094,36 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         )
         chunks.extend(["</main>", "</section>"])
 
-    chunks.extend(["</body>", "</html>", ""])
+    script = """
+<script>
+(function () {
+    var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-mode]"));
+    function applyMode(mode) {
+        if (["screen", "print", "mobile"].indexOf(mode) === -1) {
+            mode = "screen";
+        }
+        document.body.classList.remove("mode-screen", "mode-print", "mode-mobile");
+        document.body.classList.add("mode-" + mode);
+        buttons.forEach(function (button) {
+            button.setAttribute("aria-pressed", button.getAttribute("data-mode") === mode ? "true" : "false");
+        });
+        try {
+            window.localStorage.setItem("dg-html-reading-mode", mode);
+        } catch (error) {}
+    }
+    buttons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            applyMode(button.getAttribute("data-mode"));
+        });
+    });
+    try {
+        applyMode(window.localStorage.getItem("dg-html-reading-mode") || "screen");
+    } catch (error) {
+        applyMode("screen");
+    }
+}());
+</script>
+"""
+    chunks.extend([script, "</body>", "</html>", ""])
     with open(html_output, "w", encoding="utf-8") as f:
         f.write("\n".join(chunk for chunk in chunks if chunk != ""))

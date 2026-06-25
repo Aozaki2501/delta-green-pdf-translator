@@ -39,11 +39,20 @@ from webui.runtime import (
     save_uploaded_pdf_for_preview,
     uploaded_file_digest,
 )
+from webui.glossary_review import (
+    ACTION_ADD,
+    ACTION_IGNORE,
+    ACTION_UPDATE,
+    glossary_candidates_to_review_rows,
+    write_reviewed_glossary,
+)
 from webui.theme import render_app_theme, render_workstation_effects
 
 # MD / DOCX translation support
 from translate_md import translate_md_file
 from translate_docx import translate_docx_file
+from core.md_extractor import MarkdownExtractor
+from core.docx_extractor import DocxExtractor
 from core.glossary import build_glossary_matcher
 from core.layout_adapters import build_pdf_output_layout_context, merge_output_page_layouts
 from core.quality import build_quality_report, write_quality_report
@@ -53,6 +62,21 @@ from core.run_report import (
     write_run_effect_report,
     write_run_manifest,
 )
+from core.risk_workbench import (
+    build_risk_workbench_items,
+    ignored_risk_pages,
+    risk_workbench_rows,
+    write_risk_workbench_report,
+)
+from core.rule_symbols import build_rule_symbol_issues, write_rule_symbol_report
+from core.timeline import build_timeline_events, write_timeline_json, write_timeline_markdown
+from core.trpg_prep import (
+    build_module_structure,
+    write_module_structure_json,
+    write_module_structure_markdown,
+    write_prep_checklist,
+)
+from core.word_review import write_word_review_docx, write_word_review_markdown, build_word_review_items
 from core.utils import file_sha256, looks_incomplete_translation, looks_untranslated_page
 from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
 
@@ -65,6 +89,74 @@ OUTPUT_FORMAT_LABELS = {
     "word": "文档排版",
     "typeset_pdf": "纯重绘 PDF（_typeset）",
 }
+
+
+def _extract_texts_for_glossary_review(
+    source_type: str,
+    source_path: str,
+    *,
+    start_page: int,
+    display_end_page: int | None,
+    max_blocks: int,
+) -> dict[int, str]:
+    if source_type == "pdf":
+        extractor = PDFExtractor(source_path)
+        try:
+            start, end = normalize_page_range(start_page, display_end_page, extractor.total_pages)
+            return {
+                pn: extractor.extract_page(pn, include_images=False)
+                for pn in range(start, end)
+            }
+        finally:
+            extractor.close()
+
+    if source_type == "markdown":
+        extractor = MarkdownExtractor(source_path)
+        extractor.extract()
+        blocks = extractor.get_translatable_blocks()
+        if max_blocks > 0:
+            blocks = blocks[:max_blocks]
+        return {idx: block.text for idx, block in enumerate(blocks)}
+
+    if source_type == "docx":
+        extractor = DocxExtractor(source_path, translate_headers=True)
+        extractor.extract()
+        blocks = extractor.get_translatable_blocks()
+        if max_blocks > 0:
+            blocks = blocks[:max_blocks]
+        return {idx: block.text for idx, block in enumerate(blocks)}
+
+    return {}
+
+
+def _has_review_changes(review_rows: list[dict]) -> bool:
+    if review_rows is None:
+        return False
+    if hasattr(review_rows, "to_dict"):
+        rows = review_rows.to_dict("records")
+    else:
+        rows = review_rows
+    return any(
+        str(row.get("动作", ACTION_IGNORE) or ACTION_IGNORE).strip() != ACTION_IGNORE
+        for row in rows
+    )
+
+
+def _queue_retranslate_pages(page_nums: list[int]) -> None:
+    st.session_state["quality_retranslate_pages"] = ", ".join(str(page) for page in page_nums)
+    st.session_state["auto_launch_translation"] = True
+
+
+def _mark_ignored_risk_pages(session_key: str, current_pages: list[int], selected_pages: list[int]) -> None:
+    merged = {int(page) for page in current_pages or []}
+    merged.update(int(page) for page in selected_pages or [])
+    st.session_state[session_key] = sorted(merged)
+    st.session_state["auto_launch_translation"] = True
+
+
+def _clear_ignored_risk_pages(session_key: str) -> None:
+    st.session_state[session_key] = []
+    st.session_state["auto_launch_translation"] = True
 
 
 # === UI THEME ===
@@ -459,6 +551,80 @@ if source_file:
         ("info", "等待执行翻译任务"),
     ])
 
+glossary_review_rows = []
+glossary_review_error = ""
+if source_file and source_type:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("翻译前术语确认")
+    st.caption("先检查疑似专名。需要本次翻译强制使用的词，选择“新增”或“修改”；不需要的保持“忽略”。")
+    try:
+        review_upload_dir = APP_DIR / "uploads"
+        ensure_dir(review_upload_dir)
+        review_source_path = str(save_uploaded_file_once(source_file, review_upload_dir))
+        review_glossary_path = str(DEFAULT_GLOSSARY_PATH) if DEFAULT_GLOSSARY_PATH.exists() else None
+        review_glossary_digest = "none"
+        if glossary_file:
+            review_glossary_path = str(save_uploaded_file_once(glossary_file, review_upload_dir, "glossary"))
+            review_glossary_digest = uploaded_file_digest(glossary_file)
+        elif review_glossary_path:
+            review_glossary_digest = file_sha256(review_glossary_path)
+
+        try:
+            review_start_page = int(display_start_page) - 1
+            review_end_page = int(end_page_str) if end_page_str.strip() else None
+        except ValueError:
+            raise ValueError("结束页必须是整数，或留空表示全部。")
+
+        review_glossary = load_glossary(review_glossary_path) if review_glossary_path else {}
+        review_matcher = (
+            build_glossary_matcher(review_glossary, fuzzy=bool(fuzzy_matching))
+            if review_glossary else None
+        )
+        review_texts = _extract_texts_for_glossary_review(
+            source_type,
+            review_source_path,
+            start_page=review_start_page,
+            display_end_page=review_end_page,
+            max_blocks=int(max_blocks_input),
+        )
+        review_candidates = build_glossary_candidates(
+            review_texts,
+            review_glossary,
+            matcher=review_matcher,
+        )
+        review_rows = glossary_candidates_to_review_rows(review_candidates)
+        if not review_rows:
+            st.info("没有发现高频疑似未收录专名。仍可手动新增一行术语。")
+            review_rows = [
+                {"动作": ACTION_IGNORE, "中文译名": "", "英文原名": "", "出现次数": "", "位置": ""}
+            ]
+        review_key = (
+            f"glossary_review_{current_digest[:12]}_{review_glossary_digest[:12]}_"
+            f"{source_type}_{display_start_page}_{end_page_str}_{max_blocks_input}_{int(bool(fuzzy_matching))}"
+        )
+        glossary_review_rows = st.data_editor(
+            review_rows,
+            key=review_key,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            disabled=["出现次数", "位置"],
+            column_config={
+                "动作": st.column_config.SelectboxColumn(
+                    "动作",
+                    options=[ACTION_IGNORE, ACTION_ADD, ACTION_UPDATE],
+                    required=True,
+                ),
+                "中文译名": st.column_config.TextColumn("中文译名"),
+                "英文原名": st.column_config.TextColumn("英文原名"),
+            },
+        )
+        st.caption(f"已扫描 {len(review_texts)} 个文本单元，找到 {len(review_candidates)} 个候选。")
+    except Exception as e:
+        glossary_review_error = str(e)
+        st.error(f"术语候选扫描失败：{e}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
 ready_state = "档案已接收" if source_file else "等待档案"
 key_state = "密钥已录入" if api_key else "等待密钥"
 format_state = " / ".join(OUTPUT_FORMAT_LABELS[value] for value in formats) if formats else "未选择输出"
@@ -518,6 +684,8 @@ if pdf_file and show_extraction_preview:
 if launch_pressed:
     if not source_file:
         st.error("✗ 请上传文件（PDF / Markdown / Word）")
+    elif glossary_review_error:
+        st.error(f"✗ 术语候选扫描失败，请先处理：{glossary_review_error}")
     elif not api_key:
         st.error("✗ 请输入接口密钥")
     elif not base_url.strip():
@@ -579,6 +747,21 @@ if launch_pressed:
             output_path = str(document_output_dir / f"{file_stem}_zh.md")
         else:
             output_path = str(document_output_dir / f"{file_stem}_zh.docx")
+
+        if _has_review_changes(glossary_review_rows):
+            try:
+                base_glossary = load_glossary(glossary_path) if glossary_path else {}
+                reviewed_glossary_path = document_output_dir / f"{file_stem}_reviewed_glossary.tsv"
+                reviewed_glossary = write_reviewed_glossary(
+                    base_glossary,
+                    glossary_review_rows,
+                    reviewed_glossary_path,
+                )
+                glossary_path = str(reviewed_glossary_path)
+                st.info(f"已生成本次临时术语表：{len(reviewed_glossary)} 条")
+            except ValueError as e:
+                st.error(f"术语审核表有误：{e}")
+                st.stop()
 
         generated_files = []
         audit_path = Path(make_output_path(str(document_output_dir / f"{file_stem}_cn"), "_audit.json"))
@@ -761,6 +944,20 @@ if launch_pressed:
         document_output_dir = output_dir / f"{pdf_stem}_cn"
         ensure_dir(document_output_dir)
         output_base = str(document_output_dir / f"{pdf_stem}_cn")
+        if _has_review_changes(glossary_review_rows):
+            try:
+                base_glossary = load_glossary(glossary_path) if glossary_path else {}
+                reviewed_glossary_path = document_output_dir / f"{pdf_stem}_reviewed_glossary.tsv"
+                reviewed_glossary = write_reviewed_glossary(
+                    base_glossary,
+                    glossary_review_rows,
+                    reviewed_glossary_path,
+                )
+                glossary_path = str(reviewed_glossary_path)
+                st.info(f"已生成本次临时术语表：{len(reviewed_glossary)} 条")
+            except ValueError as e:
+                st.error(f"术语审核表有误：{e}")
+                st.stop()
         generated_files = []
         audit_path = Path(make_output_path(output_base, "_audit.json"))
         write_audit_record(audit_path, {
@@ -1400,27 +1597,106 @@ if launch_pressed:
         qa_cols[2].metric("失败页", len(quality_report.failed_pages))
         qa_cols[3].metric("待检查", quality_report.warning_count)
         qa_cols[4].metric("术语遗漏", quality_report.glossary_misses)
+        rule_symbol_issues = build_rule_symbol_issues(
+            pages_text={pn: pages_text.get(pn, "") for pn in range(start_page, end_page)},
+            translations={
+                pn: tracker.get_translation(pn)
+                for pn in range(start_page, end_page)
+                if tracker.get_translation(pn).strip()
+            },
+        )
+        st.subheader("规则符号检查")
+        if rule_symbol_issues:
+            rule_cols = st.columns(3)
+            rule_cols[0].metric("问题数", len(rule_symbol_issues))
+            rule_cols[1].metric("涉及页数", len({issue.page_num for issue in rule_symbol_issues}))
+            rule_cols[2].metric("技能残留", sum(1 for issue in rule_symbol_issues if issue.kind == "技能残留"))
+            st.dataframe(
+                [
+                    {
+                        "页码": issue.page_num,
+                        "类型": issue.kind,
+                        "符号": issue.symbol,
+                        "问题": issue.message,
+                    }
+                    for issue in rule_symbol_issues[:80]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.success("规则符号检查未发现明显问题。")
+        risk_workbench_items = build_risk_workbench_items(quality_report, page_diagnostics)
+        risk_ignored_key = f"risk_ignored_pages_{dossier_id}"
+        risk_ignored_pages = {
+            int(page) for page in st.session_state.get(risk_ignored_key, [])
+        }
+        active_risk_items = ignored_risk_pages(risk_workbench_items, risk_ignored_pages)
+        st.subheader("失败页/风险页工作台")
+        risk_cols = st.columns(4)
+        risk_cols[0].metric("风险条目", len(active_risk_items))
+        risk_cols[1].metric("涉及页数", len({item.page_num for item in active_risk_items}))
+        risk_cols[2].metric("可重翻页", len({item.page_num for item in active_risk_items if item.retryable}))
+        risk_cols[3].metric("已忽略页", len(risk_ignored_pages))
+        if active_risk_items:
+            st.dataframe(
+                risk_workbench_rows(active_risk_items),
+                use_container_width=True,
+                hide_index=True,
+            )
+            risk_page_options = sorted({item.page_num for item in active_risk_items})
+            retry_default_pages = sorted({item.page_num for item in active_risk_items if item.retryable})
+            selected_risk_pages = st.multiselect(
+                "选择要处理的页",
+                options=risk_page_options,
+                default=retry_default_pages,
+                key=f"risk_workbench_pages_{dossier_id}",
+            )
+            retry_pages = sorted(
+                {
+                    item.page_num
+                    for item in active_risk_items
+                    if item.page_num in selected_risk_pages and item.retryable
+                }
+            )
+            risk_actions = st.columns(3)
+            risk_actions[0].button(
+                "重翻选中页",
+                disabled=not retry_pages,
+                on_click=_queue_retranslate_pages,
+                args=(retry_pages,),
+            )
+            risk_actions[1].button(
+                "标记忽略",
+                disabled=not selected_risk_pages,
+                on_click=_mark_ignored_risk_pages,
+                args=(risk_ignored_key, sorted(risk_ignored_pages), selected_risk_pages),
+            )
+            risk_actions[2].button(
+                "清除忽略",
+                disabled=not risk_ignored_pages,
+                on_click=_clear_ignored_risk_pages,
+                args=(risk_ignored_key,),
+            )
+        else:
+            st.success("没有需要集中处理的失败页或风险页。")
+
         if quality_report.issues:
-            with st.expander("查看问题页", expanded=True):
+            with st.expander("问题详情", expanded=bool(active_risk_items)):
                 issues_by_page = {}
                 for issue in quality_report.issues:
+                    if issue.page_num in risk_ignored_pages:
+                        continue
                     issues_by_page.setdefault(issue.page_num, []).append(issue)
-                selected_quality_pages = []
-                for page_num in quality_report.issue_pages:
-                    checked = st.checkbox(
-                        f"第 {page_num} 页",
-                        value=True,
-                        key=f"quality_retry_page_{dossier_id}_{page_num}",
-                    )
-                    if checked:
-                        selected_quality_pages.append(page_num)
+                for page_num in sorted(issues_by_page):
+                    st.markdown(f"**第 {page_num} 页**")
                     for issue_index, issue in enumerate(issues_by_page[page_num]):
                         detail = f"；{issue.detail}" if issue.detail else ""
                         st.markdown(f"**{issue.message}{detail}**")
                         left, right = st.columns(2)
                         left.caption("英文原文")
                         left.text_area(
-                            f"source_{issue.page_num}_{issue.kind}_{issue_index}",
+                            f"source_{issue.page_num}_{issue.kind}_{issue_index}_{dossier_id}",
                             issue.source_excerpt or "无",
                             height=140,
                             label_visibility="collapsed",
@@ -1428,20 +1704,12 @@ if launch_pressed:
                         )
                         right.caption("中文译文")
                         right.text_area(
-                            f"translation_{issue.page_num}_{issue.kind}_{issue_index}",
+                            f"translation_{issue.page_num}_{issue.kind}_{issue_index}_{dossier_id}",
                             issue.translation_excerpt or "无",
                             height=140,
                             label_visibility="collapsed",
                             disabled=True,
                         )
-                if st.button("重翻选中的问题页", disabled=not selected_quality_pages):
-                    st.session_state["quality_retranslate_pages"] = ", ".join(
-                        str(page_num) for page_num in selected_quality_pages
-                    )
-                    st.session_state["auto_launch_translation"] = True
-                    st.rerun()
-        else:
-            st.success("质量检查未发现明显问题。")
 
         glossary_candidates = build_glossary_candidates(
             pages_text,
@@ -1497,6 +1765,44 @@ if launch_pressed:
         write_quality_report(quality_report, quality_path)
         generated_files.append(quality_path)
 
+        risk_workbench_path = make_output_path(output_base, "_risk_workbench.md")
+        write_risk_workbench_report(active_risk_items, risk_workbench_path, pdf_stem)
+        generated_files.append(risk_workbench_path)
+
+        rule_symbol_path = make_output_path(output_base, "_rule_symbols.md")
+        write_rule_symbol_report(rule_symbol_issues, rule_symbol_path, pdf_stem)
+        generated_files.append(rule_symbol_path)
+
+        timeline_events = build_timeline_events(
+            pages_text={pn: pages_text.get(pn, "") for pn in range(start_page, end_page)},
+            translations=dict(translated_pages_sorted),
+        )
+        timeline_md_path = make_output_path(output_base, "_timeline.md")
+        write_timeline_markdown(timeline_events, timeline_md_path, pdf_stem)
+        generated_files.append(timeline_md_path)
+        timeline_json_path = make_output_path(output_base, "_timeline.json")
+        write_timeline_json(timeline_events, timeline_json_path)
+        generated_files.append(timeline_json_path)
+        st.subheader("场景时间线")
+        if timeline_events:
+            timeline_cols = st.columns(2)
+            timeline_cols[0].metric("事件数", len(timeline_events))
+            timeline_cols[1].metric("涉及页数", len({event.page_num for event in timeline_events}))
+            st.dataframe(
+                [
+                    {
+                        "页码": event.page_num,
+                        "时间标记": event.marker,
+                        "事件": event.event,
+                    }
+                    for event in timeline_events[:80]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("没有发现明确时间线标记。")
+
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
             write_glossary_report(pages_text, glossary, report_path, pdf_stem)
@@ -1515,6 +1821,45 @@ if launch_pressed:
                     f,
                     file_name=Path(candidates_tsv_path).name,
                 )
+
+        word_review_items = build_word_review_items(
+            quality_report=quality_report,
+            glossary_candidates=glossary_candidates,
+            rule_symbol_issues=rule_symbol_issues,
+            timeline_events=timeline_events,
+        )
+        word_review_md_path = make_output_path(output_base, "_word_review.md")
+        write_word_review_markdown(word_review_items, word_review_md_path, pdf_stem)
+        generated_files.append(word_review_md_path)
+        if HAS_DOCX:
+            word_review_docx_path = make_output_path(output_base, "_word_review.docx")
+            write_word_review_docx(word_review_items, word_review_docx_path, pdf_stem)
+            generated_files.append(word_review_docx_path)
+        st.subheader("Word 校对包")
+        st.metric("校对项", len(word_review_items))
+
+        module_structure = build_module_structure(
+            pages_text={pn: pages_text.get(pn, "") for pn in range(start_page, end_page)},
+            translations=dict(translated_pages_sorted),
+            quality_report=quality_report,
+            glossary_candidates=glossary_candidates,
+            title=pdf_stem,
+        )
+        prep_checklist_path = make_output_path(output_base, "_prep_checklist.md")
+        write_prep_checklist(module_structure, prep_checklist_path)
+        generated_files.append(prep_checklist_path)
+        structure_md_path = make_output_path(output_base, "_module_structure.md")
+        write_module_structure_markdown(module_structure, structure_md_path)
+        generated_files.append(structure_md_path)
+        structure_json_path = make_output_path(output_base, "_module_structure.json")
+        write_module_structure_json(module_structure, structure_json_path)
+        generated_files.append(structure_json_path)
+        st.subheader("备团资料")
+        prep_cols = st.columns(4)
+        prep_cols[0].metric("待处理", len(module_structure.prep_items))
+        prep_cols[1].metric("数据块", len(module_structure.stat_blocks))
+        prep_cols[2].metric("卡片", len(module_structure.cards))
+        prep_cols[3].metric("规则提示", len(module_structure.rule_refs))
 
         if "markdown" in formats:
             md_path = make_output_path(output_base, ".md")

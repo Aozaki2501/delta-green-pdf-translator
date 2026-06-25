@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field
 
 from core.glossary import find_relevant_glossary_terms
+from core.rule_symbols import build_rule_symbol_issues
 from core.utils import (
     count_cjk_chars,
     count_latin_chars,
@@ -59,6 +60,10 @@ def build_quality_report(
     page_layouts = page_layouts or {}
     glossary = glossary or {}
     failed_reasons = failed_reasons or {}
+    rule_symbol_issues = build_rule_symbol_issues(pages_text, translations)
+    rule_issues_by_page = {}
+    for issue in rule_symbol_issues:
+        rule_issues_by_page.setdefault(issue.page_num, []).append(issue)
     page_nums = sorted(set(pages_text) | set(translations) | set(failed_reasons))
     report = QualityReport(
         title=title,
@@ -150,6 +155,16 @@ def build_quality_report(
                 detail=", ".join(missing_terms[:8]),
                 source_excerpt=_excerpt(source),
                 translation_excerpt=_excerpt(translation),
+            ))
+
+        for rule_issue in rule_issues_by_page.get(display_page, []):
+            report.issues.append(QualityIssue(
+                page_num=display_page,
+                kind="rule_symbol",
+                message="规则符号疑点",
+                detail=f"{rule_issue.kind}：{rule_issue.symbol}；{rule_issue.message}",
+                source_excerpt=rule_issue.source_excerpt,
+                translation_excerpt=rule_issue.translation_excerpt,
             ))
 
     return report
