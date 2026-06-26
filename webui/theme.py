@@ -428,13 +428,50 @@ APP_THEME_CSS = r'''
 
     .stTextInput input,
     .stNumberInput input,
+    .stNumberInput button,
+    .stNumberInput [data-testid="stNumberInputStepUp"],
+    .stNumberInput [data-testid="stNumberInputStepDown"],
     .stSelectbox div[data-baseweb="select"],
-    .stMultiSelect div[data-baseweb="select"] {
+    .stMultiSelect div[data-baseweb="select"],
+    .stMultiSelect [data-baseweb="select"] > div,
+    .stMultiSelect [data-baseweb="select"] input {
         background-color: rgba(3, 9, 5, 0.95) !important;
         border: 1px solid var(--line) !important;
         border-radius: 0 !important;
         color: var(--green-soft) !important;
         font-family: "Courier Prime", monospace !important;
+    }
+
+    .stNumberInput button,
+    .stNumberInput [data-testid="stNumberInputStepUp"],
+    .stNumberInput [data-testid="stNumberInputStepDown"] {
+        min-height: auto !important;
+        background: rgba(1, 8, 4, 0.98) !important;
+        color: var(--green-soft) !important;
+        box-shadow: none !important;
+    }
+
+    .stNumberInput button:hover,
+    .stNumberInput [data-testid="stNumberInputStepUp"]:hover,
+    .stNumberInput [data-testid="stNumberInputStepDown"]:hover {
+        background: rgba(82, 255, 145, 0.14) !important;
+        color: var(--green) !important;
+    }
+
+    .stNumberInput button svg,
+    .stNumberInput [data-testid="stNumberInputStepUp"] svg,
+    .stNumberInput [data-testid="stNumberInputStepDown"] svg {
+        color: var(--green-soft) !important;
+        fill: var(--green-soft) !important;
+    }
+
+    .stMultiSelect div[data-baseweb="select"] {
+        box-shadow: inset 0 0 0 1px rgba(157, 255, 193, 0.06) !important;
+    }
+
+    .stMultiSelect [data-baseweb="select"] svg {
+        color: var(--green-soft) !important;
+        fill: var(--green-soft) !important;
     }
 
     .stMultiSelect [data-baseweb="tag"] {
@@ -460,8 +497,23 @@ APP_THEME_CSS = r'''
         color: var(--red) !important;
     }
 
+    div[data-testid="stFileUploader"] section,
+    div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
+        background:
+            linear-gradient(90deg, rgba(82, 255, 145, 0.07), transparent),
+            rgba(3, 9, 5, 0.9) !important;
+        border-color: var(--line-hot) !important;
+        border-radius: 0 !important;
+        color: var(--green-soft) !important;
+    }
+
     div[data-testid="stFileUploader"] button {
+        background: rgba(3, 9, 5, 0.96) !important;
+        border: 1px solid var(--line-hot) !important;
+        color: var(--green-soft) !important;
+        border-radius: 3px !important;
         font-size: 0 !important;
+        min-height: 38px !important;
     }
 
     div[data-testid="stFileUploader"] button * {
@@ -473,6 +525,18 @@ APP_THEME_CSS = r'''
         content: "导入";
         font-size: 0.95rem;
         line-height: 1;
+    }
+
+    div[data-testid="stFileUploader"] button:hover {
+        background: var(--green) !important;
+        color: #031006 !important;
+        box-shadow: 0 0 18px rgba(82, 255, 145, 0.22);
+    }
+
+    div[data-testid="stFileUploader"] div,
+    div[data-testid="stFileUploader"] span,
+    div[data-testid="stFileUploader"] p {
+        color: var(--green-soft) !important;
     }
 
     div[data-testid="stFileUploader"] small {
@@ -1273,6 +1337,122 @@ OFFICE_COMPONENT_CSS = r'''
         color: var(--text);
         margin-top: 3px;
         font-size: 0.9rem;
+    }
+
+    .stTextInput input,
+    .stNumberInput input,
+    .stNumberInput button,
+    .stNumberInput [data-testid="stNumberInputStepUp"],
+    .stNumberInput [data-testid="stNumberInputStepDown"],
+    .stSelectbox div[data-baseweb="select"],
+    .stMultiSelect div[data-baseweb="select"],
+    .stMultiSelect [data-baseweb="select"] > div,
+    .stMultiSelect [data-baseweb="select"] input,
+    textarea {
+        background-color: #ffffff !important;
+        border: 1px solid var(--line) !important;
+        border-radius: 6px !important;
+        color: var(--text) !important;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
+        box-shadow: none !important;
+    }
+
+    .stNumberInput button,
+    .stNumberInput [data-testid="stNumberInputStepUp"],
+    .stNumberInput [data-testid="stNumberInputStepDown"] {
+        min-height: auto !important;
+        background: #ffffff !important;
+        color: var(--text) !important;
+    }
+
+    .stNumberInput button:hover,
+    .stNumberInput [data-testid="stNumberInputStepUp"]:hover,
+    .stNumberInput [data-testid="stNumberInputStepDown"]:hover {
+        background: #f1f5f9 !important;
+        color: var(--green) !important;
+    }
+
+    .stNumberInput button svg,
+    .stNumberInput [data-testid="stNumberInputStepUp"] svg,
+    .stNumberInput [data-testid="stNumberInputStepDown"] svg,
+    .stMultiSelect [data-baseweb="select"] svg {
+        color: var(--muted) !important;
+        fill: var(--muted) !important;
+    }
+
+    .stMultiSelect [data-baseweb="tag"] {
+        background: #eff6ff !important;
+        border: 1px solid #bfdbfe !important;
+        border-radius: 6px !important;
+        color: var(--green-soft) !important;
+        box-shadow: none !important;
+        min-height: 28px;
+    }
+
+    .stMultiSelect [data-baseweb="tag"] span,
+    .stMultiSelect [data-baseweb="tag"] span:last-child {
+        background: transparent !important;
+        border: 0 !important;
+        color: var(--green-soft) !important;
+        font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
+        font-size: 0.82rem !important;
+    }
+
+    div[data-testid="stFileUploader"] {
+        background: #ffffff !important;
+        border: 1px dashed var(--line-hot) !important;
+        border-radius: 8px !important;
+        padding: 16px;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    div[data-testid="stFileUploader"]:hover {
+        border-color: var(--green) !important;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    div[data-testid="stFileUploader"] section,
+    div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
+        background: #f8fafc !important;
+        border-color: var(--line) !important;
+        border-radius: 8px !important;
+        color: var(--text) !important;
+    }
+
+    div[data-testid="stFileUploader"] button {
+        background: #ffffff !important;
+        border: 1px solid var(--line-hot) !important;
+        border-radius: 6px !important;
+        color: var(--text) !important;
+        font-size: 0.95rem !important;
+        min-height: 40px !important;
+        box-shadow: none !important;
+    }
+
+    div[data-testid="stFileUploader"] button *,
+    div[data-testid="stFileUploader"] button::after {
+        color: var(--text) !important;
+        font-size: 0.95rem !important;
+        line-height: 1 !important;
+    }
+
+    div[data-testid="stFileUploader"] button::after {
+        content: none !important;
+        display: none !important;
+    }
+
+    div[data-testid="stFileUploader"] button:hover {
+        background: #f1f5f9 !important;
+        color: var(--text) !important;
+        box-shadow: none !important;
+    }
+
+    div[data-testid="stFileUploader"] div,
+    div[data-testid="stFileUploader"] span,
+    div[data-testid="stFileUploader"] p {
+        color: var(--text) !important;
     }
 
     div[data-testid="stAlert"] {
