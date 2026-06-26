@@ -18,6 +18,13 @@ def test_safe_filename_stem_keeps_readable_name():
     assert safe_filename_stem("???.pdf") == "document"
 
 
+def test_safe_filename_stem_truncates_long_names():
+    stem = safe_filename_stem("The Conspiracy against the Human Race " + "x" * 200 + ".pdf")
+
+    assert stem.startswith("The_Conspiracy_against_the_Human_Race")
+    assert len(stem) == 96
+
+
 def test_format_duration_compacts_seconds():
     assert format_duration(None) == "估算中"
     assert format_duration(59) == "59s"
@@ -47,6 +54,19 @@ def test_save_uploaded_file_once_reuses_same_content(tmp_path):
     assert first == second
     assert third != first
     assert len(list(tmp_path.glob("*.pdf"))) == 2
+
+
+def test_save_uploaded_file_once_keeps_path_short_for_long_names(tmp_path):
+    class Upload:
+        name = "The Conspiracy against the Human Race " + "x" * 220 + ".pdf"
+
+        def getvalue(self):
+            return b"book"
+
+    saved = save_uploaded_file_once(Upload(), tmp_path)
+
+    assert saved.exists()
+    assert len(saved.name) < 180
 
 
 def test_existing_output_files_can_filter_internal_files(tmp_path):

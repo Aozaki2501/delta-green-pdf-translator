@@ -918,6 +918,7 @@ def _write_word_stat_block(doc, text: str):
             continue
         clean_line = re.sub(r"\*\*(.+?)\*\*", r"\1", clean_line)
         clean_line = re.sub(r"\*(.+?)\*", r"\1", clean_line)
+        clean_line = re.sub(r"^#{1,6}\s*", "", clean_line).strip()
         p = doc.add_paragraph(clean_line)
         p.paragraph_format.left_indent = Pt(10)
         p.paragraph_format.right_indent = Pt(10)

@@ -763,8 +763,6 @@ def _header_title(title: str) -> str:
 
 def _clean_heading_title(text: str) -> Optional[str]:
     normalized = _normalize_export_line(text)
-    if re.match(r"^#{1,6}\s+", text.strip()) and not re.match(r"^#{1,6}\s+", normalized.strip()):
-        return None
     clean = re.sub(r"^#{1,6}\s*", "", normalized.strip())
     clean = re.sub(r"^(?:/\s*){2,}", "", clean)
     clean = re.sub(r"(?:\s*/){2,}$", "", clean)
@@ -774,6 +772,14 @@ def _clean_heading_title(text: str) -> Optional[str]:
 
 def _looks_like_contents_heading(title: str) -> bool:
     return bool(re.search(r"(?:目录|contents)", title or "", flags=re.IGNORECASE))
+
+
+def _looks_like_generic_intro_heading(title: str) -> bool:
+    return bool(re.fullmatch(
+        r"(?:前言|引言|介绍|序言|introduction|preface|foreword)",
+        (title or "").strip(),
+        flags=re.IGNORECASE,
+    ))
 
 
 def _heading_text_from_block(text: str) -> Optional[str]:
@@ -798,25 +804,13 @@ def _primary_title_from_reading_pages(reading_pages) -> Optional[str]:
             stripped = (block.get("text") or "").strip()
             if not stripped:
                 continue
-            if _is_full_width_title_block(stripped):
-                inner = re.sub(r"^\[FULL_WIDTH_TITLE\]\s*", "", stripped)
-                inner = re.sub(r"\s*\[/FULL_WIDTH_TITLE\]$", "", inner)
-                first_line = next((line.strip() for line in inner.splitlines() if line.strip()), "")
-                title = _clean_heading_title(first_line)
-                if title and not _looks_like_contents_heading(title):
-                    return title
-    for page in reading_pages:
-        if page.get("layout") == "toc":
-            continue
-        for block in page.get("blocks", []):
-            stripped = (block.get("text") or "").strip()
-            if not stripped:
-                continue
-            first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
-            if re.match(r"^#\s+", first_line):
-                title = _clean_heading_title(first_line)
-                if title and not _looks_like_contents_heading(title):
-                    return title
+            title = _heading_text_from_block(stripped)
+            if (
+                title
+                and not _looks_like_contents_heading(title)
+                and not _looks_like_generic_intro_heading(title)
+            ):
+                return title
     return None
 
 

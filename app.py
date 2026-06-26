@@ -69,13 +69,6 @@ from core.risk_workbench import (
     write_risk_workbench_report,
 )
 from core.rule_symbols import build_rule_symbol_issues, write_rule_symbol_report
-from core.timeline import build_timeline_events, write_timeline_json, write_timeline_markdown
-from core.trpg_prep import (
-    build_module_structure,
-    write_module_structure_json,
-    write_module_structure_markdown,
-    write_prep_checklist,
-)
 from core.word_review import write_word_review_docx, write_word_review_markdown, build_word_review_items
 from core.utils import file_sha256, looks_incomplete_translation, looks_untranslated_page
 from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
@@ -405,6 +398,7 @@ with st.sidebar:
     retranslate_pages_str = ""
     retry_failed_pages = False
     reuse_mismatched_progress = False
+    show_review_workbench = False
     show_extraction_preview = False
     preview_page = 1
     word_body_font_size = 12.0
@@ -473,6 +467,11 @@ with st.sidebar:
             placeholder="如：8, 12-15",
         )
         retry_failed_pages = st.checkbox("只重试失败页", value=False, key="retry_failed_pages_input")
+        show_review_workbench = st.checkbox(
+            "显示翻译后校对区",
+            value=False,
+            help="显示质量检查、风险页处理和术语候选。默认关闭，完成页会更短。",
+        )
         show_extraction_preview = st.checkbox("显示提取预览", value=False)
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
@@ -1695,13 +1694,6 @@ if launch_pressed:
             },
             title=f"{pdf_stem} — 质量检查报告",
         )
-        st.subheader("质量检查")
-        qa_cols = st.columns(5)
-        qa_cols[0].metric("检查页", quality_report.total_pages)
-        qa_cols[1].metric("有译文", quality_report.translated_pages)
-        qa_cols[2].metric("失败页", len(quality_report.failed_pages))
-        qa_cols[3].metric("待检查", quality_report.warning_count)
-        qa_cols[4].metric("术语遗漏", quality_report.glossary_misses)
         rule_symbol_issues = build_rule_symbol_issues(
             pages_text={pn: pages_text.get(pn, "") for pn in range(start_page, end_page)},
             translations={
@@ -1710,133 +1702,144 @@ if launch_pressed:
                 if tracker.get_translation(pn).strip()
             },
         )
-        st.subheader("规则符号检查")
-        if rule_symbol_issues:
-            rule_cols = st.columns(3)
-            rule_cols[0].metric("问题数", len(rule_symbol_issues))
-            rule_cols[1].metric("涉及页数", len({issue.page_num for issue in rule_symbol_issues}))
-            rule_cols[2].metric("技能残留", sum(1 for issue in rule_symbol_issues if issue.kind == "技能残留"))
-            st.dataframe(
-                [
-                    {
-                        "页码": issue.page_num,
-                        "类型": issue.kind,
-                        "符号": issue.symbol,
-                        "问题": issue.message,
-                    }
-                    for issue in rule_symbol_issues[:80]
-                ],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.success("规则符号检查未发现明显问题。")
         risk_workbench_items = build_risk_workbench_items(quality_report, page_diagnostics)
         risk_ignored_key = f"risk_ignored_pages_{dossier_id}"
         risk_ignored_pages = {
             int(page) for page in st.session_state.get(risk_ignored_key, [])
         }
         active_risk_items = ignored_risk_pages(risk_workbench_items, risk_ignored_pages)
-        st.subheader("失败页/风险页工作台")
-        risk_cols = st.columns(4)
-        risk_cols[0].metric("风险条目", len(active_risk_items))
-        risk_cols[1].metric("涉及页数", len({item.page_num for item in active_risk_items}))
-        risk_cols[2].metric("可重翻页", len({item.page_num for item in active_risk_items if item.retryable}))
-        risk_cols[3].metric("已忽略页", len(risk_ignored_pages))
-        if active_risk_items:
-            st.dataframe(
-                risk_workbench_rows(active_risk_items),
-                use_container_width=True,
-                hide_index=True,
-            )
-            risk_page_options = sorted({item.page_num for item in active_risk_items})
-            retry_default_pages = sorted({item.page_num for item in active_risk_items if item.retryable})
-            selected_risk_pages = st.multiselect(
-                "选择要处理的页",
-                options=risk_page_options,
-                default=retry_default_pages,
-                key=f"risk_workbench_pages_{dossier_id}",
-            )
-            retry_pages = sorted(
-                {
-                    item.page_num
-                    for item in active_risk_items
-                    if item.page_num in selected_risk_pages and item.retryable
-                }
-            )
-            risk_actions = st.columns(3)
-            risk_actions[0].button(
-                "重翻选中页",
-                disabled=not retry_pages,
-                on_click=_queue_retranslate_pages,
-                args=(retry_pages,),
-            )
-            risk_actions[1].button(
-                "标记忽略",
-                disabled=not selected_risk_pages,
-                on_click=_mark_ignored_risk_pages,
-                args=(risk_ignored_key, sorted(risk_ignored_pages), selected_risk_pages),
-            )
-            risk_actions[2].button(
-                "清除忽略",
-                disabled=not risk_ignored_pages,
-                on_click=_clear_ignored_risk_pages,
-                args=(risk_ignored_key,),
-            )
-        else:
-            st.success("没有需要集中处理的失败页或风险页。")
-
-        if quality_report.issues:
-            with st.expander("问题详情", expanded=bool(active_risk_items)):
-                issues_by_page = {}
-                for issue in quality_report.issues:
-                    if issue.page_num in risk_ignored_pages:
-                        continue
-                    issues_by_page.setdefault(issue.page_num, []).append(issue)
-                for page_num in sorted(issues_by_page):
-                    st.markdown(f"**第 {page_num} 页**")
-                    for issue_index, issue in enumerate(issues_by_page[page_num]):
-                        detail = f"；{issue.detail}" if issue.detail else ""
-                        st.markdown(f"**{issue.message}{detail}**")
-                        left, right = st.columns(2)
-                        left.caption("英文原文")
-                        left.text_area(
-                            f"source_{issue.page_num}_{issue.kind}_{issue_index}_{dossier_id}",
-                            issue.source_excerpt or "无",
-                            height=140,
-                            label_visibility="collapsed",
-                            disabled=True,
-                        )
-                        right.caption("中文译文")
-                        right.text_area(
-                            f"translation_{issue.page_num}_{issue.kind}_{issue_index}_{dossier_id}",
-                            issue.translation_excerpt or "无",
-                            height=140,
-                            label_visibility="collapsed",
-                            disabled=True,
-                        )
 
         glossary_candidates = build_glossary_candidates(
             pages_text,
             glossary,
             matcher=glossary_matcher,
         )
-        st.subheader("术语候选")
-        if glossary_candidates:
-            st.dataframe(
-                [
+        if show_review_workbench:
+            st.subheader("质量检查")
+            qa_cols = st.columns(5)
+            qa_cols[0].metric("检查页", quality_report.total_pages)
+            qa_cols[1].metric("有译文", quality_report.translated_pages)
+            qa_cols[2].metric("失败页", len(quality_report.failed_pages))
+            qa_cols[3].metric("待检查", quality_report.warning_count)
+            qa_cols[4].metric("术语遗漏", quality_report.glossary_misses)
+
+            st.subheader("规则符号检查")
+            if rule_symbol_issues:
+                rule_cols = st.columns(3)
+                rule_cols[0].metric("问题数", len(rule_symbol_issues))
+                rule_cols[1].metric("涉及页数", len({issue.page_num for issue in rule_symbol_issues}))
+                rule_cols[2].metric("技能残留", sum(1 for issue in rule_symbol_issues if issue.kind == "技能残留"))
+                st.dataframe(
+                    [
+                        {
+                            "页码": issue.page_num,
+                            "类型": issue.kind,
+                            "符号": issue.symbol,
+                            "问题": issue.message,
+                        }
+                        for issue in rule_symbol_issues[:80]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.success("规则符号检查未发现明显问题。")
+
+            st.subheader("失败页/风险页工作台")
+            risk_cols = st.columns(4)
+            risk_cols[0].metric("风险条目", len(active_risk_items))
+            risk_cols[1].metric("涉及页数", len({item.page_num for item in active_risk_items}))
+            risk_cols[2].metric("可重翻页", len({item.page_num for item in active_risk_items if item.retryable}))
+            risk_cols[3].metric("已忽略页", len(risk_ignored_pages))
+            if active_risk_items:
+                st.dataframe(
+                    risk_workbench_rows(active_risk_items),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                risk_page_options = sorted({item.page_num for item in active_risk_items})
+                retry_default_pages = sorted({item.page_num for item in active_risk_items if item.retryable})
+                selected_risk_pages = st.multiselect(
+                    "选择要处理的页",
+                    options=risk_page_options,
+                    default=retry_default_pages,
+                    key=f"risk_workbench_pages_{dossier_id}",
+                )
+                retry_pages = sorted(
                     {
-                        "英文候选": row.term,
-                        "出现次数": row.count,
-                        "页数": len(row.pages),
+                        item.page_num
+                        for item in active_risk_items
+                        if item.page_num in selected_risk_pages and item.retryable
                     }
-                    for row in glossary_candidates[:30]
-                ],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.info("没有发现高频疑似未收录专名。")
+                )
+                risk_actions = st.columns(3)
+                risk_actions[0].button(
+                    "重翻选中页",
+                    disabled=not retry_pages,
+                    on_click=_queue_retranslate_pages,
+                    args=(retry_pages,),
+                )
+                risk_actions[1].button(
+                    "标记忽略",
+                    disabled=not selected_risk_pages,
+                    on_click=_mark_ignored_risk_pages,
+                    args=(risk_ignored_key, sorted(risk_ignored_pages), selected_risk_pages),
+                )
+                risk_actions[2].button(
+                    "清除忽略",
+                    disabled=not risk_ignored_pages,
+                    on_click=_clear_ignored_risk_pages,
+                    args=(risk_ignored_key,),
+                )
+            else:
+                st.success("没有需要集中处理的失败页或风险页。")
+
+            if quality_report.issues:
+                with st.expander("问题详情", expanded=bool(active_risk_items)):
+                    issues_by_page = {}
+                    for issue in quality_report.issues:
+                        if issue.page_num in risk_ignored_pages:
+                            continue
+                        issues_by_page.setdefault(issue.page_num, []).append(issue)
+                    for page_num in sorted(issues_by_page):
+                        st.markdown(f"**第 {page_num} 页**")
+                        for issue_index, issue in enumerate(issues_by_page[page_num]):
+                            detail = f"；{issue.detail}" if issue.detail else ""
+                            st.markdown(f"**{issue.message}{detail}**")
+                            left, right = st.columns(2)
+                            left.caption("英文原文")
+                            left.text_area(
+                                f"source_{issue.page_num}_{issue.kind}_{issue_index}_{dossier_id}",
+                                issue.source_excerpt or "无",
+                                height=140,
+                                label_visibility="collapsed",
+                                disabled=True,
+                            )
+                            right.caption("中文译文")
+                            right.text_area(
+                                f"translation_{issue.page_num}_{issue.kind}_{issue_index}_{dossier_id}",
+                                issue.translation_excerpt or "无",
+                                height=140,
+                                label_visibility="collapsed",
+                                disabled=True,
+                            )
+
+            st.subheader("术语候选")
+            if glossary_candidates:
+                st.dataframe(
+                    [
+                        {
+                            "英文候选": row.term,
+                            "出现次数": row.count,
+                            "页数": len(row.pages),
+                        }
+                        for row in glossary_candidates[:30]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("没有发现高频疑似未收录专名。")
 
         # Stats
         col_a, col_b, col_c = st.columns(3)
@@ -1870,43 +1873,14 @@ if launch_pressed:
         write_quality_report(quality_report, quality_path)
         generated_files.append(quality_path)
 
-        risk_workbench_path = make_output_path(output_base, "_risk_workbench.md")
-        write_risk_workbench_report(active_risk_items, risk_workbench_path, pdf_stem)
-        generated_files.append(risk_workbench_path)
+        if show_review_workbench:
+            risk_workbench_path = make_output_path(output_base, "_risk_workbench.md")
+            write_risk_workbench_report(active_risk_items, risk_workbench_path, pdf_stem)
+            generated_files.append(risk_workbench_path)
 
-        rule_symbol_path = make_output_path(output_base, "_rule_symbols.md")
-        write_rule_symbol_report(rule_symbol_issues, rule_symbol_path, pdf_stem)
-        generated_files.append(rule_symbol_path)
-
-        timeline_events = build_timeline_events(
-            pages_text={pn: pages_text.get(pn, "") for pn in range(start_page, end_page)},
-            translations=dict(translated_pages_sorted),
-        )
-        timeline_md_path = make_output_path(output_base, "_timeline.md")
-        write_timeline_markdown(timeline_events, timeline_md_path, pdf_stem)
-        generated_files.append(timeline_md_path)
-        timeline_json_path = make_output_path(output_base, "_timeline.json")
-        write_timeline_json(timeline_events, timeline_json_path)
-        generated_files.append(timeline_json_path)
-        st.subheader("场景时间线")
-        if timeline_events:
-            timeline_cols = st.columns(2)
-            timeline_cols[0].metric("事件数", len(timeline_events))
-            timeline_cols[1].metric("涉及页数", len({event.page_num for event in timeline_events}))
-            st.dataframe(
-                [
-                    {
-                        "页码": event.page_num,
-                        "时间标记": event.marker,
-                        "事件": event.event,
-                    }
-                    for event in timeline_events[:80]
-                ],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.info("没有发现明确时间线标记。")
+            rule_symbol_path = make_output_path(output_base, "_rule_symbols.md")
+            write_rule_symbol_report(rule_symbol_issues, rule_symbol_path, pdf_stem)
+            generated_files.append(rule_symbol_path)
 
         if glossary:
             report_path = make_output_path(output_base, "_glossary_report.md")
@@ -1919,7 +1893,7 @@ if launch_pressed:
         candidates_tsv_path = make_output_path(output_base, "_glossary_candidates.tsv")
         write_glossary_candidate_tsv(glossary_candidates, candidates_tsv_path)
         generated_files.append(candidates_tsv_path)
-        if glossary_candidates:
+        if show_review_workbench and glossary_candidates:
             with open(candidates_tsv_path, "rb") as f:
                 st.download_button(
                     "下载术语候选 TSV",
@@ -1927,44 +1901,22 @@ if launch_pressed:
                     file_name=Path(candidates_tsv_path).name,
                 )
 
-        word_review_items = build_word_review_items(
-            quality_report=quality_report,
-            glossary_candidates=glossary_candidates,
-            rule_symbol_issues=rule_symbol_issues,
-            timeline_events=timeline_events,
-        )
-        word_review_md_path = make_output_path(output_base, "_word_review.md")
-        write_word_review_markdown(word_review_items, word_review_md_path, pdf_stem)
-        generated_files.append(word_review_md_path)
-        if HAS_DOCX:
-            word_review_docx_path = make_output_path(output_base, "_word_review.docx")
-            write_word_review_docx(word_review_items, word_review_docx_path, pdf_stem)
-            generated_files.append(word_review_docx_path)
-        st.subheader("Word 校对包")
-        st.metric("校对项", len(word_review_items))
-
-        module_structure = build_module_structure(
-            pages_text={pn: pages_text.get(pn, "") for pn in range(start_page, end_page)},
-            translations=dict(translated_pages_sorted),
-            quality_report=quality_report,
-            glossary_candidates=glossary_candidates,
-            title=pdf_stem,
-        )
-        prep_checklist_path = make_output_path(output_base, "_prep_checklist.md")
-        write_prep_checklist(module_structure, prep_checklist_path)
-        generated_files.append(prep_checklist_path)
-        structure_md_path = make_output_path(output_base, "_module_structure.md")
-        write_module_structure_markdown(module_structure, structure_md_path)
-        generated_files.append(structure_md_path)
-        structure_json_path = make_output_path(output_base, "_module_structure.json")
-        write_module_structure_json(module_structure, structure_json_path)
-        generated_files.append(structure_json_path)
-        st.subheader("备团资料")
-        prep_cols = st.columns(4)
-        prep_cols[0].metric("待处理", len(module_structure.prep_items))
-        prep_cols[1].metric("数据块", len(module_structure.stat_blocks))
-        prep_cols[2].metric("卡片", len(module_structure.cards))
-        prep_cols[3].metric("规则提示", len(module_structure.rule_refs))
+        if show_review_workbench:
+            word_review_items = build_word_review_items(
+                quality_report=quality_report,
+                glossary_candidates=glossary_candidates,
+                rule_symbol_issues=rule_symbol_issues,
+                timeline_events=[],
+            )
+            word_review_md_path = make_output_path(output_base, "_word_review.md")
+            write_word_review_markdown(word_review_items, word_review_md_path, pdf_stem)
+            generated_files.append(word_review_md_path)
+            if HAS_DOCX:
+                word_review_docx_path = make_output_path(output_base, "_word_review.docx")
+                write_word_review_docx(word_review_items, word_review_docx_path, pdf_stem)
+                generated_files.append(word_review_docx_path)
+            st.subheader("Word 校对包")
+            st.metric("校对项", len(word_review_items))
 
         if "markdown" in formats:
             md_path = make_output_path(output_base, ".md")

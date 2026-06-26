@@ -297,6 +297,29 @@ def test_word_output_keeps_cards_inline_and_omits_image_blocks(tmp_path):
     assert document_xml.count("<w:sectPr") == 2
 
 
+def test_word_stat_block_strips_markdown_heading_prefix(tmp_path):
+    if not HAS_DOCX:
+        return
+
+    out = tmp_path / "layout.docx"
+    write_word_output(
+        [(
+            0,
+            "[STAT_BLOCK]\n#### Sewer Angel\nSTR 11 CON 10 DEX 9 INT 14 POW 16 CHA 13\n[/STAT_BLOCK]",
+        )],
+        str(out),
+        "Layout Demo",
+        min_chars=1,
+        max_chars=1000,
+    )
+
+    with zipfile.ZipFile(out) as zf:
+        document_xml = zf.read("word/document.xml").decode("utf-8")
+
+    assert "Sewer Angel" in document_xml
+    assert "#### Sewer Angel" not in document_xml
+
+
 def test_word_output_keeps_page_numbering_continuous_across_table_sections(tmp_path):
     if not HAS_DOCX:
         return

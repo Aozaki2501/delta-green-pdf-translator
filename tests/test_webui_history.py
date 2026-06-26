@@ -91,6 +91,25 @@ def test_zip_asset_bundle_is_final_output(tmp_path):
     assert is_final_output_file(bundle) is True
 
 
+def test_review_and_prep_reports_are_internal_outputs(tmp_path):
+    names = [
+        "book_risk_workbench.md",
+        "book_rule_symbols.md",
+        "book_timeline.md",
+        "book_timeline.json",
+        "book_word_review.md",
+        "book_word_review.docx",
+        "book_prep_checklist.md",
+        "book_module_structure.md",
+        "book_module_structure.json",
+    ]
+
+    for name in names:
+        path = tmp_path / name
+        path.write_text("report", encoding="utf-8")
+        assert is_final_output_file(path) is False
+
+
 def test_collect_output_history_groups_files_by_audit_outputs(tmp_path):
     output_dir = tmp_path / "output"
     folder = output_dir / "book_cn"

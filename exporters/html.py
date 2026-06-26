@@ -203,6 +203,7 @@ def _html_stat_block(lines: list[str]) -> str:
         clean = line.strip()
         if not clean:
             continue
+        clean = re.sub(r"^#{1,6}\s*", "", clean).strip()
         if idx == 0 and len(re.sub(r"\s+", "", clean)) <= 80:
             parts.append(f"<h3>{_html_inline(clean)}</h3>")
         else:

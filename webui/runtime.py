@@ -18,6 +18,7 @@ from webui.history import is_final_output_file
 
 APP_DIR = Path(__file__).resolve().parent.parent
 PLAYWRIGHT_PERCENT_PATTERN = re.compile(r"(\d{1,3})%")
+MAX_WINDOWS_PATH_LENGTH = 240
 
 
 def make_output_path(output_base, extension):
@@ -84,10 +85,21 @@ def contains_cjk(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
 
-def safe_filename_stem(filename: str, default: str = "document") -> str:
+def safe_filename_stem(filename: str, default: str = "document", max_length: int = 96) -> str:
     stem = Path(filename or default).stem
     stem = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", stem).strip("._-")
-    return stem or default
+    if not stem:
+        return default
+    return stem[:max_length].strip("._-") or default
+
+
+def _stem_length_for_path(directory: Path, prefix: str, digest: str, suffix: str) -> int:
+    directory_length = len(str(directory.resolve()))
+    fixed_length = len(prefix) + 1 + len(digest) + len(suffix)
+    max_length = MAX_WINDOWS_PATH_LENGTH - directory_length - fixed_length
+    if max_length < 12:
+        raise ValueError(f"上传目录路径过长：{directory}")
+    return min(96, max_length)
 
 
 def uploaded_file_digest(uploaded_file) -> str:
@@ -107,13 +119,18 @@ def save_uploaded_file_once(uploaded_file, upload_dir: Path, default_name: str =
     data = uploaded_file.getvalue()
     digest = hashlib.sha256(data).hexdigest()
     suffix = Path(uploaded_file.name or "").suffix.lower()
-    stem = safe_filename_stem(uploaded_file.name, default_name)
+    prefix = "_upload_"
+    stem = safe_filename_stem(
+        uploaded_file.name,
+        default_name,
+        max_length=_stem_length_for_path(upload_dir, prefix, digest, suffix),
+    )
 
     for existing in sorted(upload_dir.glob(f"*{suffix}")):
         if existing.is_file() and file_digest(existing) == digest:
             return existing
 
-    target = upload_dir / f"_upload_{stem}_{digest}{suffix}"
+    target = upload_dir / f"{prefix}{stem}_{digest}{suffix}"
     with open(target, "wb") as f:
         f.write(data)
     return target
@@ -123,7 +140,12 @@ def save_uploaded_pdf_for_preview(uploaded_file) -> Path:
     upload_dir = APP_DIR / "uploads"
     ensure_dir(upload_dir)
     digest = uploaded_file_digest(uploaded_file)[:12]
-    target = upload_dir / f"_preview_{safe_filename_stem(uploaded_file.name)}_{digest}.pdf"
+    prefix = "_preview_"
+    stem = safe_filename_stem(
+        uploaded_file.name,
+        max_length=_stem_length_for_path(upload_dir, prefix, digest, ".pdf"),
+    )
+    target = upload_dir / f"{prefix}{stem}_{digest}.pdf"
     if not target.exists():
         with open(target, "wb") as f:
             f.write(uploaded_file.getvalue())

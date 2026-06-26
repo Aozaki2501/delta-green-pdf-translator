@@ -42,6 +42,21 @@ def test_full_width_title_starts_new_reading_page():
     assert pages[1]["blocks"][0]["text"].startswith("[FULL_WIDTH_TITLE]")
 
 
+def test_display_title_prefers_first_heading_in_reading_order():
+    reading_pages = [
+        {
+            "layout": "columns",
+            "blocks": [{"text": "### Scenario: A Yellow and Unpleasant Land\n\nBody."}],
+        },
+        {
+            "layout": "full_title",
+            "blocks": [{"text": "[FULL_WIDTH_TITLE]\n# The Kingdom of Yellow: Background\n[/FULL_WIDTH_TITLE]"}],
+        },
+    ]
+
+    assert _display_title("Apocthulhu Core Rules", reading_pages) == "Scenario: A Yellow and Unpleasant Land"
+
+
 def test_html_renders_full_width_title():
     html = _html_block("[FULL_WIDTH_TITLE]\n# 香盖虫族\n副标题\n[/FULL_WIDTH_TITLE]")
 
@@ -92,6 +107,15 @@ def test_html_renders_stat_and_image_blocks():
 
     assert 'class="stat-block"' in html
     assert 'class="image-placeholder"' in html
+
+
+def test_html_stat_block_strips_markdown_heading_prefix():
+    html = _html_block(
+        "[STAT_BLOCK]\n#### Sewer Angel\nSTR 11 CON 10 DEX 9 INT 14 POW 16 CHA 13\n[/STAT_BLOCK]"
+    )
+
+    assert "<h3>Sewer Angel</h3>" in html
+    assert "#### Sewer Angel" not in html
 
 
 def test_html_uses_extracted_image_asset():
