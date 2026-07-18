@@ -1,7 +1,7 @@
 import json
 import os
 
-from webui.components import _retry_export_from_audit, make_dossier_id, render_dossier_card
+from webui.components import _retry_export_from_audit, _runtime_slot, make_dossier_id, render_dossier_card
 from webui.components import render_output_history
 from webui.history import (
     collect_output_history,
@@ -32,9 +32,13 @@ def test_make_dossier_id_accepts_office_prefix():
 
 def test_render_dossier_card_uses_office_copy(monkeypatch):
     calls = []
+    class FakeSlot:
+        def markdown(self, body, unsafe_allow_html=False):
+            calls.append((body, unsafe_allow_html))
+
     monkeypatch.setattr(
-        "webui.components.st.markdown",
-        lambda body, unsafe_allow_html=False: calls.append((body, unsafe_allow_html)),
+        "webui.components._runtime_slot",
+        lambda key: FakeSlot(),
     )
 
     render_dossier_card(
@@ -52,6 +56,23 @@ def test_render_dossier_card_uses_office_copy(monkeypatch):
     assert "CLASSIFIED" not in calls[0][0]
     assert "绝密" not in calls[0][0]
     assert calls[0][1] is True
+
+
+def test_runtime_slot_reuses_the_same_placeholder(monkeypatch):
+    session_state = {}
+    placeholders = []
+
+    monkeypatch.setattr("webui.components.st.session_state", session_state)
+    monkeypatch.setattr(
+        "webui.components.st.empty",
+        lambda: placeholders.append(object()) or placeholders[-1],
+    )
+
+    first = _runtime_slot("_dg_test_slot")
+    second = _runtime_slot("_dg_test_slot")
+
+    assert first is second
+    assert len(placeholders) == 1
 
 
 def test_collect_output_history_reads_audit_and_progress(tmp_path):

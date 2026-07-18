@@ -18,8 +18,8 @@ from typing import Any
 # Schema version constants
 # ---------------------------------------------------------------------------
 
-PAGE_STRUCTURE_SCHEMA_VERSION = 1
-PAGE_CONTENT_SCHEMA_VERSION = 1
+PAGE_STRUCTURE_SCHEMA_VERSION = 2
+PAGE_CONTENT_SCHEMA_VERSION = 2
 
 
 # ===========================================================================
@@ -45,6 +45,13 @@ class ImageElement:
     width_px: int              # 图片像素宽度
     height_px: int             # 图片像素高度
     transform: list[float] | None = None
+    xref: int | None = None
+    digest: str | None = None
+    bpc: int | None = None
+    colorspace: str | int | None = None
+    xres: float | None = None
+    yres: float | None = None
+    has_mask: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +65,17 @@ class DecorationElement:
     fill_color: str | None         # CSS 颜色值
     stroke_width: float            # 线宽（PDF 点）
     points: list[list[float]] | None = None  # 路径点（仅 path 类型）
+    seqno: int | None = None
+    opacity: float | None = None
+    blend: str | None = None
+    cap: list[int] | int | None = None
+    join: float | int | None = None
+    dash: str | None = None
+    even_odd: bool | None = None
+    close_path: bool | None = None
+    clip: list[float] | None = None
+    scissor: list[float] | None = None
+    path_commands: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -70,6 +88,18 @@ class TextSpanBBox:
     bold: bool
     italic: bool
     color: str
+    font: str | None = None
+    origin: list[float] | None = None
+    alpha: float | int | None = None
+    ascender: float | None = None
+    descender: float | None = None
+    chars: list[dict[str, Any]] = field(default_factory=list)
+    seqno: int | None = None
+    seqnos: list[int] = field(default_factory=list)
+
+    @property
+    def char_geometry(self) -> list[dict[str, Any]]:
+        return self.chars
 
 
 @dataclass(frozen=True)
@@ -98,6 +128,37 @@ class TextRegionBBox:
 
 
 @dataclass(frozen=True)
+class DisplayListObject:
+    """Strict canonical display-list object preserving PDF paint order."""
+
+    id: str
+    kind: str
+    bbox: list[float]
+    transform: list[float] | None = None
+    seqno: int | None = None
+    layer: str | None = None
+    clip: list[float] | None = None
+    opacity: float | None = None
+    blend: str | None = None
+    source_ref: str | None = None
+    unsupported: bool = False
+
+
+@dataclass(frozen=True)
+class VisualAnchor:
+    """Optional link from an extracted visual asset to a semantic region."""
+
+    id: str
+    page_index: int
+    asset_id: str
+    anchor_region_id: str | None = None
+    placement: Any = None
+    order: int = 0
+    role: str | None = None
+    ambiguous: bool = False
+
+
+@dataclass(frozen=True)
 class PageStructure:
     """单页结构。"""
 
@@ -108,6 +169,12 @@ class PageStructure:
     images: list[ImageElement]
     decorations: list[DecorationElement]
     text_regions: list[TextRegionBBox]
+    media_box: list[float] = field(default_factory=list)
+    crop_box: list[float] = field(default_factory=list)
+    rotation: int = 0
+    user_unit: float = 1.0
+    display_list: list[DisplayListObject] = field(default_factory=list)
+    visual_anchors: list[VisualAnchor] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -118,6 +185,8 @@ class PageStructureDocument:
     source_pdf: str
     page_count: int
     pages: list[PageStructure]
+    source_sha256: str = ""
+    visual_anchors: list[VisualAnchor] = field(default_factory=list)
 
     def to_json(self) -> str:
         """Serialize to JSON string (UTF-8, indented, human-readable)."""
@@ -134,6 +203,12 @@ class PageStructureDocument:
                 f"{PAGE_STRUCTURE_SCHEMA_VERSION}，实际 {version}"
             )
         return _page_structure_document_from_dict(data)
+
+
+# Canonical-schema names used by integrations that do not depend on the
+# historical ``PageStructure``/``DisplayListObject`` names.
+Page = PageStructure
+DisplayObject = DisplayListObject
 
 
 # ===========================================================================
@@ -164,6 +239,20 @@ class PageType(Enum):
     MIXED = "mixed"
 
 
+class FontRole(Enum):
+    """稳定的中文排版字体角色。"""
+
+    BODY = "body"
+    DISPLAY = "display"
+    SECTION = "section"
+    SUBSECTION = "subsection"
+    RUNNING_HEADER = "running_header"
+    FOOTER = "footer"
+    TABLE = "table"
+    CALLOUT = "callout"
+    META = "meta"
+
+
 @dataclass(frozen=True)
 class StyledTextRun:
     """带样式的文本片段。"""
@@ -173,6 +262,10 @@ class StyledTextRun:
     bold: bool
     italic: bool
     color: str                 # CSS 颜色值
+    font: str | None = None
+    bbox: list[float] | None = None
+    line_index: int | None = None
+    baseline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +279,16 @@ class ContentBlock:
     source_text: str               # 纯文本（用于翻译）
     translated_text: str | None    # 翻译后的文本
     translatable: bool             # 是否需要翻译
+    bbox: list[float] | None = None
+    line_ids: list[str] = field(default_factory=list)
+    paragraph_id: str | None = None
+    font_role: FontRole = FontRole.BODY
+    source_font: str | None = None
+    column_id: str | None = None
+    order: int = 0
+    layout_mode: str = "paragraph"
+    first_line_indent_pt: float = 0.0
+    line_height_pt: float | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +318,7 @@ class PageContentDocument:
     source_pdf: str
     page_count: int
     pages: list[PageContent]
+    source_sha256: str = ""
 
     def to_json(self) -> str:
         """Serialize to JSON string (UTF-8, indented, human-readable)."""
@@ -243,18 +347,25 @@ class PageContentDocument:
 class TypesetConfig:
     """纯重绘管线配置。"""
 
-    font_family: str = "FandolSong"
-    fallback_fonts: list[str] = field(default_factory=lambda: ["FandolSong-Regular", "Noto Serif SC", "Source Han Serif CN", "SimSun", "serif"])
-    heading_font_family: str = "FZZJ-MSMLJW"
-    heading_fallback_fonts: list[str] = field(default_factory=lambda: ["FandolHei", "Noto Serif CJK SC", "SimHei", "sans-serif"])
-    body_font_size_pt: float = 10.9
-    min_body_font_size_pt: float = 8.0
-    line_height: float = 1.6
-    column_gap_pt: float = 30.0
+    font_family: str = "DG Noto Serif SC"
+    fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Serif SC", "Source Han Serif CN", "SimSun", "serif"])
+    heading_font_family: str = "DG Noto Sans SC"
+    heading_fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Sans SC", "Source Han Sans CN", "SimHei", "sans-serif"])
+    body_font_size_pt: float = 10.5
+    min_body_font_size_pt: float = 10.0
+    line_height: float = 18.0 / 10.5
+    column_gap_pt: float = 31.0
     text_indent: str = "2em"
-    title_color: str = "#000000"
-    subtitle_color: str = "#ed1c24"
-    body_color: str = "#111111"
+    title_color: str = "#231f20"
+    subtitle_color: str = "#dc2527"
+    body_color: str = "#231f20"
+    display_font_size_pt: float = 30.0
+    section_font_size_pt: float = 20.0
+    accent_font_size_pt: float = 15.0
+    subsection_font_size_pt: float = 12.0
+    running_header_font_size_pt: float = 14.0
+    table_font_size_pt: float = 9.0
+    embedded_font_dir: str = "assets/typeset_fonts"
     translation_concurrency: int = 4
     layout_hints_path: str | None = None
 
@@ -265,6 +376,7 @@ class TypesetResult:
 
     pdf_path: str | None = None
     html_path: str | None = None
+    reading_html_path: str | None = None
     page_structure_path: str = ""
     page_content_path: str = ""
     total_pages: int = 0
@@ -302,6 +414,13 @@ def _page_structure_document_from_dict(data: dict[str, Any]) -> PageStructureDoc
                 width_px=img["width_px"],
                 height_px=img["height_px"],
                 transform=img.get("transform"),
+                xref=img.get("xref"),
+                digest=img.get("digest"),
+                bpc=img.get("bpc"),
+                colorspace=img.get("colorspace"),
+                xres=img.get("xres"),
+                yres=img.get("yres"),
+                has_mask=bool(img.get("has_mask", False)),
             )
             for img in p["images"]
         ]
@@ -314,6 +433,17 @@ def _page_structure_document_from_dict(data: dict[str, Any]) -> PageStructureDoc
                 fill_color=dec.get("fill_color"),
                 stroke_width=dec["stroke_width"],
                 points=dec.get("points"),
+                seqno=dec.get("seqno"),
+                opacity=dec.get("opacity"),
+                blend=dec.get("blend"),
+                cap=dec.get("cap"),
+                join=dec.get("join"),
+                dash=dec.get("dash"),
+                even_odd=dec.get("even_odd"),
+                close_path=dec.get("close_path"),
+                clip=dec.get("clip"),
+                scissor=dec.get("scissor"),
+                path_commands=dec.get("path_commands", []),
             )
             for dec in p["decorations"]
         ]
@@ -340,6 +470,14 @@ def _page_structure_document_from_dict(data: dict[str, Any]) -> PageStructureDoc
                                 bold=bool(span.get("bold", line.get("bold", False))),
                                 italic=bool(span.get("italic", line.get("italic", False))),
                                 color=span.get("color", line.get("color", "#000000")),
+                                font=span.get("font"),
+                                origin=span.get("origin"),
+                                alpha=span.get("alpha"),
+                                ascender=span.get("ascender"),
+                                descender=span.get("descender"),
+                                chars=span.get("chars", span.get("char_geometry", [])),
+                                seqno=span.get("seqno"),
+                                seqnos=span.get("seqnos", []),
                             )
                             for span in line.get("spans", [])
                         ],
@@ -358,6 +496,39 @@ def _page_structure_document_from_dict(data: dict[str, Any]) -> PageStructureDoc
                 images=images,
                 decorations=decorations,
                 text_regions=text_regions,
+                media_box=p.get("media_box", []),
+                crop_box=p.get("crop_box", []),
+                rotation=int(p.get("rotation", 0)),
+                user_unit=float(p.get("user_unit", 1.0)),
+                display_list=[
+                    DisplayListObject(
+                        id=obj["id"],
+                        kind=obj["kind"],
+                        bbox=obj.get("bbox", [0.0, 0.0, 0.0, 0.0]),
+                        transform=obj.get("transform"),
+                        seqno=obj.get("seqno"),
+                        layer=obj.get("layer"),
+                        clip=obj.get("clip"),
+                        opacity=obj.get("opacity"),
+                        blend=obj.get("blend"),
+                        source_ref=obj.get("source_ref"),
+                        unsupported=bool(obj.get("unsupported", False)),
+                    )
+                    for obj in p.get("display_list", [])
+                ],
+                visual_anchors=[
+                    VisualAnchor(
+                        id=anchor["id"],
+                        page_index=int(anchor.get("page_index", p["page_index"])),
+                        asset_id=anchor.get("asset_id", ""),
+                        anchor_region_id=anchor.get("anchor_region_id"),
+                        placement=anchor.get("placement"),
+                        order=int(anchor.get("order", 0)),
+                        role=anchor.get("role"),
+                        ambiguous=bool(anchor.get("ambiguous", False)),
+                    )
+                    for anchor in p.get("visual_anchors", [])
+                ],
             )
         )
     return PageStructureDocument(
@@ -365,6 +536,20 @@ def _page_structure_document_from_dict(data: dict[str, Any]) -> PageStructureDoc
         source_pdf=data["source_pdf"],
         page_count=data["page_count"],
         pages=pages,
+        source_sha256=data.get("source_sha256", ""),
+        visual_anchors=[
+            VisualAnchor(
+                id=anchor["id"],
+                page_index=int(anchor.get("page_index", 0)),
+                asset_id=anchor.get("asset_id", ""),
+                anchor_region_id=anchor.get("anchor_region_id"),
+                placement=anchor.get("placement"),
+                order=int(anchor.get("order", 0)),
+                role=anchor.get("role"),
+                ambiguous=bool(anchor.get("ambiguous", False)),
+            )
+            for anchor in data.get("visual_anchors", [])
+        ],
     )
 
 
@@ -381,6 +566,10 @@ def _page_content_document_to_dict(doc: PageContentDocument) -> dict[str, Any]:
                     "bold": run.bold,
                     "italic": run.italic,
                     "color": run.color,
+                    "font": run.font,
+                    "bbox": run.bbox,
+                    "line_index": run.line_index,
+                    "baseline": run.baseline,
                 }
                 for run in block.runs
             ]
@@ -393,6 +582,16 @@ def _page_content_document_to_dict(doc: PageContentDocument) -> dict[str, Any]:
                     "source_text": block.source_text,
                     "translated_text": block.translated_text,
                     "translatable": block.translatable,
+                    "bbox": block.bbox,
+                    "line_ids": block.line_ids,
+                    "paragraph_id": block.paragraph_id,
+                    "font_role": block.font_role.value,
+                    "source_font": block.source_font,
+                    "column_id": block.column_id,
+                    "order": block.order,
+                    "layout_mode": block.layout_mode,
+                    "first_line_indent_pt": block.first_line_indent_pt,
+                    "line_height_pt": block.line_height_pt,
                 }
             )
         columns = [
@@ -414,6 +613,7 @@ def _page_content_document_to_dict(doc: PageContentDocument) -> dict[str, Any]:
     return {
         "schema_version": doc.schema_version,
         "source_pdf": doc.source_pdf,
+        "source_sha256": doc.source_sha256,
         "page_count": doc.page_count,
         "pages": pages,
     }
@@ -432,6 +632,10 @@ def _page_content_document_from_dict(data: dict[str, Any]) -> PageContentDocumen
                     bold=r["bold"],
                     italic=r["italic"],
                     color=r["color"],
+                    font=r.get("font"),
+                    bbox=r.get("bbox"),
+                    line_index=r.get("line_index"),
+                    baseline=r.get("baseline"),
                 )
                 for r in b["runs"]
             ]
@@ -444,6 +648,20 @@ def _page_content_document_from_dict(data: dict[str, Any]) -> PageContentDocumen
                     source_text=b["source_text"],
                     translated_text=b.get("translated_text"),
                     translatable=b["translatable"],
+                    bbox=b.get("bbox"),
+                    line_ids=b.get("line_ids", []),
+                    paragraph_id=b.get("paragraph_id"),
+                    font_role=FontRole(b.get("font_role", FontRole.BODY.value)),
+                    source_font=b.get("source_font"),
+                    column_id=b.get("column_id"),
+                    order=int(b.get("order", 0)),
+                    layout_mode=b.get("layout_mode", "paragraph"),
+                    first_line_indent_pt=float(b.get("first_line_indent_pt", 0.0)),
+                    line_height_pt=(
+                        float(b["line_height_pt"])
+                        if b.get("line_height_pt") is not None
+                        else None
+                    ),
                 )
             )
         columns = [
@@ -467,4 +685,5 @@ def _page_content_document_from_dict(data: dict[str, Any]) -> PageContentDocumen
         source_pdf=data["source_pdf"],
         page_count=data["page_count"],
         pages=pages,
+        source_sha256=data.get("source_sha256", ""),
     )

@@ -4,6 +4,7 @@ from core.typeset_models import (
     BackgroundLayer,
     ContentBlock,
     DecorationElement,
+    FontRole,
     ImageElement,
     PageContent,
     PageStructure,
@@ -62,7 +63,7 @@ def test_long_translated_body_over_image_is_upright_without_mask():
     assert "background:#f4eedc" not in html
 
 
-def test_long_translated_heading_is_upright_and_reduced():
+def test_long_translated_heading_is_upright_and_respects_source_display_size():
     rebuilder = TypesetHTMLRebuilder()
     structure = PageStructure(
         page_index=0,
@@ -97,11 +98,11 @@ def test_long_translated_heading_is_upright_and_reduced():
     )
 
     assert "rotate(-4.750deg)" not in html
-    assert "font-size:14.533px" in html
-    assert "white-space:nowrap" in html
+    assert "font-size:32.000px" in html
+    assert "white-space:nowrap" not in html
 
 
-def test_large_font_body_heading_is_treated_as_long_heading():
+def test_large_source_font_does_not_promote_a_body_segment():
     rebuilder = TypesetHTMLRebuilder()
     block = ContentBlock(
         id="p0001_r0001_b0001",
@@ -115,8 +116,8 @@ def test_large_font_body_heading_is_treated_as_long_heading():
 
     html = rebuilder._render_block(block)
 
-    assert "font-size:14.533px" in html
-    assert "white-space:nowrap" in html
+    assert "font-role-body" in html
+    assert "white-space:nowrap" not in html
 
 
 def test_large_flow_area_does_not_use_foreground_mask():
@@ -267,3 +268,65 @@ def test_pdf_exporter_raises_on_layout_issues():
         exporter._raise_for_layout_issues([
             {"page": "2", "kind": "typeset-positioned-block", "id": "p0002_r0001"}
         ])
+
+
+def test_art_page_renders_translated_running_headers_and_page_number():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox("left-header", [72.0, 27.0, 142.0, 50.0], []),
+            TextRegionBBox("right-header", [508.0, 27.0, 578.0, 50.0], []),
+            TextRegionBBox("footer", [564.0, 746.0, 571.0, 761.0], []),
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.ART,
+        columns=[],
+        blocks=[
+            ContentBlock(
+                id="left-header-block",
+                region_id="left-header",
+                role=SemanticRole.HEADER,
+                runs=[StyledTextRun("DELTA GREEN", 14.0, False, False, "#000000")],
+                source_text="DELTA GREEN",
+                translated_text="绿色三角洲",
+                translatable=True,
+                font_role=FontRole.RUNNING_HEADER,
+            ),
+            ContentBlock(
+                id="right-header-block",
+                region_id="right-header",
+                role=SemanticRole.HEADER,
+                runs=[StyledTextRun("Dead Letter", 14.0, False, False, "#000000")],
+                source_text="Dead Letter",
+                translated_text="死信",
+                translatable=True,
+                font_role=FontRole.RUNNING_HEADER,
+            ),
+            ContentBlock(
+                id="footer-block",
+                region_id="footer",
+                role=SemanticRole.FOOTER,
+                runs=[StyledTextRun("11", 10.0, False, False, "#000000")],
+                source_text="11",
+                translated_text=None,
+                translatable=False,
+                font_role=FontRole.FOOTER,
+            ),
+        ],
+    )
+
+    html = rebuilder.rebuild_page(structure, content)
+
+    assert "绿色三角洲" in html
+    assert "死信" in html
+    assert ">11<" in html
+    assert html.count('data-block-id="left-header-block"') == 1
+    assert html.count('data-block-id="right-header-block"') == 1

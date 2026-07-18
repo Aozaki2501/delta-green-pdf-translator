@@ -1,5 +1,7 @@
 ﻿from pathlib import Path
 
+import zipfile
+
 from webui.runtime import (
     contains_cjk,
     existing_output_files,
@@ -10,7 +12,7 @@ from webui.runtime import (
     safe_filename_stem,
     save_uploaded_file_once,
 )
-from webui.theme import render_app_theme, render_workstation_effects
+from webui.theme import GOVERNMENT_THEME_OVERRIDE_CSS, render_app_theme, render_workstation_effects
 
 
 def test_safe_filename_stem_keeps_readable_name():
@@ -92,6 +94,39 @@ def test_make_html_asset_bundle_includes_html_and_assets(tmp_path):
 
     assert bundle == str(tmp_path / "book.html_assets.zip")
     assert Path(bundle).exists()
+
+
+def test_make_html_asset_bundle_can_include_only_referenced_assets(tmp_path):
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "used.svg").write_text("<svg/>", encoding="utf-8")
+    (assets / "unused.png").write_bytes(b"unused")
+    html = tmp_path / "book_typeset.html"
+    html.write_text(
+        '<img src="assets/used.svg">',
+        encoding="utf-8",
+    )
+
+    bundle = make_html_asset_bundle(html, referenced_only=True)
+
+    with zipfile.ZipFile(bundle) as archive:
+        assert archive.namelist() == ["book_typeset.html", "assets/used.svg"]
+
+
+def test_typeset_formats_have_distinct_html_label_and_exclusive_branch():
+    # Importing the Streamlit module is intentionally limited to this pure
+    # format-policy check; no page rendering or widget text is asserted.
+    import app
+
+    assert app.OUTPUT_FORMAT_LABELS["typeset_html"] == "高保真 HTML（_typeset）"
+    assert app.OUTPUT_FORMAT_LABELS["typeset_reading_html"] == "图文阅读 HTML（_reading）"
+    assert app._typeset_formats_selected(["typeset_html"]) is True
+    assert app._typeset_formats_selected(["typeset_reading_html"]) is True
+    assert app._typeset_formats_selected(["typeset_pdf"]) is True
+    assert app._typeset_formats_are_exclusive(
+        ["typeset_html", "typeset_reading_html", "typeset_pdf"]
+    ) is True
+    assert app._typeset_formats_are_exclusive(["typeset_html", "html"]) is False
 
 
 def test_playwright_chromium_installed_checks_executable_path(tmp_path, monkeypatch):
@@ -204,3 +239,11 @@ def test_render_workstation_effects_supports_office_mode(monkeypatch):
     assert ".dossier-card" in calls[0][0]
     assert "传输已授权" not in calls[0][0]
     assert calls[0][1] is True
+
+
+def test_government_theme_keeps_uploader_buttons_and_multiselect_internals_readable():
+    assert 'div[data-testid="stFileUploader"] button::after' in GOVERNMENT_THEME_OVERRIDE_CSS
+    assert 'content: none !important;' in GOVERNMENT_THEME_OVERRIDE_CSS
+    assert 'content: "选择文件" !important;' in GOVERNMENT_THEME_OVERRIDE_CSS
+    assert '[data-baseweb="select"] > div:not([data-baseweb="tag"])' in GOVERNMENT_THEME_OVERRIDE_CSS
+    assert ".term-scan-status" in GOVERNMENT_THEME_OVERRIDE_CSS

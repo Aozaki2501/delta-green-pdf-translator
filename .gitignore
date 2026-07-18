@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 .streamlit/
+.streamlit*.log
+*.log
 .codex_logs/
 logs/
 uploads/

@@ -3,6 +3,7 @@
 Delta Green PDF Translator — Web UI (Streamlit)
 """
 import streamlit as st
+import html
 import time
 from pathlib import Path
 from translate_pdf import (
@@ -20,6 +21,7 @@ from webui.components import (
     render_completion_stamp,
     render_dossier_card,
     render_output_history,
+    reset_runtime_component_slots,
     render_status_flow,
     render_system_log,
 )
@@ -46,7 +48,7 @@ from webui.glossary_review import (
     glossary_candidates_to_review_rows,
     write_reviewed_glossary,
 )
-from webui.theme import render_app_theme, render_workstation_effects
+from webui.theme import render_app_theme, render_government_theme_override, render_workstation_effects
 
 # MD / DOCX translation support
 from translate_md import translate_md_file
@@ -62,6 +64,7 @@ from core.run_report import (
     write_run_effect_report,
     write_run_manifest,
 )
+from core.output_validation import validate_translation_completeness
 from core.risk_workbench import (
     build_risk_workbench_items,
     ignored_risk_pages,
@@ -80,8 +83,22 @@ OUTPUT_FORMAT_LABELS = {
     "markdown": "纯文本稿",
     "html": "网页排版",
     "word": "文档排版",
+    "typeset_html": "高保真 HTML（_typeset）",
+    "typeset_reading_html": "图文阅读 HTML（_reading）",
     "typeset_pdf": "纯重绘 PDF（_typeset）",
 }
+TYPESET_FORMATS = frozenset({"typeset_html", "typeset_reading_html", "typeset_pdf"})
+
+
+def _typeset_formats_selected(formats) -> bool:
+    """Return whether any high-fidelity typeset format was selected."""
+    return bool(TYPESET_FORMATS.intersection(formats or ()))
+
+
+def _typeset_formats_are_exclusive(formats) -> bool:
+    """Return whether selected typeset formats are separate from page outputs."""
+    selected = set(formats or ())
+    return bool(selected & TYPESET_FORMATS) and selected <= TYPESET_FORMATS
 office_mode = bool(st.session_state.get("office_mode", False))
 dossier_id_prefix = "DOC" if office_mode else "DG"
 subject_label = "文件" if office_mode else "档案"
@@ -156,10 +173,142 @@ def _clear_ignored_risk_pages(session_key: str) -> None:
     st.session_state["auto_launch_translation"] = True
 
 
+def _render_task_controls(office_mode: bool) -> dict:
+    api_key = st.text_input("接口密钥", type="password", placeholder="sk-...", key="api_key_input")
+    formats = st.multiselect(
+        "输出格式",
+        ["markdown", "html", "word", "typeset_html", "typeset_reading_html", "typeset_pdf"],
+        default=["html", "word"],
+        format_func=lambda value: OUTPUT_FORMAT_LABELS[value],
+        key="output_formats_input",
+    )
+    range_col, limit_col = st.columns([1, 1])
+    with range_col:
+        display_start_page = st.number_input(
+            "PDF 文件页起始页（从 1 开始）", value=1, min_value=1, key="start_page_input"
+        )
+        end_page_str = st.text_input(
+            "PDF 文件页结束页（含，从 1 开始）",
+            value="",
+            placeholder="留空表示全部",
+            key="end_page_input",
+        )
+    with limit_col:
+        max_blocks_input = st.number_input(
+            "翻译块数上限（MD/Word）",
+            value=0,
+            min_value=0,
+            step=10,
+            help="仅对 Markdown 和 Word 文件生效。0 表示翻译全部。",
+            key="max_blocks_input",
+        )
+        workers = st.slider("并发数", 1, 64, 8, help="并行 API 调用数量", key="workers_input")
+
+    base_url = "https://api.deepseek.com"
+    model = "deepseek-v4-pro"
+    rate_limit = 60
+    cooldown = 1.0
+    max_split_depth = 10
+    fuzzy_matching = False
+    retranslate_pages_str = ""
+    retry_failed_pages = False
+    show_review_workbench = False
+    show_extraction_preview = False
+    preview_page = 1
+    with st.expander("高级任务控制", expanded=False):
+        base_url = st.text_input("接口地址", value=base_url, key="base_url_input")
+        model = st.text_input("模型名称", value=model, key="model_input")
+        rate_limit = st.number_input(
+            "速率限制（次/分钟）", value=60, min_value=1, max_value=1000, step=10, key="rate_limit_input"
+        )
+        cooldown = st.slider("批次冷却（秒）", 0.0, 5.0, 1.0, 0.1, key="cooldown_input")
+        max_split_depth = st.slider("最大拆分深度", 1, 20, 10, key="split_depth_input")
+        fuzzy_matching = st.checkbox("模糊术语匹配", value=False, key="fuzzy_matching_input")
+        retranslate_pages_str = st.text_input(
+            "重翻页码", key="retranslate_pages_input", placeholder="如：8, 12-15"
+        )
+        retry_failed_pages = st.checkbox("只重试失败页", value=False, key="retry_failed_pages_input")
+        show_review_workbench = st.checkbox(
+            "显示翻译后校对区", value=False, key="show_review_workbench_input"
+        )
+        show_extraction_preview = st.checkbox("显示提取预览", value=False, key="show_extraction_preview_input")
+        if show_extraction_preview:
+            preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1, key="preview_page_input")
+
+    word_body_font_size = 12.0
+    word_line_spacing = 1.5
+    word_columns = 2
+    word_min_chars = 1000
+    word_max_chars = 1500
+    word_hard_page_breaks = False
+    word_header_left = "绿色三角洲"
+    word_header_right = ""
+    if "word" in formats:
+        with st.expander("文档输出设置" if office_mode else "文档档案输出", expanded=False):
+            word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5, key="word_font_size_input")
+            word_line_spacing = st.slider("正文行距", 1.0, 2.0, 1.5, 0.05, key="word_spacing_input")
+            word_columns = st.selectbox(
+                "正文分栏",
+                [1, 2, 3],
+                index=1,
+                format_func=lambda n: {1: "单栏", 2: "双栏", 3: "三栏"}[n],
+                key="word_columns_input",
+            )
+            word_min_chars = st.number_input(
+                "阅读页最少字数", value=1000, min_value=300, max_value=3000, step=100, key="word_min_chars_input"
+            )
+            word_max_chars = st.number_input(
+                "阅读页最多字数", value=1500, min_value=500, max_value=5000, step=100, key="word_max_chars_input"
+            )
+            word_hard_page_breaks = st.checkbox(
+                "按阅读页强制分页", value=False, key="word_page_breaks_input"
+            )
+            word_header_left = st.text_input("页眉左侧", value="绿色三角洲", key="word_header_left_input")
+            word_header_right = st.text_input(
+                "页眉右侧", value="", placeholder="留空则使用文件名", key="word_header_right_input"
+            )
+
+    typeset_font_family = "DG Noto Serif SC"
+    typeset_layout_hints_path = ""
+    typeset_auto_layout_hints = False
+    typeset_layout_review_provider = "gemini"
+    typeset_layout_review_api_key = ""
+    typeset_layout_review_base_url = "https://api.openai.com/v1"
+    typeset_layout_review_model = "gemini-2.5-flash"
+    typeset_layout_review_pages = ""
+    if _typeset_formats_selected(formats):
+        with st.expander("图文重绘排版配置", expanded=False):
+            typeset_font_family = st.text_input("中文字体", value=typeset_font_family, key="typeset_font_input")
+            typeset_layout_hints_path = st.text_input(
+                "layout_hints.json 路径", value="", key="typeset_hints_input"
+            )
+            typeset_auto_layout_hints = st.checkbox(
+                "自动生成 layout hints", value=False, key="typeset_auto_hints_input"
+            )
+            if typeset_auto_layout_hints:
+                typeset_layout_review_provider = st.selectbox(
+                    "审稿接口", ["gemini", "openai-compatible"], key="typeset_review_provider_input"
+                )
+                typeset_layout_review_api_key = st.text_input(
+                    "审稿 API Key", type="password", key="typeset_review_key_input"
+                )
+                if typeset_layout_review_provider == "openai-compatible":
+                    typeset_layout_review_base_url = st.text_input(
+                        "审稿 Base URL", value=typeset_layout_review_base_url, key="typeset_review_url_input"
+                    )
+                    typeset_layout_review_model = "gpt-4o-mini"
+                typeset_layout_review_model = st.text_input(
+                    "审稿模型", value=typeset_layout_review_model, key="typeset_review_model_input"
+                )
+                typeset_layout_review_pages = st.text_input("审稿页码", value="", key="typeset_review_pages_input")
+
+    return locals()
+
+
 # === UI THEME ===
 st.set_page_config(
-    page_title="文档翻译工作台" if office_mode else "三角洲翻译终端",
-    page_icon="📄" if office_mode else "🖧",
+    page_title="文档翻译工作台" if office_mode else "GREENFILE · 文件净化系统",
+    page_icon="📄" if office_mode else "△",
     layout="wide",
 )
 
@@ -261,6 +410,8 @@ if office_mode:
         """,
         unsafe_allow_html=True,
     )
+else:
+    render_government_theme_override()
 
 # === HEADER ===
 if office_mode:
@@ -309,304 +460,249 @@ if office_mode:
         unsafe_allow_html=True,
     )
 else:
-    boot_screen = "" if reduce_motion else """
-<div class="boot-screen" aria-hidden="true">
-    <div class="boot-panel">
-        <div class="boot-title">DELTA GREEN TERMINAL</div>
-        <div class="boot-lines">
-            &gt; 装载档案协议<br>
-            &gt; 校验术语索引<br>
-            &gt; 建立隔离翻译通道
-        </div>
-        <div class="boot-bar"></div>
-        <div class="boot-stamp">AUTHORIZED ACCESS</div>
-    </div>
+    st.markdown("""
+<div class="classification-strip">
+    <span>TOP SECRET // GREEN</span>
+    <span>AUTHORIZED PERSONNEL ONLY</span>
+    <span>COMPARTMENT NIGHT GREEN</span>
 </div>
-"""
-    st.markdown(f"""
-{boot_screen}
-<div class="classified-hero">
-    <div class="hero-grid">
-        <div>
-            <div class="hero-title">三角洲翻译终端</div>
-            <div class="hero-subtitle">
-                > 访问等级：黑色绝密<br>
-                > 执行协议：文本提取 / 术语锁定 / 译文编译<br>
-                > 终端状态：等待导入档案
-            </div>
-            <div class="status-radar">
-                <div class="radar-row">
-                    <span class="radar-label">系统巡检</span>
-                    <span class="radar-step">档案通道</span>
-                    <span class="radar-step">术语索引</span>
-                    <span class="radar-step">输出协议</span>
-                </div>
-                <div class="radar-track"><span class="radar-fill"></span></div>
-            </div>
-        </div>
-        <div class="hero-seal">
-            <div class="hero-seal-code">
-                NODE: HK-26<br>
-                CHANNEL: PRIVATE REVIEW<br>
-                ARCHIVE: LOCAL OUTPUT
-            </div>
-            <div class="hero-seal-mark">BLACK FILE</div>
-        </div>
+<div class="workbench-topbar">
+    <div>
+        <div class="hero-kicker">DOCUMENT SANITIZATION DIRECTORATE · NODE 07</div>
+        <div class="workbench-title">新建档案</div>
     </div>
+    <div class="sealed-storage"><span></span>本地密封存储</div>
 </div>
-<div class="intel-grid">
-    <div class="intel-tile">
-        <div class="intel-label">任务</div>
-        <div class="intel-value">翻译</div>
+<div class="workbench-stepper" aria-label="任务流程">
+    <a class="workbench-step active" href="#case-intake">
+        <b>1</b><span><strong>上传文件</strong><small>选择翻译资料</small></span>
+    </a>
+    <a class="workbench-step" href="#range-output">
+        <b>2</b><span><strong>范围与输出</strong><small>确认处理方式</small></span>
+    </a>
+    <a class="workbench-step" href="#term-review">
+        <b>3</b><span><strong>术语确认</strong><small>锁定专名译法</small></span>
+    </a>
+    <a class="workbench-step" href="#operation-control">
+        <b>4</b><span><strong>执行与校对</strong><small>检查并生成输出</small></span>
+    </a>
+</div>
+<div class="workbench-brief">
+    <div>
+        <strong>高密级 TRPG 翻译与文件净化系统</strong>
+        <span>接收档案、锁定术语、检查规则数据并生成可校对译文。</span>
     </div>
-    <div class="intel-tile">
-        <div class="intel-label">输出</div>
-        <div class="intel-value">网页 / 文档</div>
-    </div>
-    <div class="intel-tile">
-        <div class="intel-label">模式</div>
-        <div class="intel-value">私密校对</div>
-    </div>
+    <span class="clearance-chip">HANDLER · LEVEL 4</span>
 </div>
 """, unsafe_allow_html=True)
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro"
+workers = 8
+rate_limit = 60
+cooldown = 1.0
+max_split_depth = 10
+fuzzy_matching = False
+retranslate_pages_str = ""
+retry_failed_pages = False
+reuse_mismatched_progress = False
+show_review_workbench = False
+show_extraction_preview = False
+preview_page = 1
+word_body_font_size = 12.0
+word_line_spacing = 1.5
+word_columns = 2
+word_min_chars = 1000
+word_max_chars = 1500
+word_hard_page_breaks = False
+word_header_left = "绿色三角洲"
+word_header_right = ""
+typeset_font_family = "DG Noto Serif SC"
+typeset_layout_hints_path = ""
+typeset_auto_layout_hints = False
+typeset_layout_review_provider = "gemini"
+typeset_layout_review_api_key = ""
+typeset_layout_review_base_url = "https://api.openai.com/v1"
+typeset_layout_review_model = "gemini-2.5-flash"
+typeset_layout_review_pages = ""
+requested_quality_retranslate = st.session_state.pop("quality_retranslate_pages", "")
+if requested_quality_retranslate:
+    st.session_state["retranslate_pages_input"] = requested_quality_retranslate
+    st.session_state["retry_failed_pages_input"] = False
+
 with st.sidebar:
-    sidebar_kicker = "SETTINGS" if office_mode else "CONTROL DRAWER"
-    sidebar_note = (
-        "确认密钥、页码和输出格式后，就可以开始翻译。"
-        if office_mode
-        else "参数频道已接入。确认密钥、页码与输出协议后，终端将按当前授权执行档案编译。"
-    )
+    uplink_authorized = bool(st.session_state.get("api_key_input", ""))
+    uplink_label = "加密链路正常" if uplink_authorized else "加密链路待授权"
+    sidebar_brand = "" if office_mode else """
+<div class="sidebar-brand">
+    <div class="sidebar-brand-mark">△</div>
+    <div><strong>GREENFILE</strong><small>LINGUISTIC OPERATIONS</small></div>
+</div>
+<nav class="workspace-nav" aria-label="工作区导航">
+    <a class="active" href="#case-intake"><b>＋</b><span>新建档案<small>CASE INTAKE</small></span></a>
+    <a href="#operation-control"><b>◌</b><span>执行队列<small>ACTIVE OPS</small></span></a>
+    <a href="#risk-review"><b>✓</b><span>风险校对<small>REVIEW QUEUE</small></span></a>
+    <a href="#secure-archive"><b>▤</b><span>封存档案<small>SECURE ARCHIVE</small></span></a>
+</nav>
+"""
     st.markdown(
         f"""
-    <div class="sidebar-console">
-    <div class="sidebar-kicker">{sidebar_kicker}</div>
-    <div class="sidebar-title">任务参数</div>
-    <div class="sidebar-note">{sidebar_note}</div>
+{sidebar_brand}
+<div class="connection-card">
+    <div class="sidebar-kicker">SECURE UPLINK</div>
+    <div class="connection-status"><i></i><strong>DeepSeek</strong></div>
+    <span>V4 Pro · {uplink_label}</span>
+    <small>接口密钥在“范围与输出”中设置</small>
 </div>
         """,
         unsafe_allow_html=True,
     )
-
-    provider = "deepseek"
-    base_url = "https://api.deepseek.com"
-    model = "deepseek-v4-pro"
-    workers = 8
-    rate_limit = 60
-    cooldown = 1.0
-    max_split_depth = 10
-    fuzzy_matching = False
-    retranslate_pages_str = ""
-    retry_failed_pages = False
-    reuse_mismatched_progress = False
-    show_review_workbench = False
-    show_extraction_preview = False
-    preview_page = 1
-    word_body_font_size = 12.0
-    word_line_spacing = 1.5
-    word_columns = 2
-    word_min_chars = 1000
-    word_max_chars = 1500
-    word_hard_page_breaks = False
-    word_header_left = "绿色三角洲"
-    word_header_right = ""
-    requested_quality_retranslate = st.session_state.pop("quality_retranslate_pages", "")
-    if requested_quality_retranslate:
-        st.session_state["retranslate_pages_input"] = requested_quality_retranslate
-        st.session_state["retry_failed_pages_input"] = False
-    st.checkbox("办公模式", value=False, key="office_mode")
-    st.caption("开启后使用中性界面，并自动关闭主要动画。")
-    st.checkbox("低动效模式", value=False, key="reduce_motion")
-    if office_mode:
-        st.caption("办公模式已自动关闭动画。")
-    else:
-        st.caption("开启后会关闭入场遮罩和主要动画，适合远程部署或低性能浏览器。")
-
-    st.caption("必要项")
-    api_key = st.text_input("接口密钥", type="password", placeholder="sk-...")
-
-    formats = st.multiselect(
-        "输出格式",
-        ["markdown", "html", "word", "typeset_pdf"],
-        default=["html", "word"],
-        format_func=lambda value: OUTPUT_FORMAT_LABELS[value],
-    )
-    if "typeset_pdf" in formats:
-        st.caption("纯重绘 PDF 会单独运行，从 PDF 提取结构后用 HTML/CSS 重建页面并导出。")
-
-    display_start_page = st.number_input("PDF 文件页起始页（从 1 开始）", value=1, min_value=1)
-    end_page_str = st.text_input("PDF 文件页结束页（含，从 1 开始）", value="", placeholder="留空表示全部")
-    max_blocks_input = st.number_input(
-        "翻译块数上限（MD/Word）",
-        value=0, min_value=0, step=10,
-        help="仅对 Markdown 和 Word 文件生效。0 表示翻译全部。设为如 50 则只翻译前 50 个文本块。"
-    )
-
-    with st.expander("高级任务控制", expanded=False):
-        base_url = st.text_input("接口地址", value=base_url, placeholder="https://api.deepseek.com")
-        model = st.text_input("模型名称", value=model)
-        workers = st.slider("并发数", 1, 64, 8, help="并行 API 调用数量")
-        rate_limit = st.number_input(
-            "速率限制（次/分钟）", value=60, min_value=1, max_value=1000, step=10,
-            help="每分钟最大 API 调用次数"
-        )
-        cooldown = st.slider(
-            "批次冷却（秒）", 0.0, 5.0, 1.0, 0.1,
-            help="每批次翻译之间的等待时间"
-        )
-        max_split_depth = st.slider(
-            "最大拆分深度", 1, 20, 10,
-            help="仅 Markdown 和 Word 翻译失败拆分时生效"
-        )
-        fuzzy_matching = st.checkbox(
-            "模糊术语匹配", value=False,
-            help="启用 OCR 字符替换容错匹配（0↔O, 1↔l↔I, 5↔S, 8↔B）"
-        )
-        retranslate_pages_str = st.text_input(
-            "重翻页码",
-            key="retranslate_pages_input",
-            placeholder="如：8, 12-15",
-        )
-        retry_failed_pages = st.checkbox("只重试失败页", value=False, key="retry_failed_pages_input")
-        show_review_workbench = st.checkbox(
-            "显示翻译后校对区",
-            value=False,
-            help="显示质量检查、风险页处理和术语候选。默认关闭，完成页会更短。",
-        )
-        show_extraction_preview = st.checkbox("显示提取预览", value=False)
-        if show_extraction_preview:
-            preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1)
-    if "word" in formats:
-        with st.expander("文档输出设置" if office_mode else "文档档案输出", expanded=False):
-            word_body_font_size = st.slider("正文字号", 9.0, 14.0, 12.0, 0.5)
-            word_line_spacing = st.slider("正文行距", 1.0, 2.0, 1.5, 0.05)
-            word_columns = st.selectbox(
-                "正文分栏",
-                [1, 2, 3],
-                index=1,
-                format_func=lambda n: {1: "单栏", 2: "双栏", 3: "三栏"}[n],
-            )
-            word_min_chars = st.number_input("阅读页最少字数", value=1000, min_value=300, max_value=3000, step=100)
-            word_max_chars = st.number_input("阅读页最多字数", value=1500, min_value=500, max_value=5000, step=100)
-            word_hard_page_breaks = st.checkbox(
-                "按阅读页强制分页",
-                value=False,
-                help="关闭时文档会自然续排，减少半页空白；开启时每个阅读页后插入分页符。",
-            )
-            word_header_left = st.text_input("页眉左侧", value="绿色三角洲")
-            word_header_right = st.text_input("页眉右侧", value="", placeholder="留空则使用文件名")
-
-    # Typeset PDF font configuration
-    typeset_font_family = "Noto Serif SC"
-    typeset_layout_hints_path = ""
-    typeset_auto_layout_hints = False
-    typeset_layout_review_provider = "gemini"
-    typeset_layout_review_api_key = ""
-    typeset_layout_review_base_url = "https://api.openai.com/v1"
-    typeset_layout_review_model = "gemini-2.5-flash"
-    typeset_layout_review_pages = ""
-    if "typeset_pdf" in formats:
-        with st.expander("纯重绘排版配置", expanded=False):
-            typeset_font_family = st.text_input(
-                "中文字体",
-                value="Noto Serif SC",
-                help="用于纯重绘 PDF 的中文字体。如字体不可用，将自动回退到 Source Han Serif CN 等备选字体。",
-            )
-            typeset_layout_hints_path = st.text_input(
-                "layout_hints.json 路径",
-                value="",
-                placeholder=r"例如：E:\DG\output\book\layout_hints.json",
-                help="可选。填写后，纯重绘 PDF 会按该文件修正阅读顺序、分栏和跳过块。",
-            )
-            typeset_auto_layout_hints = st.checkbox(
-                "自动生成 layout hints",
-                value=False,
-                help="可选。让多模态模型审稿页面布局，并把结果用于本次纯重绘 PDF。",
-            )
-            if typeset_auto_layout_hints:
-                typeset_layout_review_provider = st.selectbox(
-                    "审稿接口",
-                    ["gemini", "openai-compatible"],
-                    format_func=lambda value: "Gemini 官方接口" if value == "gemini" else "OpenAI 兼容多模态接口",
-                )
-                typeset_layout_review_api_key = st.text_input(
-                    "审稿 API Key",
-                    type="password",
-                    placeholder="AIza... 或 sk-...",
-                )
-                if typeset_layout_review_provider == "openai-compatible":
-                    typeset_layout_review_base_url = st.text_input(
-                        "审稿 Base URL",
-                        value=typeset_layout_review_base_url,
-                        placeholder="https://api.openai.com/v1",
-                    )
-                    typeset_layout_review_model = "gpt-4o-mini"
-                typeset_layout_review_model = st.text_input(
-                    "审稿模型",
-                    value=typeset_layout_review_model,
-                )
-                typeset_layout_review_pages = st.text_input(
-                    "审稿页码",
-                    value="",
-                    placeholder="留空表示本次页码范围；如：1, 3-5",
-                    help="从 1 开始，建议先选少量问题页测试。",
-                )
-
-    st.markdown(
-        """
-<div class="sidebar-help">
-    <div class="sidebar-help-badge">?</div>
-    <div>
-        <div class="sidebar-help-title">断点续跑</div>
-        <div class="sidebar-help-copy">
-            相同文件、术语表、模型和页码会复用进度。中断后用同样设置重新执行即可继续；只补失败页时，在高级任务控制里勾选“只重试失败页”。
-        </div>
-    </div>
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.toggle("办公界面", value=False, key="office_mode")
 
 # === MAIN ===
-main_kicker = "UPLOAD" if office_mode else "INTAKE BAY"
+main_kicker = "UPLOAD" if office_mode else "CASE INTAKE"
 main_title = "导入文件" if office_mode else "导入机密档案"
 main_note = (
     "上传 PDF、Markdown 或 Word。默认使用本地 glossary.tsv，需要替换术语时再上传自定义术语表。"
     if office_mode
     else "上传 PDF、Markdown 或 Word。默认使用本地 glossary.tsv，只有需要替换术语时再上传自定义术语表。"
 )
-st.markdown(
-    f"""
+if office_mode:
+    st.markdown(
+        f"""
 <div class="section-card task-dock">
     <div class="section-heading">
         <div>
             <div class="section-kicker">{main_kicker}</div>
             <div class="section-title">{main_title}</div>
         </div>
-        <div class="section-note">
-            {main_note}
-        </div>
+        <div class="section-note">{main_note}</div>
     </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
+    col1, col2 = st.columns([1.2, 1])
+    with col1:
+        source_file = st.file_uploader(
+            "源文件", type=["pdf", "md", "txt", "docx"], label_visibility="collapsed"
+        )
+    with col2:
+        glossary_file = st.file_uploader(
+            "替换术语表，可选", type=["tsv", "txt", "csv"], label_visibility="collapsed"
+        )
+        if glossary_file:
+            st.caption(f"将使用上传术语表：{glossary_file.name}")
+        elif DEFAULT_GLOSSARY_PATH.exists():
+            st.caption("将使用默认术语表：glossary.tsv")
+        else:
+            st.caption("未找到默认术语表；可上传自定义术语表。")
+    with st.expander("范围与输出", expanded=True):
+        controls = _render_task_controls(office_mode=True)
+else:
+    workspace_col, summary_col = st.columns([3.2, 1], gap="medium")
+    with workspace_col:
+        with st.container(border=True):
+            st.markdown(
+                f"""
+<div class="workspace-section-heading" id="case-intake">
+    <div><span>{main_kicker}</span><strong>{main_title}</strong></div>
+    <p>{main_note}</p>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+            source_col, glossary_col = st.columns([1.2, 1])
+            with source_col:
+                st.markdown('<div class="upload-label">源档案</div>', unsafe_allow_html=True)
+                source_file = st.file_uploader(
+                    "源文件",
+                    type=["pdf", "md", "txt", "docx"],
+                    label_visibility="collapsed",
+                    key="source_file_input",
+                )
+            with glossary_col:
+                st.markdown('<div class="upload-label">替换术语表 <small>可选</small></div>', unsafe_allow_html=True)
+                glossary_file = st.file_uploader(
+                    "替换术语表，可选",
+                    type=["tsv", "txt", "csv"],
+                    label_visibility="collapsed",
+                    key="glossary_file_input",
+                )
+                if glossary_file:
+                    st.caption(f"使用上传术语表：{glossary_file.name}")
+                elif DEFAULT_GLOSSARY_PATH.exists():
+                    st.caption("默认术语表：glossary.tsv")
+                else:
+                    st.caption("未找到默认术语表")
+            st.markdown('<span id="range-output"></span>', unsafe_allow_html=True)
+            with st.expander("第二步 · 范围与输出", expanded=False):
+                st.caption("接口、处理范围和输出格式都在这里设置；高级选项默认收起。")
+                controls = _render_task_controls(office_mode=False)
 
-col1, col2 = st.columns([1.2, 1])
-with col1:
-    source_file = st.file_uploader("源文件", type=["pdf", "md", "txt", "docx"], label_visibility="collapsed")
-with col2:
-    glossary_file = st.file_uploader("替换术语表，可选", type=["tsv", "txt", "csv"], label_visibility="collapsed")
-    if glossary_file:
-        st.caption(f"将使用上传术语表：{glossary_file.name}")
-    elif DEFAULT_GLOSSARY_PATH.exists():
-        st.caption("将使用默认术语表：glossary.tsv")
-    else:
-        st.caption("未找到默认术语表；可上传自定义术语表。")
+    source_display = html.escape(source_file.name) if source_file else "等待接收"
+    range_display = f"{controls['display_start_page']} - {controls['end_page_str'] or '全部'}"
+    format_display = " / ".join(OUTPUT_FORMAT_LABELS[value] for value in controls["formats"]) or "未选择"
+    with summary_col:
+        st.markdown(
+            f"""
+<aside class="task-summary-panel">
+    <div class="task-summary-kicker">CASE CONTROL</div>
+    <h3>{source_display}</h3>
+    <div class="summary-classification">TOP SECRET<br><small>NEW CASE / PENDING ID</small></div>
+    <dl>
+        <div><dt>来源</dt><dd>{'已载入' if source_file else '等待档案'}</dd></div>
+        <div><dt>范围</dt><dd>{range_display}</dd></div>
+        <div><dt>输出</dt><dd>{format_display}</dd></div>
+        <div><dt>术语</dt><dd>{'自定义' if glossary_file else '默认表'}</dd></div>
+        <div><dt>模型</dt><dd>{html.escape(controls['model'])}</dd></div>
+        <div><dt>并发</dt><dd>{controls['workers']} 个任务</dd></div>
+    </dl>
+    <div class="summary-note"><strong>内容说明</strong><p>原文件和结果保存在本机；正文会发送到当前翻译接口。</p></div>
+</aside>
+            """,
+            unsafe_allow_html=True,
+        )
+
+api_key = controls["api_key"]
+formats = controls["formats"]
+display_start_page = controls["display_start_page"]
+end_page_str = controls["end_page_str"]
+max_blocks_input = controls["max_blocks_input"]
+base_url = controls["base_url"]
+model = controls["model"]
+workers = controls["workers"]
+rate_limit = controls["rate_limit"]
+cooldown = controls["cooldown"]
+max_split_depth = controls["max_split_depth"]
+fuzzy_matching = controls["fuzzy_matching"]
+retranslate_pages_str = controls["retranslate_pages_str"]
+retry_failed_pages = controls["retry_failed_pages"]
+show_review_workbench = controls["show_review_workbench"]
+show_extraction_preview = controls["show_extraction_preview"]
+preview_page = controls["preview_page"]
+word_body_font_size = controls["word_body_font_size"]
+word_line_spacing = controls["word_line_spacing"]
+word_columns = controls["word_columns"]
+word_min_chars = controls["word_min_chars"]
+word_max_chars = controls["word_max_chars"]
+word_hard_page_breaks = controls["word_hard_page_breaks"]
+word_header_left = controls["word_header_left"]
+word_header_right = controls["word_header_right"]
+typeset_font_family = controls["typeset_font_family"]
+typeset_layout_hints_path = controls["typeset_layout_hints_path"]
+typeset_auto_layout_hints = controls["typeset_auto_layout_hints"]
+typeset_layout_review_provider = controls["typeset_layout_review_provider"]
+typeset_layout_review_api_key = controls["typeset_layout_review_api_key"]
+typeset_layout_review_base_url = controls["typeset_layout_review_base_url"]
+typeset_layout_review_model = controls["typeset_layout_review_model"]
+typeset_layout_review_pages = controls["typeset_layout_review_pages"]
 
 # Detect file type
 pdf_file = None
 md_file = None
 docx_file = None
 source_type = None
+reset_runtime_component_slots()
 if source_file:
     ext = Path(source_file.name).suffix.lower()
     if ext == ".pdf":
@@ -619,7 +715,8 @@ if source_file:
         docx_file = source_file
         source_type = "docx"
 
-st.markdown("</div>", unsafe_allow_html=True)
+if office_mode:
+    st.markdown("</div>", unsafe_allow_html=True)
 
 if source_file:
     current_digest = uploaded_file_digest(source_file)
@@ -645,9 +742,19 @@ if source_file:
 glossary_review_rows = []
 glossary_review_error = ""
 if source_file and source_type:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<span id="term-review"></span>', unsafe_allow_html=True)
     st.subheader("翻译前术语确认")
     st.caption("先检查疑似专名。需要本次翻译强制使用的词，选择“新增”或“修改”；不需要的保持“忽略”。")
+    review_loading = st.empty()
+    review_loading.markdown(
+        """
+<div class="term-scan-status" role="status">
+    <span class="term-scan-indicator" aria-hidden="true"></span>
+    <div><span>CASE INTAKE</span><strong>正在接收档案并扫描术语…</strong></div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
     try:
         review_upload_dir = APP_DIR / "uploads"
         ensure_dir(review_upload_dir)
@@ -714,15 +821,17 @@ if source_file and source_type:
     except Exception as e:
         glossary_review_error = str(e)
         st.error(f"术语候选扫描失败：{e}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    finally:
+        review_loading.empty()
 
 ready_state = f"{subject_label}已接收" if source_file else f"等待{subject_label}"
 key_state = "密钥已录入" if api_key else "等待密钥"
 format_state = " / ".join(OUTPUT_FORMAT_LABELS[value] for value in formats) if formats else "未选择输出"
-launch_kicker = "TASK" if office_mode else "MISSION CONTROL"
-st.markdown(
-    f"""
-<div class="launch-panel">
+launch_kicker = "TASK" if office_mode else "OPERATION CONTROL"
+if office_mode:
+    st.markdown(
+        f"""
+<div class="launch-panel" id="operation-control">
     <div>
         <div class="launch-kicker">{launch_kicker}</div>
         <div class="launch-title">启动翻译任务</div>
@@ -733,11 +842,36 @@ st.markdown(
         <span>{format_state}</span>
     </div>
 </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    readiness_class = "ready" if source_file and api_key and formats else "pending"
+    st.markdown(
+        f"""
+<section class="preflight-panel" id="operation-control">
+    <div class="preflight-heading">
+        <div><span>第四步 · PREFLIGHT</span><strong>提取预检与任务启动</strong></div>
+        <b class="preflight-state {readiness_class}">{'可以开始' if readiness_class == 'ready' else '等待必要项'}</b>
+    </div>
+    <div class="preflight-grid">
+        <div><small>档案状态</small><strong>{ready_state}</strong><span>支持 PDF / Word / Markdown</span></div>
+        <div><small>接口授权</small><strong>{key_state}</strong><span>{html.escape(model)}</span></div>
+        <div><small>输出协议</small><strong>{format_state}</strong><span>{workers} 个并发任务</span></div>
+    </div>
+    <div class="preflight-notice"><b>!</b><span>复杂版面、规则数值和术语冲突会在完成后自动加入风险校对。</span></div>
+</section>
+        """,
+        unsafe_allow_html=True,
+    )
 auto_launch_translation = bool(st.session_state.pop("auto_launch_translation", False))
-launch_pressed = st.button("执行翻译任务", type="primary", use_container_width=True) or auto_launch_translation
+if office_mode:
+    launch_pressed = st.button("执行翻译任务", type="primary", use_container_width=True) or auto_launch_translation
+else:
+    st.markdown('<div class="launch-action-separator" aria-hidden="true"></div>', unsafe_allow_html=True)
+    action_spacer, action_button = st.columns([3, 1])
+    with action_button:
+        launch_pressed = st.button("开始翻译任务", type="primary", use_container_width=True) or auto_launch_translation
 if auto_launch_translation:
     st.info("已从质量检查选择问题页，开始重翻。")
 
@@ -786,11 +920,13 @@ if launch_pressed:
         st.error("✗ 请输入模型名称")
     elif source_type == "pdf" and not formats:
         st.error("✗ 请至少选择一种输出格式")
-    elif source_type == "pdf" and "typeset_pdf" in formats and len(formats) > 1:
-        st.error("✗ 纯重绘 PDF 请单独运行，避免和其他输出重复调用接口。")
+    elif source_type == "pdf" and _typeset_formats_selected(formats) and not _typeset_formats_are_exclusive(formats):
+        st.error("✗ 图文重绘请单独运行，避免和普通输出重复调用接口。")
+    elif source_type != "pdf" and _typeset_formats_selected(formats):
+        st.error("✗ 图文重绘仅支持 PDF 文件。")
     elif (
         source_type == "pdf"
-        and "typeset_pdf" in formats
+        and _typeset_formats_selected(formats)
         and typeset_auto_layout_hints
         and not typeset_layout_hints_path.strip()
         and not typeset_layout_review_api_key.strip()
@@ -1111,9 +1247,9 @@ if launch_pressed:
         )
         translator.set_glossary(glossary)
 
-        if formats == ["typeset_pdf"]:
+        if _typeset_formats_selected(formats):
             # ============================================================
-            # TYPESET PDF PIPELINE FLOW
+            # HIGH-FIDELITY TYPESET PIPELINE FLOW
             # ============================================================
             import logging as _logging
             from core.typeset_pipeline import TypesetPipeline
@@ -1140,7 +1276,11 @@ if launch_pressed:
                     # matplotlib not available; skip font check
                     return True
 
-            if not _check_font_available(typeset_font_family):
+            embedded_typeset_fonts = {"DG Noto Serif SC", "DG Noto Sans SC"}
+            if (
+                typeset_font_family not in embedded_typeset_fonts
+                and not _check_font_available(typeset_font_family)
+            ):
                 # Try fallback fonts
                 _fallback_used = None
                 for fallback in typeset_config.fallback_fonts:
@@ -1168,7 +1308,10 @@ if launch_pressed:
                         "将使用系统默认 serif 字体。"
                     )
 
-            if not playwright_chromium_installed():
+            export_pdf = "typeset_pdf" in formats
+            export_typeset_html = "typeset_html" in formats
+            export_reading_html = "typeset_reading_html" in formats
+            if export_pdf and not playwright_chromium_installed():
                 st.warning("本次导出纯重绘 PDF 需要先加载浏览器内核插件。")
                 browser_progress_bar = st.progress(0)
                 browser_status = st.empty()
@@ -1217,11 +1360,13 @@ if launch_pressed:
                 except TypeError:
                     browser_progress_bar.progress(1.0)
                 browser_status.success("浏览器内核插件已就绪，开始执行纯重绘 PDF。")
-            else:
+            elif export_pdf:
                 st.caption("浏览器内核已就绪，将直接执行纯重绘 PDF。")
+            else:
+                st.caption("仅生成高保真 HTML，不加载浏览器内核。")
 
             render_status_flow(active_index=1, office_mode=office_mode)
-            st.info(f"📐 纯重绘管线：第 {start_page + 1}-{end_page} 页")
+            st.info(f"📐 图文重绘管线：第 {start_page + 1}-{end_page} 页")
 
             # Progress UI for typeset pipeline
             typeset_progress_bar = st.progress(0)
@@ -1245,7 +1390,9 @@ if launch_pressed:
                 phase_label = phase_names.get(phase, phase)
                 if phase == "pipeline":
                     pct = done / total if total else 1.0
-                    phase_desc = ["结构提取", "语义分析", "翻译", "HTML 重建", "PDF 导出"]
+                    phase_desc = ["结构提取", "语义分析", "翻译", "HTML 重建"]
+                    if export_pdf:
+                        phase_desc.append("PDF 导出")
                     current_desc = phase_desc[done] if done < len(phase_desc) else "完成"
                     try:
                         typeset_progress_bar.progress(
@@ -1254,7 +1401,7 @@ if launch_pressed:
                         )
                     except TypeError:
                         typeset_progress_bar.progress(min(pct, 1.0))
-                    typeset_status.text(f"纯重绘管线：{current_desc}")
+                    typeset_status.text(f"图文重绘管线：{current_desc}")
                     typeset_phase_metric.metric("阶段", f"{done}/{total}")
                 elif phase == "translation":
                     pct = done / total if total else 1.0
@@ -1339,6 +1486,9 @@ if launch_pressed:
                 start_page=start_page,
                 end_page=end_page,
                 progress_callback=update_typeset_progress,
+                export_pdf=export_pdf,
+                export_typeset_html=export_typeset_html,
+                export_reading_html=export_reading_html,
             )
 
             # Collect generated files
@@ -1346,9 +1496,20 @@ if launch_pressed:
                 generated_files.append(result.pdf_path)
             if result.html_path:
                 generated_files.append(result.html_path)
-                html_bundle_path = make_html_asset_bundle(result.html_path)
+                html_bundle_path = make_html_asset_bundle(
+                    result.html_path,
+                    referenced_only=True,
+                )
                 if html_bundle_path:
                     generated_files.append(html_bundle_path)
+            if result.reading_html_path:
+                generated_files.append(result.reading_html_path)
+                reading_bundle_path = make_html_asset_bundle(
+                    result.reading_html_path,
+                    referenced_only=True,
+                )
+                if reading_bundle_path:
+                    generated_files.append(reading_bundle_path)
             if result.page_structure_path:
                 generated_files.append(result.page_structure_path)
             if result.page_content_path:
@@ -1364,7 +1525,7 @@ if launch_pressed:
             elapsed_total = time.time() - typeset_started_at
             typeset_progress_bar.progress(1.0)
             typeset_status.text(
-                "✓ 纯重绘完成! "
+                "✓ 图文重绘完成! "
                 f"总用时 {format_duration(elapsed_total)} | "
                 f"Token {result.total_tokens:,} | 费用 ¥{result.cost_yuan:.3f}"
             )
@@ -1484,6 +1645,7 @@ if launch_pressed:
         render_status_flow(active_index=1, office_mode=office_mode)
         st.info(f"📑 提取文本: {total} 页, 翻译第 {start_page + 1}-{end_page} 页")
         pages_text = {}
+        page_contexts = {}
         source_page_labels = {}
         base_page_layouts = {}
         page_diagnostics = []
@@ -1491,6 +1653,7 @@ if launch_pressed:
             source_page_labels[pn] = extractor.get_page_label(pn)
             base_page_layouts[pn] = extractor.detect_page_layout(pn)
             pages_text[pn] = extractor.extract_page(pn, include_images=False)
+            page_contexts[pn] = extractor.get_context_text(pn)
             page_diagnostics.append(extractor.get_page_diagnostics(pn, pages_text[pn]))
         layout_context = build_pdf_output_layout_context(
             pdf_path,
@@ -1543,13 +1706,16 @@ if launch_pressed:
                 )
             )
         pages_data = []
-        prev_text = ""
         for pn in pages_list:
             text = pages_text.get(pn, "")
-            pages_data.append((pn, text, prev_text[-900:] if prev_text else ""))
-            context_text = extractor.get_context_text(pn)
-            if context_text.strip():
-                prev_text = context_text
+            prev_context = page_contexts.get(pn - 1, "")
+            next_context = page_contexts.get(pn + 1, "")
+            pages_data.append((
+                pn,
+                text,
+                prev_context[-900:] if prev_context else "",
+                next_context[:900] if next_context else "",
+            ))
 
         translation_started_at = time.time()
 
@@ -1634,6 +1800,13 @@ if launch_pressed:
             pn + 1 for pn in sorted(tracker.get_failed_pages())
             if start_page <= pn < end_page
         ]
+        completeness = validate_translation_completeness(
+            pages_text=pages_text,
+            translated_pages=translated_pages_sorted,
+            failed_page_indexes=tracker.get_failed_pages(),
+            start_page=start_page,
+            end_page=end_page,
+        )
         if failed_pages:
             render_status_flow(active_index=3, failed=True, office_mode=office_mode)
             st.warning(
@@ -1745,6 +1918,7 @@ if launch_pressed:
             else:
                 st.success("规则符号检查未发现明显问题。")
 
+            st.markdown('<span id="risk-review"></span>', unsafe_allow_html=True)
             st.subheader("失败页/风险页工作台")
             risk_cols = st.columns(4)
             risk_cols[0].metric("风险条目", len(active_risk_items))
@@ -1843,7 +2017,7 @@ if launch_pressed:
 
         # Stats
         col_a, col_b, col_c = st.columns(3)
-        col_a.metric("📄 页数", f"{len(translated_pages_sorted)}")
+        col_a.metric("📄 页数", f"{completeness.translated_pages}")
         col_b.metric("💰 费用", f"¥{stats.cost_yuan:.3f}")
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
@@ -1982,7 +2156,7 @@ if launch_pressed:
         run_effect = build_run_effect(
             stats,
             total_pages=end_page - start_page,
-            translated_pages=len(translated_pages_sorted),
+            translated_pages=completeness.translated_pages,
             failed_pages=failed_pages,
             quality_issues=quality_report.warning_count,
             glossary_candidates=len(glossary_candidates),
@@ -2038,7 +2212,7 @@ if launch_pressed:
                 "model": model,
                 "page_range": f"{start_page + 1}-{end_page}",
                 "formats": formats,
-                "completed_pages": len(translated_pages_sorted),
+                "completed_pages": completeness.translated_pages,
                 "failed_pages": failed_pages,
                 "glossary": Path(glossary_path).name if glossary_path else "",
                 "progress_path": progress_file,
@@ -2061,7 +2235,7 @@ if launch_pressed:
             st.error(f"导出失败，已拦住成品。译文进度已保留，可在{history_label}里点击“重试导出”。")
             render_audit_grid({
                 id_label: dossier_id,
-                "完成页": len(translated_pages_sorted),
+                "完成页": completeness.translated_pages,
                 "导出错误": len(export_errors),
             })
             for message in export_errors[:5]:
@@ -2080,7 +2254,7 @@ if launch_pressed:
                 "model": model,
                 "page_range": f"{start_page + 1}-{end_page}",
                 "formats": formats,
-                "completed_pages": len(translated_pages_sorted),
+                "completed_pages": completeness.translated_pages,
                 "failed_pages": failed_pages,
                 "glossary": Path(glossary_path).name if glossary_path else "",
                 "progress_path": progress_file,
@@ -2102,7 +2276,7 @@ if launch_pressed:
             render_completion_stamp("待校对" if failed_pages else "已归档")
             final_audit_items = {
                 id_label: dossier_id,
-                "完成页": len(translated_pages_sorted),
+                "完成页": completeness.translated_pages,
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             }
             if failed_pages:
@@ -2111,5 +2285,7 @@ if launch_pressed:
             render_downloads(generated_files)
             extractor.close()
 
+if not office_mode:
+    st.markdown('<span id="secure-archive"></span>', unsafe_allow_html=True)
 with st.expander("历史输出" if office_mode else "档案库", expanded=False):
     render_output_history(APP_DIR / "output", office_mode=office_mode)

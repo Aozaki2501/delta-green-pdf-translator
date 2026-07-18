@@ -79,6 +79,12 @@ from core.run_report import (
     write_run_manifest,
 )
 
+# output validation — deterministic checks before final export
+from core.output_validation import (
+    TranslationCompleteness,
+    validate_translation_completeness,
+)
+
 __all__ = [
     # constants
     "PROMPT_VERSION",
@@ -130,4 +136,7 @@ __all__ = [
     "render_run_effect_markdown",
     "write_run_effect_report",
     "write_run_manifest",
+    # output validation
+    "TranslationCompleteness",
+    "validate_translation_completeness",
 ]
