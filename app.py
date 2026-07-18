@@ -268,7 +268,7 @@ def _render_task_controls(office_mode: bool) -> dict:
                 "页眉右侧", value="", placeholder="留空则使用文件名", key="word_header_right_input"
             )
 
-    typeset_font_family = "DG Noto Serif SC"
+    typeset_font_family = "DG Fandol Song"
     typeset_layout_hints_path = ""
     typeset_auto_layout_hints = False
     typeset_layout_review_provider = "gemini"
@@ -517,7 +517,7 @@ word_max_chars = 1500
 word_hard_page_breaks = False
 word_header_left = "绿色三角洲"
 word_header_right = ""
-typeset_font_family = "DG Noto Serif SC"
+typeset_font_family = "DG Fandol Song"
 typeset_layout_hints_path = ""
 typeset_auto_layout_hints = False
 typeset_layout_review_provider = "gemini"
@@ -1276,7 +1276,14 @@ if launch_pressed:
                     # matplotlib not available; skip font check
                     return True
 
-            embedded_typeset_fonts = {"DG Noto Serif SC", "DG Noto Sans SC"}
+            embedded_typeset_fonts = {
+                "DG Fandol Song",
+                "DG Fandol Kai",
+                "DG Lanting Kanhei",
+                "DG Moushi Meili",
+                "DG Noto Serif SC",
+                "DG Noto Sans SC",
+            }
             if (
                 typeset_font_family not in embedded_typeset_fonts
                 and not _check_font_available(typeset_font_family)

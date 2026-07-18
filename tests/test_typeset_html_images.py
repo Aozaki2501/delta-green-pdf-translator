@@ -754,6 +754,53 @@ def test_art_page_keeps_source_visual_without_text_overlay():
     assert "子午线" not in html
 
 
+def test_first_art_page_renders_translated_cover_title_and_module_label():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(id="title", bbox=[210.0, 172.0, 410.0, 212.0], block_ids=["title-block"]),
+            TextRegionBBox(id="module", bbox=[115.0, 740.0, 508.0, 762.0], block_ids=["module-block"]),
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.ART,
+        columns=[],
+        blocks=[
+            ContentBlock(
+                id="title-block",
+                region_id="title",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("THE NEW AGE", 32.0, False, False, "#ffffff")],
+                source_text="THE NEW AGE",
+                translated_text="《新时代》",
+                translatable=True,
+            ),
+            ContentBlock(
+                id="module-block",
+                region_id="module",
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun("A Scenario for Delta Green", 16.0, False, False, "#ffffff")],
+                source_text="A Scenario for Delta Green",
+                translated_text="《绿色三角洲：角色扮演游戏》模组",
+                translatable=True,
+            ),
+        ],
+    )
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert ">新时代</div>" in html
+    assert "《绿色三角洲：角色扮演游戏》模组" in html
+    assert "font-size:40.000px" in html
+
+
 def test_table_block_uses_source_line_slots():
     rebuilder = TypesetHTMLRebuilder()
     structure = PageStructure(

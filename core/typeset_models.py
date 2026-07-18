@@ -347,13 +347,13 @@ class PageContentDocument:
 class TypesetConfig:
     """纯重绘管线配置。"""
 
-    font_family: str = "DG Noto Serif SC"
+    font_family: str = "DG Fandol Song"
     fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Serif SC", "Source Han Serif CN", "SimSun", "serif"])
-    heading_font_family: str = "DG Noto Sans SC"
+    heading_font_family: str = "DG Lanting Kanhei"
     heading_fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Sans SC", "Source Han Sans CN", "SimHei", "sans-serif"])
-    body_font_size_pt: float = 10.5
-    min_body_font_size_pt: float = 10.0
-    line_height: float = 18.0 / 10.5
+    body_font_size_pt: float = 10.9
+    min_body_font_size_pt: float = 10.5
+    line_height: float = 17.0 / 10.9
     column_gap_pt: float = 31.0
     text_indent: str = "2em"
     title_color: str = "#231f20"
@@ -362,8 +362,8 @@ class TypesetConfig:
     display_font_size_pt: float = 30.0
     section_font_size_pt: float = 20.0
     accent_font_size_pt: float = 15.0
-    subsection_font_size_pt: float = 12.0
-    running_header_font_size_pt: float = 14.0
+    subsection_font_size_pt: float = 13.0
+    running_header_font_size_pt: float = 11.0
     table_font_size_pt: float = 9.0
     embedded_font_dir: str = "assets/typeset_fonts"
     translation_concurrency: int = 4

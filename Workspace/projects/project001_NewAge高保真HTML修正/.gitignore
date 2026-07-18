@@ -1,0 +1,12 @@
+01_inputs/*.pdf
+01_inputs/*.png
+01_inputs/*.html
+01_inputs/*.json
+01_inputs/current_output/assets/
+01_inputs/current_output/*.html
+01_inputs/current_output/*.json
+02_working/rendered/
+02_working/browser_all/
+02_working/*.json
+02_working/*.png
+03_outputs/

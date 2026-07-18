@@ -79,6 +79,15 @@ def _normalized_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "").lower()
 
 
+_TIMELINE_DATE_LINE_RE = re.compile(
+    r"^(?:"
+    r"\d{1,2}\s+[A-Z]{3,9}\s+\d{4}"
+    r"|\d{4}年\d{1,2}月\d{1,2}日"
+    r"|\d{4}(?:[–—-]\d{4})?"
+    r")$"
+)
+
+
 def _union_block_bboxes(
     blocks: list[ContentBlock],
     region_map: dict[str, list[float]],
@@ -366,6 +375,34 @@ window.addEventListener('resize', typesetFitPagesToViewport);
         font_dir = self.config.embedded_font_dir.replace("\\", "/").strip("/")
         return f"""
 @font-face {{
+    font-family: "DG Fandol Song";
+    src: url("{font_dir}/fusion-fandol-song.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}}
+@font-face {{
+    font-family: "DG Fandol Kai";
+    src: url("{font_dir}/fusion-fandol-kai.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}}
+@font-face {{
+    font-family: "DG Moushi Meili";
+    src: url("{font_dir}/fusion-moushi-meili.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}}
+@font-face {{
+    font-family: "DG Lanting Kanhei";
+    src: url("{font_dir}/fusion-lanting-kanhei.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}}
+@font-face {{
     font-family: "DG Noto Serif SC";
     src: url("{font_dir}/noto-serif-sc-400.woff2") format("woff2");
     font-style: normal;
@@ -484,7 +521,7 @@ body {{
     position: absolute;
     overflow: hidden;
     color: {self.config.body_color};
-    font-size: {_pt_to_px(10.8):.3f}px;
+    font-size: {body_font_px:.3f}px;
 }}
 .typeset-reflow-columns {{
     display: flex;
@@ -564,6 +601,22 @@ body {{
 .font-role-meta {{
     font-family: {font_stack};
 }}
+.source-font-display-condensed {{
+    font-family: "DG Moushi Meili", {font_stack} !important;
+    font-weight: 400;
+    letter-spacing: 0.015em;
+}}
+.source-font-geometric {{
+    font-family: "DG Lanting Kanhei", {heading_font_stack} !important;
+}}
+.source-font-typewriter {{
+    font-family: "DG Fandol Kai", {font_stack} !important;
+    font-style: normal;
+    letter-spacing: 0.025em;
+}}
+.source-font-literary {{
+    font-family: {font_stack} !important;
+}}
 .source-style-italic {{
     font-style: italic;
 }}
@@ -579,6 +632,7 @@ body {{
 }}
 .typeset-region-flow .typeset-reflow-body {{
     line-height: {line_height};
+    margin-bottom: 0.72em;
 }}
 .typeset-region-flow .typeset-reflow-title {{
     margin: {_pt_to_px(10.0):.3f}px 0 {_pt_to_px(10.0):.3f}px 0;
@@ -611,16 +665,30 @@ body {{
 }}
 .typeset-timeline-flow {{
     position: absolute;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
     overflow: hidden;
-    column-gap: {_pt_to_px(18.0):.3f}px;
     font-size: {_pt_to_px(8.8):.3f}px;
     line-height: 1.28;
     color: {self.config.body_color};
 }}
 .typeset-timeline-event {{
-    break-inside: avoid;
-    margin: 0 0 {_pt_to_px(6.0):.3f}px 0;
+    margin: 0 0 {_pt_to_px(5.0):.3f}px 0;
     text-indent: 0;
+    background: rgba(239, 235, 220, 0.92);
+}}
+.typeset-timeline-date {{
+    padding: 0 {_pt_to_px(2.0):.3f}px {_pt_to_px(1.5):.3f}px;
+    border-bottom: 1px solid #1d1d1d;
+    font-family: {heading_font_stack};
+    font-size: 1.08em;
+    font-weight: 700;
+    line-height: 1.12;
+}}
+.typeset-timeline-body {{
+    padding: {_pt_to_px(2.0):.3f}px {_pt_to_px(5.0):.3f}px 0;
+    line-height: 1.25;
 }}
 .typeset-line-track-flow {{
     position: absolute;
@@ -739,7 +807,7 @@ body {{
     word-wrap: break-word;
     overflow-wrap: break-word;
     white-space: normal;
-    margin-bottom: 0.4em;
+    margin-bottom: 0.72em;
 }}
 .typeset-heading {{
     font-family: {heading_font_stack};
@@ -1074,9 +1142,10 @@ body {{
         page_content: PageContent,
         page_structure: PageStructure,
     ) -> str:
-        """Keep translated running headers and page numbers on art pages."""
+        """Keep fixed chrome and translated cover naming on art pages."""
         region_map = {region.id: region.bbox for region in page_structure.text_regions}
         parts: list[str] = []
+        is_cover = self._is_art_cover_page(page_content)
         for block in page_content.blocks:
             bbox = block.bbox or region_map.get(block.region_id)
             if bbox is None:
@@ -1085,7 +1154,58 @@ body {{
                 parts.append(self._render_running_header(block, page_structure, bbox))
             elif self._is_fixed_page_number(block):
                 parts.append(self._render_fixed_page_number(block, bbox))
+            elif is_cover and self._display_text_for_block(block):
+                parts.append(self._render_art_cover_block(block, page_structure, bbox))
         return "\n".join(parts)
+
+    def _is_art_cover_page(self, page_content: PageContent) -> bool:
+        if page_content.page_index != 0:
+            return False
+        naming_blocks = [
+            block
+            for block in page_content.blocks
+            if block.translatable
+            and block.role not in {SemanticRole.HEADER, SemanticRole.FOOTER}
+            and self._display_text_for_block(block)
+        ]
+        return (
+            len(naming_blocks) >= 2
+            and any(self._get_block_font_size(block) >= 24.0 for block in naming_blocks)
+        )
+
+    def _render_art_cover_block(
+        self,
+        block: ContentBlock,
+        page_structure: PageStructure,
+        bbox: list[float],
+    ) -> str:
+        x0, y0, x1, y1 = bbox
+        source_size = self._get_block_font_size(block)
+        is_title = source_size >= 24.0
+        text = self._display_text_for_block(block)
+        if is_title:
+            text = text.removeprefix("《").removesuffix("》")
+        font_size_pt = (
+            min(source_size, self.config.display_font_size_pt)
+            if is_title
+            else min(source_size, self.config.accent_font_size_pt)
+        )
+        background = "background:rgba(22,30,30,.92);" if is_title else ""
+        return (
+            f'<div class="typeset-positioned-block '
+            f'{"source-font-display-condensed" if is_title else "source-font-geometric"}" '
+            f'data-block-id="{html.escape(block.id)}" '
+            f'data-region-id="{html.escape(block.region_id)}" '
+            f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
+            f'width:{_pt_to_px_str(max(1.0, x1 - x0))};'
+            f'height:{_pt_to_px_str(max(1.0, y1 - y0))};'
+            f'font-size:{_pt_to_px_str(font_size_pt)};line-height:1;'
+            f'display:flex;align-items:center;justify-content:center;'
+            f'{background}'
+            f'text-align:center;white-space:nowrap;color:#ffffff;'
+            f'font-weight:400;text-shadow:0 1px 3px rgba(0,0,0,.95)">'
+            f"{html.escape(text)}</div>"
+        )
 
     def render_page_visual_layer(self, page_visual: str, page_index: int) -> str:
         """Render the verified text-free SVG for one source page."""
@@ -1142,6 +1262,22 @@ body {{
         source_page_blocks = [
             block for block in page_content.blocks if block.region_id in region_map
         ]
+        if self._is_timeline_page(source_page_blocks):
+            timeline_blocks: list[ContentBlock] = []
+            for block in source_page_blocks:
+                bbox = block.bbox or region_map.get(block.region_id)
+                if bbox is None:
+                    continue
+                if self._is_running_header(block):
+                    fixed_parts.append(self._render_running_header(block, page_structure, bbox))
+                elif self._is_fixed_page_number(block):
+                    fixed_parts.append(self._render_fixed_page_number(block, bbox))
+                elif block.role != SemanticRole.FOOTER and self._display_text_for_block(block):
+                    timeline_blocks.append(block)
+            return "\n".join([
+                self._render_timeline_page(timeline_blocks, region_map, page_structure),
+                *fixed_parts,
+            ])
         table_groups: list[list[ContentBlock]] = []
         current_table_group: list[ContentBlock] = []
         for block in source_page_blocks:
@@ -1247,9 +1383,16 @@ body {{
                 block.order,
             ),
         )
-        if self._is_timeline_page(content_blocks):
+        if self._is_stacked_card_page(content_blocks, region_map, page_structure):
             return "\n".join([
-                self._render_timeline_page(content_blocks, region_map, page_structure),
+                *[
+                    self._render_positioned_single_block(
+                        block,
+                        page_structure,
+                        block.bbox or region_map[block.region_id],
+                    )
+                    for block in content_blocks
+                ],
                 *fixed_parts,
             ])
         if self._is_centered_stack_page(content_blocks, region_map, page_structure):
@@ -1405,20 +1548,21 @@ body {{
                     ))
                 consumed.update(block.id for block in column_blocks)
                 continue
-            flow_bbox = self._extend_column_to_next_obstacle(
+            for flow_bbox, flow_blocks in self._split_column_at_obstacles(
                 column.bbox,
-                positioned_bboxes,
-                page_structure,
-            )
-            column_parts.append(self._render_source_column_flow(
-                column.side,
-                flow_bbox,
                 column_blocks,
-                text_by_id,
+                positioned_bboxes,
                 region_map,
-                page_structure,
-                collision_bbox=column.bbox,
-            ))
+            ):
+                column_parts.append(self._render_source_column_flow(
+                    column.side,
+                    flow_bbox,
+                    flow_blocks,
+                    text_by_id,
+                    region_map,
+                    page_structure,
+                    collision_bbox=flow_bbox,
+                ))
             consumed.update(block.id for block in column_blocks)
 
         for block in content_blocks:
@@ -1434,31 +1578,56 @@ body {{
             return ""
         return "\n".join([*column_parts, *parts])
 
-    def _extend_column_to_next_obstacle(
+    def _split_column_at_obstacles(
         self,
-        bbox: list[float],
+        column_bbox: list[float],
+        blocks: list[ContentBlock],
         positioned_bboxes: list[list[float]],
-        page_structure: PageStructure,
-    ) -> list[float]:
-        """Use free vertical space until the next fixed heading/card."""
-        x0, y0, x1, y1 = bbox
-        candidates = [
-            obstacle[1]
-            for obstacle in positioned_bboxes
-            if obstacle[1] > y1 and min(x1, obstacle[2]) > max(x0, obstacle[0])
-        ]
-        candidates.extend(
-            image.bbox[1]
-            for image in page_structure.images
-            if (
-                image.bbox[1] > y1
-                and min(x1, image.bbox[2]) > max(x0, image.bbox[0])
-                and not self._is_full_page_image(image.bbox, page_structure)
-                and not self._is_thin_decoration_image(image.bbox)
-            )
+        region_map: dict[str, list[float]],
+    ) -> list[tuple[list[float], list[ContentBlock]]]:
+        x0, y0, x1, y1 = column_bbox
+        obstacles = sorted(
+            [
+                obstacle
+                for obstacle in positioned_bboxes
+                if (
+                    obstacle[3] > y0
+                    and obstacle[1] < y1
+                    and min(x1, obstacle[2]) - max(x0, obstacle[0])
+                    >= min(x1 - x0, obstacle[2] - obstacle[0]) * 0.2
+                )
+            ],
+            key=lambda obstacle: obstacle[1],
         )
-        next_top = min(candidates) if candidates else page_structure.height - 50.0
-        return [x0, y0, x1, max(y1, next_top - 3.0)]
+        ordered = sorted(
+            blocks,
+            key=lambda block: (
+                (block.bbox or region_map[block.region_id])[1],
+                (block.bbox or region_map[block.region_id])[0],
+                block.order,
+            ),
+        )
+        groups: dict[int, list[ContentBlock]] = {}
+        for block in ordered:
+            bbox = block.bbox or region_map[block.region_id]
+            center_y = (bbox[1] + bbox[3]) / 2
+            section = sum(1 for obstacle in obstacles if center_y >= obstacle[3])
+            groups.setdefault(section, []).append(block)
+
+        result: list[tuple[list[float], list[ContentBlock]]] = []
+        for section, group in sorted(groups.items()):
+            group_boxes = [block.bbox or region_map[block.region_id] for block in group]
+            top = max(y0, min(bbox[1] for bbox in group_boxes))
+            next_obstacle_top = (
+                obstacles[section][1]
+                if section < len(obstacles)
+                else y1
+            )
+            bottom = min(y1, max(max(bbox[3] for bbox in group_boxes), next_obstacle_top - 3.0))
+            if bottom <= top:
+                raise ValueError("正文分段区域高度无效")
+            result.append(([x0, top, x1, bottom], group))
+        return result
 
     def _is_overwide_column_bbox(
         self,
@@ -1583,12 +1752,52 @@ body {{
         )
 
     def _is_timeline_page(self, blocks: list[ContentBlock]) -> bool:
-        date_blocks = [block for block in blocks if self._looks_like_timeline_event(block)]
-        return len(date_blocks) >= 5
+        return sum(
+            len(self._timeline_date_lines(block.source_text or block.translated_text or ""))
+            for block in blocks
+        ) >= 5
 
     def _looks_like_timeline_event(self, block: ContentBlock) -> bool:
-        text = (block.source_text or block.translated_text or "").strip()
-        return bool(re.match(r"^\d{1,2}\s+[A-Z][A-Z]+\s+\d{4}\b", text))
+        return bool(self._timeline_date_lines(block.source_text or block.translated_text or ""))
+
+    def _timeline_date_lines(self, text: str) -> list[str]:
+        return [
+            line
+            for line in (part.strip() for part in text.replace("\r", "").split("\n"))
+            if _TIMELINE_DATE_LINE_RE.fullmatch(line)
+        ]
+
+    def _timeline_events_for_blocks(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> list[tuple[str, str]]:
+        events: list[tuple[str, str]] = []
+        current_date = ""
+        description: list[str] = []
+        ordered = sorted(
+            blocks,
+            key=lambda block: (
+                (block.bbox or region_map[block.region_id])[1],
+                (block.bbox or region_map[block.region_id])[0],
+                block.order,
+            ),
+        )
+        for block in ordered:
+            text = self._display_text_for_block(block)
+            for line in (part.strip() for part in text.replace("\r", "").split("\n")):
+                if not line:
+                    continue
+                if _TIMELINE_DATE_LINE_RE.fullmatch(line):
+                    if current_date:
+                        events.append((current_date, " ".join(description).strip()))
+                    current_date = line
+                    description = []
+                else:
+                    description.append(line)
+        if current_date:
+            events.append((current_date, " ".join(description).strip()))
+        return events
 
     def _render_timeline_page(
         self,
@@ -1612,48 +1821,80 @@ body {{
 
         parts: list[str] = []
         if intro_blocks:
-            intro_boxes = [region_map[block.region_id] for block in intro_blocks]
-            x0 = min(bbox[0] for bbox in intro_boxes)
-            y0 = min(bbox[1] for bbox in intro_boxes)
-            x1 = max(bbox[2] for bbox in intro_boxes)
-            y1 = max(bbox[3] for bbox in intro_boxes)
-            intro = "".join(
-                f'<p class="typeset-timeline-event">{self._format_text(self._display_text_for_block(block))}</p>'
+            parts.extend(
+                self._render_source_positioned_block(
+                    block,
+                    page_structure,
+                    block.bbox or region_map[block.region_id],
+                )
                 for block in intro_blocks
             )
+
+        midpoint = page_structure.width / 2
+        column_blocks = [
+            [
+                block
+                for block in event_blocks
+                if ((block.bbox or region_map[block.region_id])[0] + (block.bbox or region_map[block.region_id])[2]) / 2 < midpoint
+            ],
+            [
+                block
+                for block in event_blocks
+                if ((block.bbox or region_map[block.region_id])[0] + (block.bbox or region_map[block.region_id])[2]) / 2 >= midpoint
+            ],
+        ]
+        for side, blocks_in_column in zip(("left", "right"), column_blocks):
+            if not blocks_in_column:
+                continue
+            boxes = [block.bbox or region_map[block.region_id] for block in blocks_in_column]
+            x0 = max(36.0, min(bbox[0] for bbox in boxes))
+            y0 = min(bbox[1] for bbox in boxes)
+            x1 = min(page_structure.width - 36.0, max(bbox[2] for bbox in boxes))
+            y1 = min(page_structure.height - 50.0, max(bbox[3] for bbox in boxes))
+            rendered_events = []
+            for date, description in self._timeline_events_for_blocks(blocks_in_column, region_map):
+                body = (
+                    f'<div class="typeset-timeline-body">{html.escape(description)}</div>'
+                    if description else ""
+                )
+                rendered_events.append(
+                    '<div class="typeset-timeline-event">'
+                    f'<div class="typeset-timeline-date">{html.escape(date)}</div>'
+                    f"{body}</div>"
+                )
             parts.append(
-                f'<div class="typeset-timeline-intro" '
+                f'<div class="typeset-timeline-flow" data-column="{side}" data-fit="reflow" '
                 f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
                 f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)}">'
-                f"{intro}</div>"
+                f"{''.join(rendered_events)}</div>"
             )
-
-        boxes = [region_map[block.region_id] for block in event_blocks]
-        x0 = max(42.0, min(bbox[0] for bbox in boxes))
-        y0 = min(bbox[1] for bbox in boxes)
-        x1 = min(page_structure.width - 42.0, max(bbox[2] for bbox in boxes))
-        y1 = min(page_structure.height - 50.0, max(bbox[3] for bbox in boxes))
-        columns = 3 if x1 - x0 >= page_structure.width * 0.65 else 2
-        column_width = max(1.0, (x1 - x0) / columns)
-        ordered = sorted(
-            event_blocks,
-            key=lambda block: (
-                int((((region_map[block.region_id][0] + region_map[block.region_id][2]) / 2) - x0) / column_width),
-                region_map[block.region_id][1],
-            ),
-        )
-        events = "".join(
-            f'<p class="typeset-timeline-event">{self._format_text(self._display_text_for_block(block))}</p>'
-            for block in ordered
-            if self._display_text_for_block(block)
-        )
-        parts.append(
-            f'<div class="typeset-timeline-flow" '
-            f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
-            f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)};'
-            f'column-count:{columns}">{events}</div>'
-        )
         return "\n".join(parts)
+
+    def _is_stacked_card_page(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+        page_structure: PageStructure,
+    ) -> bool:
+        wide_boxes = sorted(
+            [
+                block.bbox or region_map[block.region_id]
+                for block in blocks
+                if (block.bbox or region_map[block.region_id])[2]
+                - (block.bbox or region_map[block.region_id])[0]
+                >= page_structure.width * 0.65
+            ],
+            key=lambda bbox: bbox[1],
+        )
+        if len(wide_boxes) < 3:
+            return False
+        large_gaps = sum(
+            1
+            for previous, current in zip(wide_boxes, wide_boxes[1:])
+            if current[1] - previous[3] >= 20.0
+        )
+        vertical_span = wide_boxes[-1][3] - wide_boxes[0][1]
+        return large_gaps >= 2 and vertical_span >= page_structure.height * 0.55
 
     def _is_centered_stack_page(
         self,
@@ -2161,6 +2402,8 @@ body {{
                 kept_text = _normalized_text(kept.source_text)
                 if not kept_text:
                     continue
+                if self._block_renders_as_heading(block) != self._block_renders_as_heading(kept):
+                    continue
                 if not self._boxes_overlap(region_map[block.region_id], region_map[kept.region_id]):
                     continue
                 if text in kept_text:
@@ -2382,29 +2625,38 @@ body {{
         text = (text if text is not None else self._display_text_for_block(block)).strip()
         if not text:
             return ""
-        role_class = self._font_role_class(block)
+        role_class = f"{self._font_role_class(block)} {self._source_font_class(block)}"
+        color = self._block_text_color(block)
         block_attrs = (
             f' data-block-id="{html.escape(block.id)}"'
             f' data-region-id="{html.escape(block.region_id)}"'
         )
         if block.font_role == FontRole.DISPLAY or block.role == SemanticRole.TITLE:
             escaped = self._format_text(text)
-            return f'<h1 class="typeset-reflow-title {role_class}"{block_attrs}>{escaped}</h1>'
+            return (
+                f'<h1 class="typeset-reflow-title {role_class}"{block_attrs} '
+                f'style="color:{html.escape(color)}">{escaped}</h1>'
+            )
         if block.font_role == FontRole.SECTION:
             escaped = self._format_text(text)
             if self._block_is_accent_heading(block):
                 size_px = _pt_to_px(self.config.accent_font_size_pt)
                 return (
                     f'<h2 class="typeset-reflow-subtitle {role_class}"{block_attrs} '
-                    f'style="font-size:{_px(size_px)}">{escaped}</h2>'
+                    f'style="font-size:{_px(size_px)};color:{html.escape(color)}">{escaped}</h2>'
                 )
-            return f'<h2 class="typeset-reflow-section {role_class}"{block_attrs}>{escaped}</h2>'
+            return (
+                f'<h2 class="typeset-reflow-section {role_class}"{block_attrs} '
+                f'style="color:{html.escape(color)}">{escaped}</h2>'
+            )
         if block.font_role == FontRole.CALLOUT:
             escaped = self._format_text(text)
-            return f'<h3 class="typeset-reflow-callout {role_class}"{block_attrs}>{escaped}</h3>'
+            return (
+                f'<h3 class="typeset-reflow-callout {role_class}"{block_attrs} '
+                f'style="color:{html.escape(color)}">{escaped}</h3>'
+            )
         if block.font_role == FontRole.SUBSECTION or block.role == SemanticRole.SUBTITLE:
             escaped = self._format_text(text)
-            color = self._block_text_color(block)
             return (
                 f'<h3 class="typeset-reflow-subtitle {role_class}"{block_attrs} '
                 f'style="color:{html.escape(color)}">{escaped}</h3>'
@@ -2417,10 +2669,33 @@ body {{
             f' data-paragraph-id="{html.escape(block.paragraph_id)}"'
             if block.paragraph_id else ""
         )
-        return f'<p class="{class_name}"{block_attrs}{paragraph_attr}>{escaped}</p>'
+        indent = self.config.text_indent if self._source_paragraph_is_indented(block) else "0"
+        return (
+            f'<p class="{class_name}"{block_attrs}{paragraph_attr} '
+            f'style="text-indent:{html.escape(indent)}">{escaped}</p>'
+        )
 
     def _font_role_class(self, block: ContentBlock) -> str:
         return f"font-role-{block.font_role.value.replace('_', '-')}"
+
+    def _source_font_class(self, block: ContentBlock) -> str:
+        source_font = (block.source_font or "").lower()
+        if "industria" in source_font:
+            return (
+                "source-font-geometric"
+                if self._block_is_accent_heading(block)
+                else "source-font-display-condensed"
+            )
+        if "vt323" in source_font or "mono" in source_font or "courier" in source_font:
+            return "source-font-typewriter"
+        if "futura" in source_font:
+            return "source-font-geometric"
+        if "sabon" in source_font or "serif" in source_font:
+            return "source-font-literary"
+        return "source-font-default"
+
+    def _source_paragraph_is_indented(self, block: ContentBlock) -> bool:
+        return block.first_line_indent_pt >= max(6.0, self.config.body_font_size_pt * 0.7)
 
     def _source_style_classes(self, block: ContentBlock) -> str:
         visible = [run for run in block.runs if run.text.strip()]
@@ -2781,16 +3056,19 @@ body {{
         left_side = (x0 + x1) / 2 < page_structure.width / 2
         slot_x0 = x0 if left_side else max(page_structure.width / 2, x0 - 80.0)
         slot_x1 = min(page_structure.width / 2, x1 + 80.0) if left_side else x1
-        text = html.escape(self._display_text_for_block(block))
+        text = html.escape(f"// {self._display_text_for_block(block)} //")
         return (
-            f'<div class="typeset-positioned-block {self._font_role_class(block)}" '
+            f'<div class="typeset-positioned-block source-font-display-condensed '
+            f'{self._font_role_class(block)}" '
             f'data-block-id="{html.escape(block.id)}" '
             f'data-region-id="{html.escape(block.region_id)}" '
             f'style="left:{_pt_to_px_str(slot_x0)};top:{_pt_to_px_str(y0)};'
             f'width:{_pt_to_px_str(max(1.0, slot_x1 - slot_x0))};'
             f'height:{_pt_to_px_str(max(14.0, y1 - y0))};'
             f'font-size:{_pt_to_px_str(self.config.running_header_font_size_pt)};'
-            f'line-height:1;text-align:{"left" if left_side else "right"};'
+            f'font-weight:400;line-height:1;display:flex;align-items:flex-end;'
+            f'justify-content:{"flex-start" if left_side else "flex-end"};'
+            f'text-align:{"left" if left_side else "right"};padding-bottom:2px;'
             f'white-space:nowrap;color:{html.escape(self.config.title_color)}">'
             f"{text}</div>"
         )
@@ -2910,7 +3188,7 @@ body {{
     def _block_text_color(self, block: ContentBlock) -> str:
         """Pick the source text color that should carry over to translated text."""
         source_color = self._source_text_color(block)
-        if source_color and self._is_light_color(source_color):
+        if source_color:
             return source_color
         if block.role == SemanticRole.TITLE and (block.source_text or "").lstrip().startswith(">>"):
             return self.config.subtitle_color
@@ -2918,8 +3196,6 @@ body {{
             return self.config.title_color
         if block.role == SemanticRole.SUBTITLE or self._looks_like_subtitle(block):
             return self.config.subtitle_color
-        if source_color:
-            return source_color
         return "#000000"
 
     def _source_text_color(self, block: ContentBlock) -> str:
@@ -2941,6 +3217,7 @@ body {{
     def _block_is_accent_heading(self, block: ContentBlock) -> bool:
         accent_colors = {
             self.config.subtitle_color.lower(),
+            "#eb4f24",
             "#ed1c24",
             "#dc2527",
         }
@@ -3036,9 +3313,10 @@ body {{
         ]
 
         return (
-            f'<{tag} class="typeset-heading {self._font_role_class(block)}" '
+            f'<{tag} class="typeset-heading {self._font_role_class(block)} '
+            f'{self._source_font_class(block)}" '
             f'data-block-id="{html.escape(block.id)}" '
-            f'style="{";".join(style_parts)}">'
+            f'style="{";".join(style_parts)};color:{html.escape(self._block_text_color(block))}">'
             f"{escaped_text}"
             f"</{tag}>"
         )
@@ -3056,15 +3334,21 @@ body {{
             else "typeset-reflow-subsection"
         )
         return (
-            f'<h3 class="typeset-heading {extra_class} {role_class}" '
+            f'<h3 class="typeset-heading {extra_class} {role_class} '
+            f'{self._source_font_class(block)}" '
             f'data-block-id="{html.escape(block.id)}" '
             f'style="font-size:{_px(font_size_px)};'
-            f'font-weight:{self._source_font_weight(block)}">'
+            f'font-weight:{self._source_font_weight(block)};'
+            f'color:{html.escape(self._block_text_color(block))}">'
             f"{escaped_text}</h3>"
         )
 
     def _source_font_weight(self, block: ContentBlock) -> str:
-        return "700" if any(run.bold for run in block.runs if run.text.strip()) else "400"
+        source_font = (block.source_font or "").lower()
+        if "industria" in source_font:
+            return "400"
+        is_heavy_family = "bold" in source_font or "solid" in source_font
+        return "700" if is_heavy_family or any(run.bold for run in block.runs if run.text.strip()) else "400"
 
     def _render_body_block(
         self, block: ContentBlock, text: str, font_size_pt: float
@@ -3080,13 +3364,16 @@ body {{
         body_px = self._body_font_size_px()
         if abs(font_size_px - body_px) > 0.1:
             style_parts.append(f"font-size:{_px(font_size_px)}")
+        style_parts.append(
+            f"text-indent:{self.config.text_indent if self._source_paragraph_is_indented(block) else '0'}"
+        )
         if self._looks_like_timeline_text(block, text):
             style_parts.append("text-indent:0")
             style_parts.append("line-height:1.25")
 
         style_attr = f' style="{";".join(style_parts)}"' if style_parts else ""
         class_name = (
-            f"typeset-body-text {self._font_role_class(block)}"
+            f"typeset-body-text {self._font_role_class(block)} {self._source_font_class(block)}"
             f"{self._source_style_classes(block)}"
         )
         if self._looks_like_timeline_text(block, text):

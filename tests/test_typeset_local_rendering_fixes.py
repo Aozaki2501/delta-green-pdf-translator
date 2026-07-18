@@ -327,6 +327,15 @@ def test_art_page_renders_translated_running_headers_and_page_number():
 
     assert "绿色三角洲" in html
     assert "死信" in html
+    assert "// 绿色三角洲 //" in html
+    assert "// 死信 //" in html
+    assert "source-font-display-condensed" in html
+    assert "font-size:14.667px" in html
+    assert "justify-content:flex-start" in html
+    assert "justify-content:flex-end" in html
+    assert "text-align:left" in html
+    assert "text-align:right" in html
+    assert "align-items:flex-end" in html
     assert ">11<" in html
     assert html.count('data-block-id="left-header-block"') == 1
     assert html.count('data-block-id="right-header-block"') == 1

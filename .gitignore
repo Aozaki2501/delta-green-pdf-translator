@@ -16,3 +16,4 @@ scratch/
 .kiro/steering/
 diag_*.py
 test_card_*.py
+.playwright-cli/

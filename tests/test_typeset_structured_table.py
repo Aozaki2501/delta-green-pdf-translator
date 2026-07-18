@@ -383,13 +383,13 @@ def test_two_table_groups_on_one_page_render_as_two_tables():
     assert html.count("<table") == 2
 
 
-def test_non_table_body_keeps_reflow_and_eighteen_point_line_height():
+def test_non_table_body_keeps_reflow_and_fusion_style_line_height():
     structure, content = _html_table_fixture(include_body=True)
     html = TypesetHTMLRebuilder().rebuild_document(structure, content)
 
     assert "typeset-reflow-body" in html or "typeset-region-flow" in html
-    # The stylesheet may express 18pt as the configured ratio (18 / 10.5),
-    # or as an equivalent absolute CSS length.
+    # The stylesheet uses the 17pt / 10.9pt ratio measured from the
+    # Chinese reference layout.
     body_rules = re.findall(
         r"(?:\.typeset-reflow-body|\.typeset-body-text)[^{]*\{(?P<body>.*?)\}",
         html,
@@ -397,7 +397,7 @@ def test_non_table_body_keeps_reflow_and_eighteen_point_line_height():
     )
     assert body_rules
     assert any(
-        re.search(r"line-height:\s*(?:1\.714|24(?:\.0+)?px|18pt)", rule)
+        re.search(r"line-height:\s*(?:1\.559|22\.667px|17pt)", rule)
         for rule in body_rules
     )
 
@@ -463,14 +463,14 @@ def test_positioned_display_respects_source_size_and_is_not_clipped():
     assert "overflow:hidden" not in positioned_rule.group("body").replace(" ", "")
 
 
-def test_html_body_prefers_registered_dg_noto_serif_sc_font():
+def test_html_body_prefers_registered_fandol_song_font():
     css = TypesetHTMLRebuilder()._build_global_css(8.5, 11.0)
 
     assert re.search(
-        r"@font-face\s*\{[^}]*font-family:\s*[\"']DG Noto Serif SC[\"']",
+        r"@font-face\s*\{[^}]*font-family:\s*[\"']DG Fandol Song[\"']",
         css,
         re.DOTALL,
     )
     body_rule = re.search(r"body\s*\{(?P<body>.*?)\}", css, re.DOTALL)
     assert body_rule
-    assert re.search(r"font-family:\s*[\"']DG Noto Serif SC[\"']\s*,", body_rule.group("body"))
+    assert re.search(r"font-family:\s*[\"']DG Fandol Song[\"']\s*,", body_rule.group("body"))

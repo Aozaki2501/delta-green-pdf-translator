@@ -401,6 +401,10 @@ class TypesetPipeline:
         """Copy the licensed embedded web fonts beside each HTML output."""
         source_dir = Path(__file__).resolve().parent.parent / "assets" / "typeset_fonts"
         required = (
+            "fusion-fandol-song.woff2",
+            "fusion-fandol-kai.woff2",
+            "fusion-lanting-kanhei.woff2",
+            "fusion-moushi-meili.woff2",
             "noto-serif-sc-400.woff2",
             "noto-serif-sc-700.woff2",
             "noto-sans-sc-400.woff2",
