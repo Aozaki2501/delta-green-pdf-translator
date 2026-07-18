@@ -9,6 +9,7 @@ import subprocess
 import sys
 import uuid
 import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 
 import streamlit as st
@@ -64,7 +65,27 @@ def render_downloads(paths, label_prefix="下载"):
             )
 
 
-def make_html_asset_bundle(html_path: str | Path) -> str | None:
+class _HTMLAssetReferenceParser(HTMLParser):
+    """Collect explicit local asset references from generated HTML."""
+
+    def __init__(self):
+        super().__init__()
+        self.references: set[str] = set()
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            if name not in {"src", "href", "poster"} or not value:
+                continue
+            clean = value.split("#", 1)[0].split("?", 1)[0].replace("\\", "/")
+            if clean.startswith("assets/"):
+                self.references.add(clean)
+
+
+def make_html_asset_bundle(
+    html_path: str | Path,
+    *,
+    referenced_only: bool = False,
+) -> str | None:
     html_file = Path(html_path)
     if not html_file.exists():
         return None
@@ -72,12 +93,26 @@ def make_html_asset_bundle(html_path: str | Path) -> str | None:
     if not assets_dir.exists():
         return None
 
+    if referenced_only:
+        parser = _HTMLAssetReferenceParser()
+        parser.feed(html_file.read_text(encoding="utf-8"))
+        root = html_file.parent.resolve()
+        asset_files = []
+        for reference in sorted(parser.references):
+            asset = (html_file.parent / reference).resolve()
+            if asset != root and root not in asset.parents:
+                raise ValueError(f"HTML 资源路径越界：{reference}")
+            if not asset.is_file():
+                raise FileNotFoundError(f"HTML 引用的资源不存在：{asset}")
+            asset_files.append(asset)
+    else:
+        asset_files = [asset for asset in sorted(assets_dir.rglob("*")) if asset.is_file()]
+
     bundle_path = html_file.with_suffix(".html_assets.zip")
     with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.write(html_file, arcname=html_file.name)
-        for asset in sorted(assets_dir.rglob("*")):
-            if asset.is_file():
-                zf.write(asset, arcname=str(asset.relative_to(html_file.parent)))
+        for asset in asset_files:
+            zf.write(asset, arcname=str(asset.relative_to(html_file.parent)))
     return str(bundle_path)
 
 

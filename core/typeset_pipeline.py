@@ -16,8 +16,10 @@ Dependencies:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Callable
@@ -86,8 +88,12 @@ class TypesetPipeline:
         self._page_content_translated_path = (
             self.output_dir / "page_content_translated.json"
         )
+        self._page_visuals_manifest_path = self.output_dir / "page_visuals.json"
         self._html_path = (
             self.output_dir / f"{self._pdf_stem}_typeset.html"
+        )
+        self._reading_html_path = (
+            self.output_dir / f"{self._pdf_stem}_reading.html"
         )
         self._pdf_output_path = (
             self.output_dir / f"{self._pdf_stem}_typeset.pdf"
@@ -104,6 +110,7 @@ class TypesetPipeline:
         self._end_page: int | None = None
         self._progress_callback: Callable | None = None
         self._errors: list[str] = []
+        self._source_sha256_cache: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -114,17 +121,27 @@ class TypesetPipeline:
         start_page: int = 0,
         end_page: int | None = None,
         progress_callback: Callable[[str, int, int], None] | None = None,
+        export_pdf: bool = True,
+        export_typeset_html: bool = True,
+        export_reading_html: bool = False,
     ) -> TypesetResult:
         """Execute the full typeset pipeline.
 
-        Runs Phase A → B → C → D → E sequentially. Supports checkpoint/
-        resume: if intermediate files exist and have matching schema
-        versions, the corresponding phase is skipped.
+        Runs Phase A → B → C → D, and optionally Phase E (PDF export),
+        sequentially. Supports checkpoint/resume: if intermediate files
+        exist and have matching schema versions, the corresponding phase is
+        skipped.
 
         Args:
             start_page: First page index (0-based, inclusive).
             end_page: Last page index (exclusive). None = all pages.
             progress_callback: Optional callback(phase_name, done, total).
+            export_pdf: Whether to run Phase E and produce a PDF. PDF export
+                        also creates the fixed-page HTML it renders from.
+            export_typeset_html: Whether to emit the fixed-page HTML. PDF
+                                 export always requires and creates it.
+            export_reading_html: Whether to emit the responsive illustrated
+                                 reading HTML from the same translated blocks.
 
         Returns:
             TypesetResult with paths and statistics.
@@ -134,34 +151,50 @@ class TypesetPipeline:
         self._progress_callback = progress_callback
         self._errors = []
 
+        if not (export_pdf or export_typeset_html or export_reading_html):
+            raise ValueError("至少选择一种图文重绘输出格式")
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self._report_progress("pipeline", 0, 5)
+        total_phases = 5 if export_pdf else 4
+        self._report_progress("pipeline", 0, total_phases)
 
         # Phase A: Page structure extraction
         structure = self.run_phase_a()
-        self._report_progress("pipeline", 1, 5)
+        self._report_progress("pipeline", 1, total_phases)
 
         # Phase B: Semantic analysis
         content = self.run_phase_b(structure)
         self.generate_layout_hints(structure, content)
         content = self.apply_layout_hints(structure, content)
-        self._report_progress("pipeline", 2, 5)
+        self._report_progress("pipeline", 2, total_phases)
 
         # Phase C: Translation
         translated_content = self.run_phase_c(content)
-        self._report_progress("pipeline", 3, 5)
+        self._report_progress("pipeline", 3, total_phases)
 
-        # Phase D: HTML rebuild
-        html_path = self.run_phase_d(structure, translated_content)
-        self._report_progress("pipeline", 4, 5)
+        # Phase D: selected HTML rebuilds share the same source translation.
+        html_path = None
+        if export_typeset_html or export_pdf:
+            html_path = self.run_phase_d(structure, translated_content)
+        reading_html_path = None
+        if export_reading_html:
+            reading_html_path = self.run_phase_reading_d(structure, translated_content)
+        self._report_progress("pipeline", 4, total_phases)
 
-        # Phase E: PDF export
-        pdf_path = self.run_phase_e(html_path)
-        self._report_progress("pipeline", 5, 5)
+        # Phase E: PDF export (optional; HTML is always emitted)
+        pdf_path = self.run_phase_e(html_path) if export_pdf and html_path else None
+        if export_pdf:
+            self._report_progress("pipeline", 5, total_phases)
 
         # Build result
-        result = self._build_result(structure, translated_content, html_path, pdf_path)
+        result = self._build_result(
+            structure,
+            translated_content,
+            html_path,
+            pdf_path,
+            reading_html_path=reading_html_path,
+        )
 
         # Generate error report
         self._write_report(result)
@@ -178,10 +211,13 @@ class TypesetPipeline:
         Returns:
             PageStructureDocument with all page structures.
         """
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
         # Check for existing page_structure.json with valid schema
         existing = self._load_existing_structure()
         if existing is not None:
             logger.info("Phase A: 复用已有 page_structure.json")
+            self._ensure_page_visuals(existing)
             return existing
 
         from core.page_structure import PageStructureExtractor
@@ -197,6 +233,7 @@ class TypesetPipeline:
         self._page_structure_path.write_text(
             structure.to_json(), encoding="utf-8"
         )
+        self._ensure_page_visuals(structure)
         self._mark_phase_completed("A")
         return structure
 
@@ -345,14 +382,58 @@ class TypesetPipeline:
         from exporters.typeset_html import TypesetHTMLRebuilder
 
         logger.info("Phase D: HTML 重建...")
+        self._ensure_typeset_fonts()
         rebuilder = TypesetHTMLRebuilder(config=self.config)
-        html_content = rebuilder.rebuild_document(structure, content)
+        page_visuals = self._load_page_visuals_for_structure(structure)
+        html_content = rebuilder.rebuild_document(
+            structure,
+            content,
+            page_visuals=page_visuals,
+        )
 
         # Save HTML file
         self._html_path.parent.mkdir(parents=True, exist_ok=True)
         self._html_path.write_text(html_content, encoding="utf-8")
         self._mark_phase_completed("D")
         return str(self._html_path)
+
+    def _ensure_typeset_fonts(self) -> None:
+        """Copy the licensed embedded web fonts beside each HTML output."""
+        source_dir = Path(__file__).resolve().parent.parent / "assets" / "typeset_fonts"
+        required = (
+            "noto-serif-sc-400.woff2",
+            "noto-serif-sc-700.woff2",
+            "noto-sans-sc-400.woff2",
+            "noto-sans-sc-700.woff2",
+            "OFL-NOTO-SERIF-SC.txt",
+            "OFL-NOTO-SANS-SC.txt",
+        )
+        missing = [name for name in required if not (source_dir / name).is_file()]
+        if missing:
+            raise FileNotFoundError(f"高保真 HTML 字体资源缺失：{missing}")
+        target_dir = self.output_dir / self.config.embedded_font_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for name in required:
+            shutil.copy2(source_dir / name, target_dir / name)
+
+    def run_phase_reading_d(
+        self,
+        structure: PageStructureDocument,
+        content: PageContentDocument,
+    ) -> str:
+        """Phase D companion: responsive illustrated reading HTML."""
+        from exporters.reading_html import ReadingHTMLRenderer
+
+        logger.info("Phase D: 图文阅读 HTML 重建...")
+        page_visuals = self._load_page_visuals_for_structure(structure)
+        html_content = ReadingHTMLRenderer().rebuild_document(
+            structure,
+            content,
+            page_visuals=page_visuals,
+        )
+        self._reading_html_path.parent.mkdir(parents=True, exist_ok=True)
+        self._reading_html_path.write_text(html_content, encoding="utf-8")
+        return str(self._reading_html_path)
 
     def run_phase_e(self, html_path: str) -> str | None:
         """Phase E: PDF export.
@@ -421,7 +502,7 @@ class TypesetPipeline:
                     "page_structure.json schema 版本不匹配，将重新提取"
                 )
                 return None
-            if not self._matches_current_source(doc.source_pdf):
+            if not self._matches_current_source(doc.source_pdf, doc.source_sha256):
                 logger.warning(
                     "page_structure.json 来源 PDF 不匹配，将重新提取"
                 )
@@ -448,7 +529,7 @@ class TypesetPipeline:
                     "page_content.json schema 版本不匹配，将重新分析"
                 )
                 return None
-            if not self._matches_current_source(doc.source_pdf):
+            if not self._matches_current_source(doc.source_pdf, doc.source_sha256):
                 logger.warning(
                     "page_content.json 来源 PDF 不匹配，将重新分析"
                 )
@@ -472,7 +553,7 @@ class TypesetPipeline:
             doc = PageContentDocument.from_json(text)
             if doc.schema_version != PAGE_CONTENT_SCHEMA_VERSION:
                 return None
-            if not self._matches_current_source(doc.source_pdf):
+            if not self._matches_current_source(doc.source_pdf, doc.source_sha256):
                 return None
             # Check if all translatable blocks have translations
             for page in doc.pages:
@@ -508,6 +589,96 @@ class TypesetPipeline:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _ensure_page_visuals(self, structure: PageStructureDocument) -> None:
+        """Create the authoritative clean SVG layer for every selected page."""
+        if self._page_visuals_manifest_path.exists():
+            self._load_page_visuals_for_structure(structure)
+            return
+
+        from core.page_visuals import PageVisualExtractor
+
+        logger.info("Phase A: 提取无原文文字的页面视觉层...")
+        with PageVisualExtractor(self.pdf_path, self.output_dir) as extractor:
+            pages = extractor.extract(
+                start_page=self._start_page,
+                end_page=self._end_page,
+            )
+
+        expected = {page.page_index + 1 for page in structure.pages}
+        actual = {int(page["page"]) for page in pages}
+        if actual != expected:
+            raise ValueError(
+                f"页面视觉资源范围不匹配：期望 {sorted(expected)}，实际 {sorted(actual)}"
+            )
+        source_sha256 = hashlib.sha256(Path(self.pdf_path).read_bytes()).hexdigest()
+        manifest = {
+            "schema_version": 1,
+            "source_pdf": Path(self.pdf_path).name,
+            "source_sha256": source_sha256,
+            "pages": pages,
+        }
+        self._page_visuals_manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        self._load_page_visuals_for_structure(structure)
+
+    def _load_page_visuals_for_structure(
+        self,
+        structure: PageStructureDocument,
+    ) -> dict[int, str]:
+        """Load and verify page-visual assets for a structure document."""
+        if not self._page_visuals_manifest_path.exists():
+            raise FileNotFoundError(f"页面视觉清单不存在：{self._page_visuals_manifest_path}")
+        data = json.loads(self._page_visuals_manifest_path.read_text(encoding="utf-8"))
+        if data.get("schema_version") != 1:
+            raise ValueError("页面视觉清单版本不兼容")
+
+        structure_hash = getattr(structure, "source_sha256", None)
+        manifest_hash = data.get("source_sha256")
+        try:
+            current_hash = self._current_source_sha256()
+        except OSError as exc:
+            raise FileNotFoundError(f"来源 PDF 不存在：{self.pdf_path}") from exc
+        if (
+            not structure_hash
+            or manifest_hash != structure_hash
+            or manifest_hash != current_hash
+        ):
+            raise ValueError("页面视觉清单来源 PDF 不匹配")
+
+        expected = {page.page_index for page in structure.pages}
+        result: dict[int, str] = {}
+        for item in data.get("pages", []):
+            page_index = int(item["page"]) - 1
+            relative_path = str(item["svg"])
+            output_root = self.output_dir.resolve()
+            asset_path = (self.output_dir / relative_path).resolve()
+            if asset_path != output_root and output_root not in asset_path.parents:
+                raise ValueError(f"页面视觉资源路径越界：{relative_path}")
+            if not asset_path.is_file():
+                raise FileNotFoundError(f"页面视觉资源不存在：{asset_path}")
+            digest = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+            if digest != item.get("sha256"):
+                raise ValueError(f"页面视觉资源哈希不匹配：{asset_path}")
+            if int(item.get("remaining_text_nodes", -1)) != 0:
+                raise ValueError(f"页面视觉资源仍含原文文字：{asset_path}")
+            if int(item.get("text_trace_count", -1)) != int(
+                item.get("removed_text_nodes", -2)
+            ):
+                raise ValueError(f"页面视觉资源文字映射不完整：{asset_path}")
+            if page_index in result:
+                raise ValueError(f"页面视觉清单重复页：{page_index + 1}")
+            result[page_index] = relative_path.replace("\\", "/")
+
+        if set(result) != expected:
+            missing = sorted(expected - set(result))
+            extra = sorted(set(result) - expected)
+            raise ValueError(
+                f"页面视觉资源不完整：缺少 {missing}，多出 {extra}"
+            )
+        return result
+
     def _resolve_layout_hints_path(self) -> Path | None:
         """Return the configured or conventional layout hints path."""
         configured = self.config.layout_hints_path
@@ -522,9 +693,22 @@ class TypesetPipeline:
             return candidate.resolve()
         return None
 
-    def _matches_current_source(self, source_pdf: str) -> bool:
-        """Return whether an intermediate JSON belongs to this uploaded PDF."""
-        return Path(source_pdf).name == Path(self.pdf_path).name
+    def _current_source_sha256(self) -> str:
+        """Return the exact digest of the current source PDF."""
+        if self._source_sha256_cache is None:
+            self._source_sha256_cache = hashlib.sha256(
+                Path(self.pdf_path).read_bytes()
+            ).hexdigest()
+        return self._source_sha256_cache
+
+    def _matches_current_source(self, source_pdf: str, source_sha256: str) -> bool:
+        """Return whether an intermediate JSON belongs to this exact PDF."""
+        if Path(source_pdf).name != Path(self.pdf_path).name or not source_sha256:
+            return False
+        try:
+            return source_sha256 == self._current_source_sha256()
+        except OSError:
+            return False
 
     def _ensure_no_translation_failed(
         self,
@@ -550,7 +734,7 @@ class TypesetPipeline:
             sample_error = failed_blocks.get(first_missing) or next(iter(failed_blocks.values()))
         detail = f"；首个错误：{sample_error}" if sample_error else ""
         raise RuntimeError(
-            f"纯重绘 PDF 翻译未完成：{len(missing)}/{len(translatable)} 个区域失败{detail}"
+            f"图文重绘翻译未完成：{len(missing)}/{len(translatable)} 个区域失败{detail}"
         )
 
     def _get_page_dimensions(self) -> tuple[float, float]:
@@ -584,6 +768,7 @@ class TypesetPipeline:
         content: PageContentDocument,
         html_path: str | None,
         pdf_path: str | None,
+        reading_html_path: str | None = None,
     ) -> TypesetResult:
         """Build the final TypesetResult from pipeline outputs."""
         translated_regions = 0
@@ -601,6 +786,7 @@ class TypesetPipeline:
         return TypesetResult(
             pdf_path=pdf_path,
             html_path=html_path,
+            reading_html_path=reading_html_path,
             page_structure_path=str(self._page_structure_path),
             page_content_path=str(self._page_content_path),
             total_pages=structure.page_count,
@@ -630,6 +816,7 @@ class TypesetPipeline:
             "failed_regions": result.failed_regions,
             "pdf_output": result.pdf_path,
             "html_output": result.html_path,
+            "reading_html_output": result.reading_html_path,
             "errors": result.export_errors,
             "usage": {
                 "input_tokens": result.input_tokens,

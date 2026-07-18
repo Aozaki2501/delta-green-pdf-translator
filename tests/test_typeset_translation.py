@@ -172,6 +172,24 @@ class TestTypesetTranslationProgress:
         progress.mark_completed("block_1", "text")
         assert progress.is_completed("block_1")
 
+    def test_source_hash_prevents_reusing_translation_for_changed_segment(self, tmp_path):
+        progress_file = str(tmp_path / "progress.json")
+        progress = TypesetTranslationProgress(progress_file)
+        progress.mark_completed("block_1", "旧译文", "old source")
+
+        assert progress.is_completed("block_1", "old source")
+        assert not progress.is_completed("block_1", "new source")
+
+    def test_legacy_progress_schema_is_not_reused(self, tmp_path):
+        progress_file = tmp_path / "progress.json"
+        progress_file.write_text(
+            '{"schema":1,"translations":{"block_1":"旧译文"}}',
+            encoding="utf-8",
+        )
+
+        progress = TypesetTranslationProgress(str(progress_file))
+        assert not progress.is_completed("block_1", "source")
+
     def test_mark_completed_clears_failed(self, tmp_path):
         progress_file = str(tmp_path / "progress.json")
         progress = TypesetTranslationProgress(progress_file)

@@ -5,7 +5,7 @@ This module is a leaf node in the dependency graph — it has no imports
 from other project modules.
 """
 
-PROMPT_VERSION = "2026-06-17-cache-warmup-core-glossary-v14"
+PROMPT_VERSION = "2026-07-07-adjacent-context-v15"
 EXTRACTOR_VERSION = "2026-06-18-bold-subheadings-v2"
 SUPPORTED_OUTPUT_FORMATS = {"markdown", "html", "word", "both", "all"}
 TRANSLATION_FAILURE_PREFIX = "[Translation failed:"

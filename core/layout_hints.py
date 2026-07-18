@@ -8,7 +8,7 @@ PDF geometry still comes from PyMuPDF extraction.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -194,6 +194,7 @@ def apply_hints_to_content(
         source_pdf=content.source_pdf,
         page_count=content.page_count,
         pages=pages,
+        source_sha256=content.source_sha256,
     )
 
 
@@ -259,15 +260,7 @@ def _parse_string_list(value, path: str) -> list[str]:
 def _apply_block_hint(block: ContentBlock, skip_ids: set[str]) -> ContentBlock:
     if block.id not in skip_ids:
         return block
-    return ContentBlock(
-        id=block.id,
-        region_id=block.region_id,
-        role=block.role,
-        runs=block.runs,
-        source_text=block.source_text,
-        translated_text=block.translated_text,
-        translatable=False,
-    )
+    return replace(block, translatable=False)
 
 
 def _order_blocks(blocks: list[ContentBlock], reading_order: list[str]) -> list[ContentBlock]:

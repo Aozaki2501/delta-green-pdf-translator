@@ -355,3 +355,112 @@ def test_pipeline_configured_hints_path_skips_generator(tmp_path):
     )
 
     assert pipeline.generate_layout_hints(_structure_doc(), _content_doc()) is None
+
+
+def _stub_pipeline_for_phase_control(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    structure = _structure_doc()
+    content = _content_doc()
+    monkeypatch.setattr(pipeline, "run_phase_a", lambda: structure)
+    monkeypatch.setattr(pipeline, "run_phase_b", lambda _structure: content)
+    monkeypatch.setattr(pipeline, "run_phase_c", lambda _content: content)
+    monkeypatch.setattr(
+        pipeline,
+        "run_phase_d",
+        lambda _structure, _content: str(tmp_path / "book_typeset.html"),
+    )
+    return pipeline
+
+
+def test_pipeline_without_pdf_export_skips_phase_e_and_reports_four_phases(tmp_path, monkeypatch):
+    pipeline = _stub_pipeline_for_phase_control(tmp_path, monkeypatch)
+    phase_events = []
+
+    def fail_if_called(_html_path):
+        raise AssertionError("Phase E must not run for HTML-only output")
+
+    monkeypatch.setattr(pipeline, "run_phase_e", fail_if_called)
+
+    result = pipeline.run(
+        export_pdf=False,
+        progress_callback=lambda phase, done, total: phase_events.append((phase, done, total)),
+    )
+
+    assert result.pdf_path is None
+    assert result.html_path.endswith("book_typeset.html")
+    assert [event for event in phase_events if event[0] == "pipeline"] == [
+        ("pipeline", 0, 4),
+        ("pipeline", 1, 4),
+        ("pipeline", 2, 4),
+        ("pipeline", 3, 4),
+        ("pipeline", 4, 4),
+    ]
+
+
+def test_pipeline_with_pdf_export_runs_phase_e_and_reports_five_phases(tmp_path, monkeypatch):
+    pipeline = _stub_pipeline_for_phase_control(tmp_path, monkeypatch)
+    phase_events = []
+    phase_e_calls = []
+    monkeypatch.setattr(
+        pipeline,
+        "run_phase_e",
+        lambda html_path: phase_e_calls.append(html_path) or str(tmp_path / "book_typeset.pdf"),
+    )
+
+    result = pipeline.run(
+        export_pdf=True,
+        progress_callback=lambda phase, done, total: phase_events.append((phase, done, total)),
+    )
+
+    assert phase_e_calls == [str(tmp_path / "book_typeset.html")]
+    assert result.pdf_path.endswith("book_typeset.pdf")
+    assert [event for event in phase_events if event[0] == "pipeline"][-1] == ("pipeline", 5, 5)
+
+
+def test_pipeline_reading_only_uses_same_translation_without_fixed_html(tmp_path, monkeypatch):
+    pipeline = _stub_pipeline_for_phase_control(tmp_path, monkeypatch)
+    reading_calls = []
+    monkeypatch.setattr(
+        pipeline,
+        "run_phase_reading_d",
+        lambda structure, content: reading_calls.append((structure, content))
+        or str(tmp_path / "book_reading.html"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_phase_d",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("fixed HTML must not run for reading-only output")
+        ),
+    )
+
+    result = pipeline.run(
+        export_pdf=False,
+        export_typeset_html=False,
+        export_reading_html=True,
+    )
+
+    assert len(reading_calls) == 1
+    assert result.html_path is None
+    assert result.reading_html_path.endswith("book_reading.html")
+
+
+def test_pipeline_rejects_empty_typeset_output_selection(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+
+    with pytest.raises(ValueError, match="至少选择"):
+        pipeline.run(
+            export_pdf=False,
+            export_typeset_html=False,
+            export_reading_html=False,
+        )

@@ -45,6 +45,27 @@ def test_pdf_glossary_goes_to_user_prompt_not_system_prompt():
     assert "Delta Green -> 绿色三角洲" in user_prompt
 
 
+def test_pdf_prompt_includes_readonly_adjacent_context():
+    translator = Translator("test-key")
+    fake_client = _FakeClient()
+    translator.client = fake_client
+
+    translator.translate_chunk(
+        "Current page scene.",
+        page_num=4,
+        prev_context="Previous page ending.",
+        next_context="Next page opening.",
+    )
+
+    user_prompt = fake_client.completions.calls[0]["messages"][1]["content"]
+    assert "[Previous page context - DO NOT translate, for reference only]" in user_prompt
+    assert "Previous page ending." in user_prompt
+    assert "[Next page context - DO NOT translate, for reference only]" in user_prompt
+    assert "Next page opening." in user_prompt
+    assert user_prompt.index("Previous page ending.") < user_prompt.index("Current page scene.")
+    assert user_prompt.index("Next page opening.") < user_prompt.index("Current page scene.")
+
+
 def test_markdown_glossary_goes_to_user_prompt_not_system_prompt():
     translator = Translator("test-key")
     fake_client = _FakeClient()
@@ -89,9 +110,18 @@ def test_core_glossary_is_stable_user_prompt_prefix():
 class _BatchTranslator:
     def __init__(self):
         self.call_order = []
+        self.contexts = []
 
-    def translate_chunk(self, text, page_num=None, prev_context="", cache=None):
+    def translate_chunk(
+        self,
+        text,
+        page_num=None,
+        prev_context="",
+        next_context="",
+        cache=None,
+    ):
         self.call_order.append(page_num)
+        self.contexts.append((page_num, prev_context, next_context))
         return f"译文 {page_num + 1}"
 
 
@@ -136,6 +166,27 @@ def test_batch_translation_warms_first_page_before_parallel_work():
         1: "译文 2",
         2: "译文 3",
     }
+
+
+def test_batch_translation_passes_next_context():
+    translator = _BatchTranslator()
+    tracker = _BatchTracker()
+    pages_data = [
+        (0, "First page", "", "Second context"),
+        (1, "Second page", "First context", "Third context"),
+    ]
+
+    translate_batch_concurrent(
+        pages_data,
+        translator,
+        tracker,
+        max_workers=1,
+    )
+
+    assert translator.contexts == [
+        (0, "", "Second context"),
+        (1, "First context", "Third context"),
+    ]
 
 
 def test_batch_translation_uses_rate_limit_and_cooldown(monkeypatch):

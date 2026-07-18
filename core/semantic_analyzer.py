@@ -9,7 +9,8 @@ Outputs a PageContentDocument that can be serialized to page_content.json.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import median
 
@@ -26,6 +27,7 @@ from core.typeset_models import (
     ColumnInfo,
     ContentBlock,
     DecorationElement,
+    FontRole,
     PageContent,
     PageContentDocument,
     PageStructure,
@@ -33,6 +35,7 @@ from core.typeset_models import (
     PageType,
     SemanticRole,
     StyledTextRun,
+    TextLineBBox,
     TextRegionBBox,
 )
 from core.utils import ensure_output_parent
@@ -48,6 +51,7 @@ class PageContext:
     median_font_size: float
     image_coverage: float  # fraction of page area covered by images
     gutter_x: float | None  # x-coordinate of column gutter, if detected
+    max_font_size: float = 0.0
 
 
 class SemanticAnalyzer:
@@ -94,6 +98,7 @@ class SemanticAnalyzer:
             source_pdf=structure.source_pdf,
             page_count=len(pages),
             pages=pages,
+            source_sha256=structure.source_sha256,
         )
 
     def analyze_page(self, page_structure: PageStructure) -> PageContent:
@@ -108,19 +113,17 @@ class SemanticAnalyzer:
         page_index = page_structure.page_index
         page = self.doc[page_index]
 
-        # Extract styled text for all regions first to compute median font size
-        region_runs: dict[str, list[StyledTextRun]] = {}
-        for region in page_structure.text_regions:
-            runs = self.extract_styled_text(region, page)
-            region_runs[region.id] = runs
-
-        # Compute median body font size across all regions
-        all_font_sizes = []
-        for runs in region_runs.values():
-            for run in runs:
-                if run.text.strip():
-                    all_font_sizes.append(run.font_size)
+        # Phase A already preserves the authoritative line/span geometry.
+        # Semantic analysis must not re-read and flatten the PDF text blocks.
+        all_font_sizes = [
+            float(span.font_size)
+            for region in page_structure.text_regions
+            for line in region.lines
+            for span in line.spans
+            if span.text.strip()
+        ]
         median_font_size = median(all_font_sizes) if all_font_sizes else 11.0
+        max_font_size = max(all_font_sizes) if all_font_sizes else median_font_size
 
         # Compute image coverage
         page_area = page_structure.width * page_structure.height
@@ -134,6 +137,13 @@ class SemanticAnalyzer:
 
         # Detect dual-column layout (gutter)
         gutter_x = self._detect_gutter(page_structure)
+        if gutter_x is None and page_type == PageType.COLUMNS and len(page_structure.text_regions) == 2:
+            left_region, right_region = sorted(
+                page_structure.text_regions,
+                key=lambda region: region.bbox[0],
+            )
+            if left_region.bbox[2] < right_region.bbox[0]:
+                gutter_x = (left_region.bbox[2] + right_region.bbox[0]) / 2
 
         # Build page context
         context = PageContext(
@@ -141,36 +151,47 @@ class SemanticAnalyzer:
             page_height=page_structure.height,
             page_type=page_type,
             median_font_size=median_font_size,
+            max_font_size=max_font_size,
             image_coverage=image_coverage,
             gutter_x=gutter_x,
         )
 
-        # Classify each region and build content blocks
+        # Split every source region into stable semantic segments. A single
+        # PDF text block may contain a heading followed by several paragraphs.
         blocks: list[ContentBlock] = []
-        dense_line_grid_page = _page_has_dense_line_grid(page_structure)
         for region in page_structure.text_regions:
-            runs = region_runs[region.id]
-            if not runs:
-                continue
+            if not region.lines:
+                raise ValueError(f"文本区域缺少行级结构：{region.id}")
+            region_blocks = self._segment_region(region, context, gutter_x)
+            if (
+                _region_inside_table_grid(region, page_structure)
+                and not any(
+                    block.role in {
+                        SemanticRole.TITLE,
+                        SemanticRole.HEADER,
+                        SemanticRole.FOOTER,
+                    }
+                    or (block.source_text or "").lstrip().startswith(">>")
+                    or (block.source_text or "").strip().startswith("//")
+                    for block in region_blocks
+                )
+            ):
+                region_blocks = [
+                    replace(
+                        block,
+                        role=SemanticRole.TABLE,
+                        font_role=FontRole.TABLE,
+                        layout_mode="table",
+                        translatable=block.translatable,
+                    )
+                    for block in region_blocks
+                ]
+            blocks.extend(region_blocks)
 
-            role = self.classify_region(region, context, runs)
-            if _region_inside_table_grid(region, page_structure):
-                role = SemanticRole.TABLE
-            source_text = "".join(run.text for run in runs)
-            translatable = not _is_fixed_nontranslatable_text(source_text, role)
-            if dense_line_grid_page and role == SemanticRole.TABLE:
-                translatable = False
-
-            block_id = f"{region.id}_b0001"
-            blocks.append(ContentBlock(
-                id=block_id,
-                region_id=region.id,
-                role=role,
-                runs=runs,
-                source_text=source_text,
-                translated_text=None,
-                translatable=translatable,
-            ))
+        blocks = _dedupe_overprinted_blocks(blocks)
+        if _structured_table_grid_bounds(page_structure) is not None:
+            blocks = _coalesce_structured_table_cells(blocks, page_structure)
+        blocks = [replace(block, order=index) for index, block in enumerate(blocks)]
 
         # Build column info for dual-column pages
         columns = self._build_column_info(blocks, page_structure, gutter_x, page_type)
@@ -181,6 +202,88 @@ class SemanticAnalyzer:
             columns=columns,
             blocks=blocks,
         )
+
+    def _segment_region(
+        self,
+        region: TextRegionBBox,
+        context: PageContext,
+        gutter_x: float | None,
+    ) -> list[ContentBlock]:
+        """Split one PDF region into headings and real paragraphs."""
+        line_specs: list[dict] = []
+        for line_index, line in enumerate(region.lines):
+            runs = _styled_runs_from_line(line, line_index)
+            if not runs:
+                continue
+            font_role, role = _classify_line_style(line, runs, context)
+            line_specs.append({
+                "line_index": line_index,
+                "line_id": f"{region.id}_l{line_index + 1:04d}",
+                "line": line,
+                "runs": runs,
+                "font_role": font_role,
+                "role": role,
+            })
+        if not line_specs:
+            return []
+
+        body_x0 = min(
+            (spec["line"].bbox[0] for spec in line_specs if spec["font_role"] == FontRole.BODY),
+            default=region.bbox[0],
+        )
+        groups: list[list[dict]] = []
+        current: list[dict] = []
+        for spec in line_specs:
+            if current and _starts_new_segment(current, spec, body_x0, context.median_font_size):
+                groups.append(current)
+                current = []
+            current.append(spec)
+        if current:
+            groups.append(current)
+
+        result: list[ContentBlock] = []
+        paragraph_index = 0
+        for block_index, group in enumerate(groups, start=1):
+            paragraph_index += 1
+            runs = [run for spec in group for run in spec["runs"]]
+            role = group[0]["role"]
+            font_role = group[0]["font_role"]
+            bbox = _union_bboxes([spec["line"].bbox for spec in group])
+            source_text = "\n".join(spec["line"].text.strip() for spec in group).strip()
+            column_id = _column_id_for_bbox(
+                bbox,
+                context.page_width,
+                gutter_x,
+                font_role=font_role,
+            )
+            first_indent = max(0.0, float(group[0]["line"].bbox[0]) - body_x0)
+            line_height = _median_line_advance(group)
+            source_font = _dominant_font(runs)
+            translatable = not _is_fixed_nontranslatable_text(source_text, role)
+            layout_mode = (
+                "positioned"
+                if font_role in {FontRole.DISPLAY, FontRole.RUNNING_HEADER, FontRole.FOOTER}
+                else "paragraph"
+            )
+            result.append(ContentBlock(
+                id=f"{region.id}_b{block_index:04d}",
+                region_id=region.id,
+                role=role,
+                runs=runs,
+                source_text=source_text,
+                translated_text=None,
+                translatable=translatable,
+                bbox=bbox,
+                line_ids=[spec["line_id"] for spec in group],
+                paragraph_id=f"{region.id}_p{paragraph_index:04d}",
+                font_role=font_role,
+                source_font=source_font,
+                column_id=column_id,
+                layout_mode=layout_mode,
+                first_line_indent_pt=first_indent,
+                line_height_pt=line_height,
+            ))
+        return result
 
     def classify_region(
         self,
@@ -323,8 +426,22 @@ class SemanticAnalyzer:
                 full_width_regions.append(region)
 
         # Two-column detection
-        if (len(left_regions) >= 1 and len(right_regions) >= 1
-                and (len(left_regions) + len(right_regions)) >= 3):
+        substantial_left = any(
+            region.bbox[3] - region.bbox[1] >= page_structure.height * 0.20
+            for region in left_regions
+        )
+        substantial_right = any(
+            region.bbox[3] - region.bbox[1] >= page_structure.height * 0.20
+            for region in right_regions
+        )
+        if (
+            left_regions
+            and right_regions
+            and (
+                len(left_regions) + len(right_regions) >= 3
+                or (substantial_left and substantial_right)
+            )
+        ):
             if full_width_regions:
                 return PageType.MIXED
             return PageType.COLUMNS
@@ -403,6 +520,13 @@ class SemanticAnalyzer:
                         bold=bold,
                         italic=italic,
                         color=color,
+                        font=span.get("font"),
+                        bbox=[round(float(value), 3) for value in span_bbox],
+                        baseline=(
+                            round(float(span["origin"][1]), 3)
+                            if span.get("origin") and len(span["origin"]) >= 2
+                            else None
+                        ),
                     ))
 
         return _dedupe_styled_runs(runs)
@@ -485,11 +609,6 @@ class SemanticAnalyzer:
         if gutter_x is None:
             return []
 
-        # Build a lookup from region_id to region bbox
-        region_bbox_map: dict[str, list[float]] = {
-            r.id: r.bbox for r in page_structure.text_regions
-        }
-
         left_block_ids: list[str] = []
         right_block_ids: list[str] = []
         left_bboxes: list[list[float]] = []
@@ -498,22 +617,19 @@ class SemanticAnalyzer:
         for block in blocks:
             if block.role in (SemanticRole.HEADER, SemanticRole.FOOTER):
                 continue
-            if block.role != SemanticRole.BODY_COLUMN:
+            if block.column_id not in {"left", "right"}:
                 continue
 
-            region_bbox = region_bbox_map.get(block.region_id)
-            if region_bbox is None:
+            block_bbox = block.bbox
+            if block_bbox is None:
                 continue
 
-            x0, y0, x1, y1 = region_bbox
-            center_x = (x0 + x1) / 2
-
-            if center_x < gutter_x:
+            if block.column_id == "left":
                 left_block_ids.append(block.id)
-                left_bboxes.append(region_bbox)
+                left_bboxes.append(block_bbox)
             else:
                 right_block_ids.append(block.id)
-                right_bboxes.append(region_bbox)
+                right_bboxes.append(block_bbox)
 
         if not left_block_ids and not right_block_ids:
             return []
@@ -563,8 +679,184 @@ def _bbox_area(bbox: list[float]) -> float:
     return width * height
 
 
+def _styled_runs_from_line(line: TextLineBBox, line_index: int) -> list[StyledTextRun]:
+    runs = [
+        StyledTextRun(
+            text=span.text,
+            font_size=round(float(span.font_size), 2),
+            bold=bool(span.bold),
+            italic=bool(span.italic),
+            color=span.color,
+            font=span.font,
+            bbox=list(span.bbox),
+            line_index=line_index,
+            baseline=(float(span.origin[1]) if span.origin and len(span.origin) >= 2 else None),
+        )
+        for span in line.spans
+        if span.text.strip()
+    ]
+    if runs:
+        return _dedupe_styled_runs(runs)
+    if not line.text.strip():
+        return []
+    return [StyledTextRun(
+        text=line.text,
+        font_size=round(float(line.font_size), 2),
+        bold=bool(line.bold),
+        italic=bool(line.italic),
+        color=line.color,
+        bbox=list(line.bbox),
+        line_index=line_index,
+        baseline=float(line.bbox[3]),
+    )]
+
+
+def _classify_line_style(
+    line: TextLineBBox,
+    runs: list[StyledTextRun],
+    context: PageContext,
+) -> tuple[FontRole, SemanticRole]:
+    size = _weighted_avg_font_size(runs)
+    y0, y1 = float(line.bbox[1]), float(line.bbox[3])
+    text = "".join(run.text for run in runs).strip()
+    if y1 <= context.page_height * 0.085 and abs(float(line.angle or 0.0)) < 1.0:
+        return FontRole.RUNNING_HEADER, SemanticRole.HEADER
+    if y0 >= context.page_height * 0.90 and text.isdigit():
+        return FontRole.FOOTER, SemanticRole.FOOTER
+    if size >= context.max_font_size * 0.85 and size >= context.median_font_size * 1.55:
+        return FontRole.DISPLAY, SemanticRole.TITLE
+    if _has_accent_heading_color(runs):
+        return FontRole.SECTION, SemanticRole.SUBTITLE
+    if (
+        any(run.bold for run in runs)
+        and re.fullmatch(
+            r"(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|"
+            r"SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+\d{1,2}"
+            r"(?:\s+\([^)]+\))?",
+            text,
+            flags=re.IGNORECASE,
+        )
+    ):
+        return FontRole.SUBSECTION, SemanticRole.SUBTITLE
+    if size >= context.median_font_size * 1.75:
+        return FontRole.SECTION, SemanticRole.SUBTITLE
+    if (
+        size >= context.median_font_size * 1.15
+        and len(text) <= 72
+        and any(run.bold for run in runs)
+    ):
+        center_x = (float(line.bbox[0]) + float(line.bbox[2])) / 2
+        if (
+            y0 >= context.page_height * 0.75
+            and abs(center_x - context.page_width / 2) <= context.page_width * 0.10
+        ):
+            return FontRole.CALLOUT, SemanticRole.SUBTITLE
+        return FontRole.SUBSECTION, SemanticRole.SUBTITLE
+    return FontRole.BODY, SemanticRole.BODY_COLUMN
+
+
+def _starts_new_segment(
+    current: list[dict],
+    next_spec: dict,
+    body_x0: float,
+    body_font_size: float,
+) -> bool:
+    previous = current[-1]
+    if next_spec["font_role"] != previous["font_role"]:
+        return True
+    if next_spec["role"] != previous["role"]:
+        return True
+    if next_spec["font_role"] != FontRole.BODY:
+        return True
+
+    current_x0 = float(next_spec["line"].bbox[0])
+    if current_x0 - body_x0 >= body_font_size * 0.8:
+        return True
+    advances = [
+        float(current[index]["line"].bbox[1]) - float(current[index - 1]["line"].bbox[1])
+        for index in range(1, len(current))
+        if float(current[index]["line"].bbox[1]) > float(current[index - 1]["line"].bbox[1])
+    ]
+    expected = median(advances) if advances else max(body_font_size * 1.35, 1.0)
+    actual = float(next_spec["line"].bbox[1]) - float(previous["line"].bbox[1])
+    return actual > expected * 1.35
+
+
+def _union_bboxes(bboxes: list[list[float]]) -> list[float]:
+    if not bboxes:
+        raise ValueError("无法合并空 bbox 列表")
+    return [
+        min(float(bbox[0]) for bbox in bboxes),
+        min(float(bbox[1]) for bbox in bboxes),
+        max(float(bbox[2]) for bbox in bboxes),
+        max(float(bbox[3]) for bbox in bboxes),
+    ]
+
+
+def _column_id_for_bbox(
+    bbox: list[float],
+    page_width: float,
+    gutter_x: float | None,
+    font_role: FontRole,
+) -> str | None:
+    if font_role in {
+        FontRole.DISPLAY,
+        FontRole.RUNNING_HEADER,
+        FontRole.FOOTER,
+        FontRole.CALLOUT,
+        FontRole.TABLE,
+    }:
+        return None
+    center_x = (bbox[0] + bbox[2]) / 2
+    if font_role == FontRole.SUBSECTION and abs(center_x - page_width / 2) <= page_width * 0.08:
+        return None
+    if gutter_x is None or bbox[2] - bbox[0] >= page_width * 0.65:
+        return None
+    return "left" if center_x < gutter_x else "right"
+
+
+def _median_line_advance(group: list[dict]) -> float | None:
+    advances = [
+        float(group[index]["line"].bbox[1]) - float(group[index - 1]["line"].bbox[1])
+        for index in range(1, len(group))
+        if float(group[index]["line"].bbox[1]) > float(group[index - 1]["line"].bbox[1])
+    ]
+    return round(float(median(advances)), 3) if advances else None
+
+
+def _dominant_font(runs: list[StyledTextRun]) -> str | None:
+    weights: dict[str, int] = {}
+    for run in runs:
+        if run.font and run.text.strip():
+            weights[run.font] = weights.get(run.font, 0) + len(run.text.strip())
+    if not weights:
+        return None
+    return max(weights, key=weights.get)
+
+
+def _dedupe_overprinted_blocks(blocks: list[ContentBlock]) -> list[ContentBlock]:
+    result: list[ContentBlock] = []
+    for block in blocks:
+        normalized = "".join(block.source_text.split())
+        duplicate = False
+        for kept in result:
+            if "".join(kept.source_text.split()) != normalized:
+                continue
+            if not block.bbox or not kept.bbox:
+                continue
+            if all(abs(float(a) - float(b)) <= 0.5 for a, b in zip(block.bbox, kept.bbox)):
+                duplicate = True
+                break
+        if not duplicate:
+            result.append(block)
+    return result
+
+
 def _has_accent_heading_color(runs: list[StyledTextRun]) -> bool:
-    return any(run.text.strip() and run.color.lower() == "#ed1c24" for run in runs)
+    return any(
+        run.text.strip() and run.color.lower() in {"#ed1c24", "#dc2527", "#eb4f24"}
+        for run in runs
+    )
 
 
 def _short_styled_heading(
@@ -614,8 +906,6 @@ def _is_fixed_nontranslatable_text(text: str, role: SemanticRole) -> bool:
         return True
     if role == SemanticRole.FOOTER and stripped.isdigit():
         return True
-    if role == SemanticRole.HEADER and "//" in stripped:
-        return True
     if not any(ch.isalpha() for ch in stripped):
         return True
     return False
@@ -627,6 +917,8 @@ def _same_text_style(a: StyledTextRun, b: StyledTextRun) -> bool:
         and abs(a.font_size - b.font_size) < 0.01
         and a.bold == b.bold
         and a.italic == b.italic
+        and a.font == b.font
+        and a.bbox == b.bbox
     )
 
 
@@ -669,8 +961,17 @@ def _region_inside_table_grid(
     page_structure: PageStructure,
 ) -> bool:
     """Return True when a text region sits on a DG-style shaded table grid."""
+    structured_bounds = _structured_table_grid_bounds(page_structure)
+    if structured_bounds is not None:
+        return _region_center_inside_bounds(region, structured_bounds, 4.0)
+
     if _page_has_dense_line_grid(page_structure):
-        return _region_center_inside_decoration_bounds(region, page_structure.decorations)
+        grid_lines = [
+            decoration
+            for decoration in page_structure.decorations
+            if _is_table_grid_line(decoration)
+        ]
+        return _region_center_inside_decoration_bounds(region, grid_lines)
 
     table_rects = [
         decoration
@@ -686,6 +987,153 @@ def _region_inside_table_grid(
     grid_y1 = max(decoration.bbox[3] for decoration in table_rects)
 
     return _region_center_inside_bounds(region, [grid_x0, grid_y0, grid_x1, grid_y1], 4.0)
+
+
+def _structured_table_grid_bounds(page_structure: PageStructure) -> list[float] | None:
+    """Locate a PDF-native table made from repeated filled quadrilateral cells."""
+    bands = []
+    for decoration in page_structure.decorations:
+        commands = decoration.path_commands or []
+        if decoration.element_type != "line" or len(commands) < 24:
+            continue
+        if decoration.stroke_color or decoration.fill_color:
+            continue
+        if any(command[0] != "l" for command in commands if command):
+            continue
+        bands.append(decoration)
+    if len(bands) < 28:
+        return None
+    bounds = [
+        min(item.bbox[0] for item in bands),
+        min(item.bbox[1] for item in bands),
+        max(item.bbox[2] for item in bands),
+        max(item.bbox[3] for item in bands),
+    ]
+    if bounds[2] - bounds[0] < page_structure.width * 0.50:
+        return None
+    if not 20.0 <= bounds[3] - bounds[1] <= page_structure.height * 0.50:
+        return None
+
+    border_lines = [
+        item for item in page_structure.decorations
+        if _is_table_grid_line(item)
+        and item.bbox[2] >= bounds[0] - 4.0
+        and item.bbox[0] <= bounds[2] + 4.0
+        and item.bbox[1] <= bounds[3] + 40.0
+        and item.bbox[3] >= bounds[1] - 4.0
+    ]
+    if border_lines:
+        bounds[0] = min(bounds[0], min(item.bbox[0] for item in border_lines))
+        bounds[2] = max(bounds[2], max(item.bbox[2] for item in border_lines))
+        bounds[3] = max(bounds[3], max(item.bbox[3] for item in border_lines))
+    return bounds
+
+
+def _coalesce_structured_table_cells(
+    blocks: list[ContentBlock],
+    page_structure: PageStructure,
+) -> list[ContentBlock]:
+    """Join wrapped PDF text fragments into complete cells before translation."""
+    result: list[ContentBlock] = []
+    segment: list[ContentBlock] = []
+    for block in blocks:
+        if block.role == SemanticRole.TABLE:
+            segment.append(block)
+            continue
+        if segment:
+            result.extend(_coalesce_structured_table_segment(segment))
+            segment = []
+        result.append(block)
+    if segment:
+        result.extend(_coalesce_structured_table_segment(segment))
+    return result
+
+
+def _coalesce_structured_table_segment(
+    table_blocks: list[ContentBlock],
+) -> list[ContentBlock]:
+    groups: list[list[ContentBlock]] = []
+    by_region: dict[str, list[ContentBlock]] = {}
+    for block in table_blocks:
+        if block.region_id not in by_region:
+            by_region[block.region_id] = []
+            groups.append(by_region[block.region_id])
+        by_region[block.region_id].append(block)
+    for group in groups:
+        group.sort(key=lambda item: (item.bbox or [0.0, 0.0, 0.0, 0.0])[0])
+
+    column_count = max((len(group) for group in groups), default=0)
+    if column_count < 2:
+        return table_blocks
+    anchor_index = next(index for index, group in enumerate(groups) if len(group) == column_count)
+    anchors = groups[anchor_index]
+    centers = [((block.bbox or [0.0, 0.0, 0.0, 0.0])[0] + (block.bbox or [0.0, 0.0, 0.0, 0.0])[2]) / 2 for block in anchors]
+    table_x0 = min((block.bbox or [0.0, 0.0, 0.0, 0.0])[0] for block in anchors)
+    table_x1 = max((block.bbox or [0.0, 0.0, 0.0, 0.0])[2] for block in anchors)
+
+    rebuilt = [block for group in groups[:anchor_index] for block in group]
+    current: list[ContentBlock | None] | None = None
+    current_region = ""
+    for group in groups[anchor_index:]:
+        first = group[0]
+        first_bbox = first.bbox or [0.0, 0.0, 0.0, 0.0]
+        if (
+            len(group) == 1
+            and first_bbox[2] - first_bbox[0] >= (table_x1 - table_x0) * 0.5
+        ):
+            if current is not None:
+                rebuilt.extend(block for block in current if block is not None)
+            current = None
+            rebuilt.extend(group)
+            continue
+
+        assignments = [
+            (
+                min(
+                    range(column_count),
+                    key=lambda index: abs(
+                        ((block.bbox or [0.0, 0.0, 0.0, 0.0])[0] + (block.bbox or [0.0, 0.0, 0.0, 0.0])[2]) / 2
+                        - centers[index]
+                    ),
+                ),
+                block,
+            )
+            for block in group
+        ]
+        if any(column == 0 for column, _ in assignments):
+            if current is not None:
+                rebuilt.extend(block for block in current if block is not None)
+            current = [None] * column_count
+            current_region = first.region_id
+        if current is None:
+            raise ValueError(f"表格续行缺少起始单元格：{first.region_id}")
+        for column, block in assignments:
+            existing = current[column]
+            if existing is None:
+                current[column] = replace(block, region_id=current_region)
+                continue
+            current[column] = replace(
+                existing,
+                runs=[*existing.runs, *block.runs],
+                source_text=_join_source_cell_text(existing.source_text, block.source_text),
+                bbox=_union_bboxes([existing.bbox, block.bbox]),
+                line_ids=[*existing.line_ids, *block.line_ids],
+                translatable=existing.translatable or block.translatable,
+            )
+    if current is not None:
+        rebuilt.extend(block for block in current if block is not None)
+
+    return rebuilt
+
+
+def _join_source_cell_text(previous: str, current: str) -> str:
+    previous = previous.strip()
+    current = current.strip()
+    if not previous:
+        return current
+    if not current:
+        return previous
+    return f"{previous} {current}"
 
 
 def _region_center_inside_decoration_bounds(

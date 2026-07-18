@@ -230,21 +230,29 @@ Translation rules:
         return cached_translation
 
     def translate_chunk(self, text: str, page_num: int = None, prev_context: str = "",
-                        cache=None) -> str:
+                        next_context: str = "", cache=None) -> str:
         if not text.strip():
             return ""
         glossary_section = self._build_glossary_for_chunk(text)
         system_prompt = self.SYSTEM_PROMPT
 
         page_info = f" (page {page_num + 1})" if page_num is not None else ""
+        context_sections = []
         if prev_context:
-            user_prompt = (
-                f"[Previous context - DO NOT translate, for reference only]\n"
-                f"{prev_context}\n\n---\n\n"
-                f"Translate the following{page_info}:\n\n{text}"
+            context_sections.append(
+                "[Previous page context - DO NOT translate, for reference only]\n"
+                f"{prev_context}"
             )
+        if next_context:
+            context_sections.append(
+                "[Next page context - DO NOT translate, for reference only]\n"
+                f"{next_context}"
+            )
+        translate_section = f"Translate the following{page_info}:\n\n{text}"
+        if context_sections:
+            user_prompt = "\n\n---\n\n".join(context_sections + [translate_section])
         else:
-            user_prompt = f"Translate the following{page_info}:\n\n{text}"
+            user_prompt = translate_section
         user_prompt = self._prepend_core_glossary_to_user_prompt(user_prompt)
         user_prompt = self._append_glossary_to_user_prompt(user_prompt, glossary_section)
 
@@ -295,7 +303,8 @@ Translation rules:
         return ""
 
     def translate_block(self, text: str, block_index: int = None, prev_context: str = "",
-                        source_type: str = "markdown", cache=None) -> str:
+                        next_context: str = "", source_type: str = "markdown",
+                        cache=None) -> str:
         """
         Translate a text block from Markdown or Word source.
 
@@ -316,14 +325,22 @@ Translation rules:
             system_prompt = self.SYSTEM_PROMPT_MARKDOWN
 
         block_info = f" (block {block_index + 1})" if block_index is not None else ""
+        context_sections = []
         if prev_context:
-            user_prompt = (
-                f"[Previous context - DO NOT translate, for reference only]\n"
-                f"{prev_context}\n\n---\n\n"
-                f"Translate the following{block_info}:\n\n{text}"
+            context_sections.append(
+                "[Previous block context - DO NOT translate, for reference only]\n"
+                f"{prev_context}"
             )
+        if next_context:
+            context_sections.append(
+                "[Next block context - DO NOT translate, for reference only]\n"
+                f"{next_context}"
+            )
+        translate_section = f"Translate the following{block_info}:\n\n{text}"
+        if context_sections:
+            user_prompt = "\n\n---\n\n".join(context_sections + [translate_section])
         else:
-            user_prompt = f"Translate the following{block_info}:\n\n{text}"
+            user_prompt = translate_section
         user_prompt = self._prepend_core_glossary_to_user_prompt(user_prompt)
         user_prompt = self._append_glossary_to_user_prompt(user_prompt, glossary_section)
 
@@ -404,10 +421,24 @@ def translate_batch_concurrent(
         if progress_callback:
             progress_callback(page_num, translation or "", completed_count, total_count)
 
-    def translate_one(page_num, text, prev_ctx):
+    def unpack_page_data(item):
+        if len(item) == 3:
+            page_num, text, prev_ctx = item
+            return page_num, text, prev_ctx, ""
+        if len(item) == 4:
+            return item
+        raise ValueError("pages_data entries must contain 3 or 4 values")
+
+    def translate_one(page_num, text, prev_ctx, next_ctx):
         if rate_limiter is not None:
             rate_limiter.wait_if_needed()
-        translation = translator.translate_chunk(text, page_num, prev_ctx, cache=tracker)
+        translation = translator.translate_chunk(
+            text,
+            page_num,
+            prev_context=prev_ctx,
+            next_context=next_ctx,
+            cache=tracker,
+        )
         if translation and not is_failed_translation(translation):
             tracker.mark_completed(page_num, translation)
         elif is_failed_translation(translation):
@@ -415,11 +446,12 @@ def translate_batch_concurrent(
         return page_num, translation
 
     if max_workers > 1:
-        for page_num, text, page_context in pages_data:
+        for item in pages_data:
+            page_num, text, prev_context, next_context = unpack_page_data(item)
             if tracker.is_completed(page_num) or not text.strip():
                 continue
             print(f"   Cache warm-up: p{page_num + 1}", end="", flush=True)
-            page_num, translation = translate_one(page_num, text, page_context)
+            page_num, translation = translate_one(page_num, text, prev_context, next_context)
             warmed_pages.add(page_num)
             results[page_num] = translation or ""
             report(page_num, translation)
@@ -436,7 +468,8 @@ def translate_batch_concurrent(
         group = pages_data[group_start:group_start + group_size]
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for page_num, text, page_context in group:
+            for item in group:
+                page_num, text, prev_context, next_context = unpack_page_data(item)
                 if page_num in warmed_pages:
                     continue
                 if tracker.is_completed(page_num):
@@ -449,7 +482,13 @@ def translate_batch_concurrent(
                     results[page_num] = ""
                     report(page_num, "")
                     continue
-                future = executor.submit(translate_one, page_num, text, page_context)
+                future = executor.submit(
+                    translate_one,
+                    page_num,
+                    text,
+                    prev_context,
+                    next_context,
+                )
                 futures[future] = page_num
 
             for future in as_completed(futures):

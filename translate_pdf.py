@@ -69,6 +69,7 @@ from core import (
     build_run_manifest,
     write_run_effect_report,
     write_run_manifest,
+    validate_translation_completeness,
     # glossary
     load_glossary,
     find_relevant_glossary_terms,
@@ -231,6 +232,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
 
         print("Extracting text and analyzing chapters...")
         pages_text = {}
+        page_contexts = {}
         source_page_labels = {}
         base_page_layouts = {}
         page_diagnostics = []
@@ -239,6 +241,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             base_page_layouts[page_num] = extractor.detect_page_layout(page_num)
             text = extractor.extract_page(page_num, include_images=False)
             pages_text[page_num] = text
+            page_contexts[page_num] = extractor.get_context_text(page_num)
             page_diagnostics.append(extractor.get_page_diagnostics(page_num, text))
         layout_context = build_pdf_output_layout_context(
             pdf_path,
@@ -284,14 +287,16 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         if max_workers > 1:
             print(f"   Concurrent mode: {max_workers} workers")
             pages_data = []
-            prev_text = ""
             for page_num in start_end_pages:
                 text = pages_text.get(page_num, "")
-                context = prev_text[-900:] if prev_text else ""
-                pages_data.append((page_num, text, context))
-                context_text = extractor.get_context_text(page_num)
-                if context_text.strip():
-                    prev_text = context_text
+                prev_context = page_contexts.get(page_num - 1, "")
+                next_context = page_contexts.get(page_num + 1, "")
+                pages_data.append((
+                    page_num,
+                    text,
+                    prev_context[-900:] if prev_context else "",
+                    next_context[:900] if next_context else "",
+                ))
             results = translate_batch_concurrent(
                 pages_data,
                 translator,
@@ -335,6 +340,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     text,
                     page_num,
                     prev_context=prev_translation_tail,
+                    next_context=page_contexts.get(page_num + 1, "")[:900],
                     cache=tracker,
                 )
 
@@ -387,6 +393,13 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         ]
         if failed_pages:
             print("⚠️  以下页翻译失败且未写入进度缓存: " + ", ".join(map(str, failed_pages[:20])))
+        completeness = validate_translation_completeness(
+            pages_text=pages_text,
+            translated_pages=translated_pages_sorted,
+            failed_page_indexes=tracker.get_failed_pages(),
+            start_page=start_page,
+            end_page=end_page,
+        )
 
         generated_outputs = []
         internal_suffixes = (
@@ -505,7 +518,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 generated_outputs.append(docx_output)
                 print("   ✓ Word 输出完成")
 
-        page_count = len([t for _, t in translated_pages_sorted if t.strip()])
+        page_count = completeness.translated_pages
         run_effect = build_run_effect(
             stats,
             total_pages=end_page - start_page,

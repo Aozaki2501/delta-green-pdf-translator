@@ -43,20 +43,31 @@ python -m streamlit run app.py
 | 只重翻问题页 | Web 质量检查页或 `--retranslate-pages` | 只更新指定页 |
 | 只重试失败页 | Web 高级任务控制或 `--retry-failed` | 只处理失败页 |
 | 不重新花钱，只重新导出 | 档案库“重试导出”或 `rerender_output.py` | HTML / Word / Markdown |
-| 尽量接近原 PDF 版面 | 纯重绘 PDF | `_typeset.pdf` |
+| 保留原 PDF 美术与版面 | 图文重绘 | `_typeset.html` / `_reading.html` / `_typeset.pdf` |
 
 默认最推荐输出 HTML 和 Word。HTML 适合阅读，Word 适合人工校对。
+
+## 近期功能变化
+
+- 新增翻译前术语确认：上传 PDF、Markdown 或 Word 后，可以逐条新增、修改或忽略候选术语，本次选择不会改动仓库里的原术语表。
+- 新增办公模式：侧栏开启后切换为中性浅色界面，并自动关闭主要动画。
+- 新增可选的翻译后校对区：集中查看规则符号疑点、失败页和风险页，可选择问题页重翻或标记忽略。
+- 新增高保真 HTML 和图文阅读 HTML，两种输出共用同一份稳定译文，不会重复翻译。
+- 上传文件名过长时会自动截短可读部分并保留哈希，避免 Windows 路径过长导致术语扫描失败。
+- 普通翻译不再生成时间线、备团清单和模组结构文件；这些中间能力尚未作为正式功能开放。
 
 ## Web 使用流程
 
 1. 启动 `start_web.bat`。
 2. 上传 PDF、Markdown 或 Word。
 3. 填入 API Key。
-4. 选择模型、页码范围和输出格式。
-5. 可选：上传术语表。
-6. 如果页面显示“翻译前术语确认”，逐条选择新增、修改或忽略。
-7. 点击“执行翻译任务”。
-8. 完成后下载成品和校对报告。
+4. 可选：在侧栏开启“办公界面”。
+5. 选择模型、页码范围和输出格式。
+6. 可选：上传术语表。
+7. 如果页面显示“翻译前术语确认”，逐条选择新增、修改或忽略。
+8. 如需集中检查问题页，开启“显示翻译后校对区”。
+9. 点击“开始翻译任务”。
+10. 完成后下载成品和报告。
 
 PDF 页码在 Web 里从 1 开始，和阅读器看到的页码更接近。
 
@@ -79,6 +90,8 @@ PDF 页码在 Web 里从 1 开始，和阅读器看到的页码更接近。
 | `.html` | 浏览器阅读版，带屏幕版、打印版、手机版切换 |
 | `.docx` | Word 校对版 |
 | `.md` | Markdown 译文 |
+| `_typeset.html` | 高保真固定页 HTML，保留原页美术、坐标和打印尺寸 |
+| `_reading.html` | 图文阅读 HTML，原页美术与响应式译文逐页对应 |
 | `_typeset.pdf` | 纯重绘 PDF，成本更高，适合复杂版面实验 |
 
 常见报告：
@@ -91,14 +104,11 @@ PDF 页码在 Web 里从 1 开始，和阅读器看到的页码更接近。
 | `_rule_symbols.md` | 规则符号检查：骰子、SAN、HP、属性缩写等 |
 | `_glossary_report.md` | 术语命中报告 |
 | `_glossary_candidates.md` | 疑似新术语候选 |
-| `_prep_checklist.md` | 备团校对清单 |
-| `_module_structure.md` / `_module_structure.json` | NPC、地点、线索、卡片等结构化抽取 |
-| `_timeline.md` / `_timeline.json` | 场景时间线 |
 | `_word_review.md` / `_word_review.docx` | Word 校对包 |
 | `_run_report.md` | 本次运行效果报告 |
 | `_manifest.json` | 本次任务清单 |
 
-这些报告不是都必须看。普通使用时先看 HTML 或 Word；如果觉得有问题，再看 `_risk_workbench.md` 和 `_quality_report.md`。
+`_risk_workbench.md`、`_rule_symbols.md` 和 Word 校对包只会在开启“显示翻译后校对区”时生成。普通使用时先看 HTML 或 Word；如果觉得有问题，再开启校对区重跑或查看 `_quality_report.md`。
 
 ## 术语表
 
@@ -179,11 +189,17 @@ python translate_docx.py input.docx --api-key sk-xxx --glossary glossary.tsv
 python rerender_output.py --progress output\book_cn\book_cn.progress.json --pdf "book.pdf" --format html
 ```
 
-## 纯重绘 PDF
+## 图文重绘
 
 普通 HTML / Word 主要追求可读和方便校对，不追求完全复刻原 PDF。
 
-如果你想更接近原版页面，可以使用“纯重绘 PDF”。它会重新提取页面结构，用 HTML/CSS 重建页面，再导出 `_typeset.pdf`。
+如果你想保留原书美术和版面，可以选择三种同源输出：
+
+- “高保真 HTML”按原页尺寸和坐标覆盖中文，输出 `_typeset.html`。
+- “图文阅读 HTML”逐页保留原始视觉，并把同一份译文排成桌面双栏、手机单栏，输出 `_reading.html`。
+- “纯重绘 PDF”从高保真 HTML 打印，输出 `_typeset.pdf`。
+
+解析阶段会生成移除原文文字的页面 SVG，保留图片、矢量、裁剪和遮罩；两套 HTML 使用同一份稳定 block ID 译文，不会重复翻译。
 
 这个功能更挑 PDF 结构，也更慢。首次使用时，如果本机还没有浏览器内核，Web 会提示加载并显示进度。
 
@@ -260,6 +276,8 @@ powershell -ExecutionPolicy Bypass -File .\pack_release.ps1
 不要把自己的 `config.json`、`.env`、输出译文或 API Key 一起发出去。
 
 ## 开发者检查
+
+项目风险、TRPG 优化方向和前端重构记录见 [`docs/PROJECT_REVIEW.md`](docs/PROJECT_REVIEW.md)。
 
 运行全部测试：
 

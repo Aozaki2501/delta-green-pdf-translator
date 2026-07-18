@@ -22,6 +22,21 @@ from webui.history import (
 
 STATUS_STEPS = ("接收档案", "提取文本", "匹配术语", "编译译文", "生成输出", "归档完成")
 OFFICE_STATUS_STEPS = ("接收文件", "提取文本", "匹配术语", "编译译文", "生成输出", "完成")
+RUNTIME_SLOT_KEYS = ("_dg_dossier_slot", "_dg_status_flow_slot", "_dg_system_log_slot")
+
+
+def reset_runtime_component_slots() -> None:
+    """Start a fresh set of update-in-place runtime panels for this rerun."""
+    for key in RUNTIME_SLOT_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _runtime_slot(key: str):
+    slot = st.session_state.get(key)
+    if slot is None:
+        slot = st.empty()
+        st.session_state[key] = slot
+    return slot
 
 
 def _retryable_formats(audit: dict[str, Any]) -> list[str]:
@@ -113,11 +128,13 @@ def render_dossier_card(dossier_id: str, filename: str, file_digest: str,
     glossary = glossary_name or "默认术语表"
     kicker = "DOCUMENT" if office_mode else "CLASSIFIED DOSSIER"
     status_label = "状态：待校对" if office_mode else "密级：绝密 / 待校对"
-    st.markdown(
+    _runtime_slot("_dg_dossier_slot").markdown(
         f"""
 <div class="dossier-card{state_class}">
-    <div class="dossier-kicker">{kicker}</div>
-    <div class="dossier-id">{html.escape(dossier_id)}</div>
+    <div class="dossier-identity">
+        <div class="dossier-kicker">{kicker}</div>
+        <div class="dossier-id">{html.escape(dossier_id)}</div>
+    </div>
     <div class="dossier-meta">
         <span>文件：{html.escape(filename or "待导入")}</span>
         <span>校验：{html.escape(digest)}</span>
@@ -144,17 +161,17 @@ def render_status_flow(active_index: int = 0, failed: bool = False, office_mode:
             state = ""
         parts.append(f'<div class="status-step {state}">{html.escape(label)}</div>')
     parts.append("</div>")
-    st.markdown("\n".join(parts), unsafe_allow_html=True)
+    _runtime_slot("_dg_status_flow_slot").markdown("\n".join(parts), unsafe_allow_html=True)
 
 
 def render_system_log(lines: list[tuple[str, str]], office_mode: bool = False) -> None:
-    prefix = "" if office_mode else "&gt; "
+    prefix = ""
     parts = ['<div class="system-log">']
     for level, text in lines:
         safe_level = level if level in {"warn", "fail"} else ""
         parts.append(f'<div class="system-log-line {safe_level}">{prefix}{html.escape(text)}</div>')
     parts.append("</div>")
-    st.markdown("\n".join(parts), unsafe_allow_html=True)
+    _runtime_slot("_dg_system_log_slot").markdown("\n".join(parts), unsafe_allow_html=True)
 
 
 def render_completion_stamp(text: str = "已归档") -> None:

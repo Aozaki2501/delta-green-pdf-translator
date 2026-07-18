@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -47,6 +48,7 @@ class TypesetTranslationProgress:
             raise ValueError("progress_file 不能为空")
         self.progress_file = progress_file
         self.translations: dict[str, str] = {}
+        self.source_hashes: dict[str, str] = {}
         self.failed_blocks: dict[str, str] = {}
         self.translation_cache: dict[str, str] = {}
         self.completed_phases: list[str] = []
@@ -64,7 +66,10 @@ class TypesetTranslationProgress:
                 return
         except (OSError, json.JSONDecodeError, ValueError):
             return
+        if data.get("schema") != 2:
+            return
         self.translations = dict(data.get("translations") or {})
+        self.source_hashes = dict(data.get("source_hashes") or {})
         self.failed_blocks = dict(data.get("failed_blocks") or {})
         self.translation_cache = dict(data.get("translation_cache") or {})
         self.completed_phases = list(data.get("completed_phases") or [])
@@ -73,9 +78,10 @@ class TypesetTranslationProgress:
     def save(self):
         with self._lock:
             data = {
-                "schema": 1,
+                "schema": 2,
                 "pipeline": "typeset",
                 "translations": self.translations,
+                "source_hashes": self.source_hashes,
                 "failed_blocks": self.failed_blocks,
                 "translation_cache": self.translation_cache,
                 "completed_phases": self.completed_phases,
@@ -98,10 +104,14 @@ class TypesetTranslationProgress:
 
     # -- Query methods --
 
-    def is_completed(self, block_id: str) -> bool:
+    def is_completed(self, block_id: str, source_text: str | None = None) -> bool:
         with self._lock:
             if block_id not in self.translations:
                 return False
+            if source_text is not None:
+                stored_hash = self.source_hashes.get(block_id)
+                if stored_hash not in {"*", _source_text_hash(source_text)}:
+                    return False
             return not contains_prompt_leak(self.translations.get(block_id, ""))
 
     def get_translation(self, block_id: str) -> str:
@@ -141,7 +151,12 @@ class TypesetTranslationProgress:
 
     # -- Mutation methods --
 
-    def mark_completed(self, block_id: str, translation: str):
+    def mark_completed(
+        self,
+        block_id: str,
+        translation: str,
+        source_text: str | None = None,
+    ):
         if not block_id:
             raise ValueError("block_id 不能为空")
         if not translation:
@@ -149,6 +164,9 @@ class TypesetTranslationProgress:
         ensure_no_prompt_leak(translation)
         with self._lock:
             self.translations[block_id] = translation
+            self.source_hashes[block_id] = (
+                _source_text_hash(source_text) if source_text is not None else "*"
+            )
             self.failed_blocks.pop(block_id, None)
             self.save()
 
@@ -157,6 +175,7 @@ class TypesetTranslationProgress:
             raise ValueError("block_id 不能为空")
         with self._lock:
             self.translations.pop(block_id, None)
+            self.source_hashes.pop(block_id, None)
             self.failed_blocks[block_id] = str(message or "translation failed")
             self.save()
 
@@ -336,7 +355,10 @@ def translate_typeset_content(
                     progress_callback(completed_units, total_units, f"{unit_id} ({cached_result})", True)
                 continue
 
-            pending_blocks = [b for b in blocks if not progress.is_completed(b.id)]
+            pending_blocks = [
+                b for b in blocks
+                if not progress.is_completed(b.id, b.source_text)
+            ]
             if not pending_blocks:
                 completed_units += 1
                 if progress_callback:
@@ -371,7 +393,7 @@ def translate_typeset_content(
                 if not block_translation:
                     progress.mark_failed(block.id, f"{TRANSLATION_FAILURE_PREFIX} missing translation]")
                     continue
-                progress.mark_completed(block.id, block_translation)
+                progress.mark_completed(block.id, block_translation, block.source_text)
                 progress.mark_cached_prompt_translation(_source_text_hash(block.source_text), block_translation)
 
             progress.last_translated_page = page_index
@@ -394,16 +416,16 @@ def _finish_cached_unit(
         cache_key = _source_text_hash(block.source_text)
         cached = progress.get_cached_prompt_translation(cache_key)
         if cached:
-            if not progress.is_completed(block.id):
-                progress.mark_completed(block.id, cached)
+            if not progress.is_completed(block.id, block.source_text):
+                progress.mark_completed(block.id, cached, block.source_text)
         else:
             all_cached = False
 
-    if all_cached and all(progress.is_completed(b.id) for b in blocks):
+    if all_cached and all(progress.is_completed(b.id, b.source_text) for b in blocks):
         progress.last_translated_page = page_index
         progress.save()
         return "cached"
-    if all(progress.is_completed(b.id) for b in blocks):
+    if all(progress.is_completed(b.id, b.source_text) for b in blocks):
         progress.last_translated_page = page_index
         progress.save()
         return "resumed"
@@ -460,7 +482,7 @@ def _collect_translation_units(
             if block.translatable and block.source_text.strip()
         ]
         for block in translatable_blocks:
-            if not progress.is_completed(block.id):
+            if not progress.is_completed(block.id, block.source_text):
                 units.append((page.page_index, [block]))
     return units
 
@@ -470,30 +492,17 @@ def _build_translated_document(
     progress: TypesetTranslationProgress,
 ) -> PageContentDocument:
     """Build a new PageContentDocument with translated_text filled from progress."""
-    from core.typeset_models import (
-        ContentBlock,
-        PageContent,
-        PageContentDocument,
-    )
+    from core.typeset_models import PageContent, PageContentDocument
 
     translated_pages = []
     for page in content.pages:
         translated_blocks = []
         for block in page.blocks:
-            if block.translatable and progress.is_completed(block.id):
+            if block.translatable and progress.is_completed(block.id, block.source_text):
                 translated_text = progress.get_translation(block.id)
             else:
                 translated_text = block.translated_text
-            # Rebuild block with translated_text
-            translated_blocks.append(ContentBlock(
-                id=block.id,
-                region_id=block.region_id,
-                role=block.role,
-                runs=block.runs,
-                source_text=block.source_text,
-                translated_text=translated_text,
-                translatable=block.translatable,
-            ))
+            translated_blocks.append(replace(block, translated_text=translated_text))
         translated_pages.append(PageContent(
             page_index=page.page_index,
             page_type=page.page_type,
@@ -506,6 +515,7 @@ def _build_translated_document(
         source_pdf=content.source_pdf,
         page_count=content.page_count,
         pages=translated_pages,
+        source_sha256=content.source_sha256,
     )
 
 
