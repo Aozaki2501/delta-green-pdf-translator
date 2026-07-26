@@ -15,25 +15,50 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
+from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION, TRANSLATION_TEMPERATURE
 from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
 from core.utils import file_sha256, replace_with_retry
+
+# Fingerprint schema. Bumped to 2 when fuzzy_matching/temperature were added and
+# missing input files stopped hashing to the same value as "no file at all".
+PROGRESS_SCHEMA_VERSION = 2
+
+
+def fingerprint_file(path: Optional[str]) -> str:
+    """Hash a fingerprint input, distinguishing "no file" from "file is gone".
+
+    ``file_sha256`` returns "" for both cases, which made a deleted glossary
+    look identical to never having used one — the run would silently reuse
+    translations produced with terminology that is no longer on disk.
+    """
+    if not path:
+        return ""
+    return file_sha256(path) or "missing"
 
 
 def build_progress_metadata(pdf_path: str, glossary_path: Optional[str], model: str,
                             start_page: int, end_page: int | None,
                             provider: str = "deepseek",
-                            base_url: str = "https://api.deepseek.com") -> dict:
-    """Build a metadata fingerprint dict for a translation session."""
+                            base_url: str = "https://api.deepseek.com",
+                            fuzzy_matching: bool = False) -> dict:
+    """Build a metadata fingerprint dict for a translation session.
+
+    Every field here changes the produced translation. ``max_workers`` is
+    deliberately absent: context is now built from adjacent *source* text on
+    both the serial and concurrent paths, so concurrency no longer affects the
+    prompts and changing it must not throw away paid-for translations.
+    """
     return {
-        "schema": 1,
-        "pdf_sha256": file_sha256(pdf_path),
-        "glossary_sha256": file_sha256(glossary_path) if glossary_path else "",
+        "schema": PROGRESS_SCHEMA_VERSION,
+        "pdf_sha256": fingerprint_file(pdf_path),
+        "glossary_sha256": fingerprint_file(glossary_path),
         "model": model,
         "provider": provider,
         "base_url": base_url,
         "prompt_version": PROMPT_VERSION,
         "extractor_version": EXTRACTOR_VERSION,
+        "temperature": TRANSLATION_TEMPERATURE,
+        "fuzzy_matching": bool(fuzzy_matching),
         "start_page": start_page,
         "end_page": end_page,
     }
@@ -65,11 +90,14 @@ class ProgressTracker:
         self.metadata = dict(self.expected_metadata)
         self.metadata_mismatches: list[str] = []
         self.ignored_existing_progress = False
+        self.progress_corrupted = False
+        self.corrupt_backup_path = ""
         self.completed_pages = set()
         self.failed_pages = {}
         self.translations = {}
         self.translation_cache = {}
         self._lock = threading.Lock()
+        self._pending_save = False
         self._load()
 
     def _load(self):
@@ -112,12 +140,37 @@ class ProgressTracker:
                     f"Loaded progress: {len(self.completed_pages)} pages done, "
                     f"{len(self.failed_pages)} failed"
                 )
-            except (json.JSONDecodeError, IOError, ValueError, TypeError):
-                print("Progress file corrupted, starting fresh")
+            except (json.JSONDecodeError, IOError, ValueError, TypeError) as exc:
+                self._backup_corrupt_file(exc)
 
-    def save(self):
-        """Persist progress to disk atomically (write temp file, then os.replace)."""
+    def _backup_corrupt_file(self, exc: Exception):
+        """Move an unreadable progress file aside before starting fresh.
+
+        Starting fresh is fine; overwriting is not. The first ``save()`` after a
+        failed load would replace the file with empty data, destroying
+        translations that a human could still have salvaged by hand.
+        """
+        backup_path = Path(f"{self.progress_file}.corrupt.bak")
+        replace_with_retry(Path(self.progress_file), backup_path)
+        self.progress_corrupted = True
+        self.corrupt_backup_path = str(backup_path)
+        print(
+            f"进度文件无法解析（{exc}），已备份为 {backup_path}，本次从头开始翻译。"
+        )
+
+    def save(self, force: bool = True):
+        """Persist progress to disk atomically (write temp file, then os.replace).
+
+        ``force=False`` defers the write: the caller is about to record the same
+        content through a path that does force a write, so serializing the whole
+        file twice in a row is pure waste. Any forced save flushes the deferral.
+        """
+        if not force:
+            with self._lock:
+                self._pending_save = True
+            return
         with self._lock:
+            self._pending_save = False
             data = {
                 "metadata": self.metadata,
                 "completed_pages": sorted(self.completed_pages),
@@ -147,6 +200,11 @@ class ProgressTracker:
             return False
         return not contains_prompt_leak(self.translations.get(str(page_num), ""))
 
+    def flush(self):
+        """Write out any deferred save. Safe to call when nothing is pending."""
+        if self._pending_save:
+            self.save()
+
     def mark_completed(self, page_num: int, translation: str):
         """Record a page translation and persist immediately."""
         ensure_no_prompt_leak(translation)
@@ -154,6 +212,24 @@ class ProgressTracker:
             self.completed_pages.add(page_num)
             self.translations[str(page_num)] = translation
             self.failed_pages.pop(str(page_num), None)
+        self.save()
+
+    def mark_completed_many(self, translations: dict[int, str]):
+        """Record several translations with a single write.
+
+        Block-level callers finish a whole group at once. Saving per block made
+        a 3000-block document rewrite the entire progress file 3000 times; one
+        write per group keeps the same crash safety at a fraction of the I/O.
+        """
+        if not translations:
+            return
+        for translation in translations.values():
+            ensure_no_prompt_leak(translation)
+        with self._lock:
+            for page_num, translation in translations.items():
+                self.completed_pages.add(page_num)
+                self.translations[str(page_num)] = translation
+                self.failed_pages.pop(str(page_num), None)
         self.save()
 
     def mark_failed(self, page_num: int, message: str):
@@ -239,7 +315,9 @@ class ProgressTracker:
         ensure_no_prompt_leak(translation, "缓存译文")
         with self._lock:
             self.translation_cache[cache_key] = translation
-        self.save()
+        # Deferred: the caller records this same text via mark_completed a moment
+        # later, and that write persists this entry too.
+        self.save(force=False)
 
     def delete_cached_prompt_translation(self, cache_key: str):
         """Remove one exact prompt cache entry."""

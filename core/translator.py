@@ -18,10 +18,23 @@ from dataclasses import dataclass, field
 from openai import OpenAI
 
 from core.dispatcher import RateLimiter
-from core.constants import TRANSLATION_FAILURE_PREFIX, PROMPT_VERSION
+from core.constants import (
+    TRANSLATION_FAILURE_PREFIX,
+    PROMPT_VERSION,
+    TRANSLATION_TEMPERATURE,
+)
 from core.glossary import find_relevant_glossary_terms
+from core.pricing import TokenPricing
 from core.translation_validation import ensure_no_prompt_leak
-from core.utils import is_failed_translation
+from core.utils import is_failed_translation, validate_base_url
+
+
+class TruncatedResponseError(RuntimeError):
+    """Raised when the model stopped because it hit the max_tokens limit.
+
+    Retrying the same request would truncate again, so callers must treat this
+    as a permanent failure for the chunk and never cache the partial text.
+    """
 
 
 # ============================================================
@@ -30,18 +43,15 @@ from core.utils import is_failed_translation
 
 @dataclass
 class TokenStats:
-    """Tracks token usage and estimated cost."""
+    """Tracks token usage and, when unit prices are configured, estimated cost."""
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
     api_calls: int = 0
     failed_calls: int = 0
     translation_cache_hits: int = 0
+    pricing: TokenPricing | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
-
-    PRICE_INPUT_PER_M = 1.0
-    PRICE_OUTPUT_PER_M = 4.0
-    PRICE_CACHED_PER_M = 0.1
 
     def add(self, input_tok: int, output_tok: int, cached_tok: int = 0):
         with self._lock:
@@ -63,15 +73,23 @@ class TokenStats:
         return self.input_tokens + self.output_tokens
 
     @property
-    def cost_yuan(self):
-        cost = (
-            (self.input_tokens - self.cached_tokens) * self.PRICE_INPUT_PER_M / 1_000_000 +
-            self.output_tokens * self.PRICE_OUTPUT_PER_M / 1_000_000 +
-            self.cached_tokens * self.PRICE_CACHED_PER_M / 1_000_000
+    def cost_yuan(self) -> float | None:
+        """Estimated cost in CNY, or None when no unit prices are configured.
+
+        Unit prices depend on the provider behind ``base_url``, so an amount is
+        only reported when the caller supplied prices for that endpoint.
+        """
+        if self.pricing is None:
+            return None
+        return self.pricing.cost_yuan(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cached_tokens=self.cached_tokens,
         )
-        return cost
 
     def summary(self) -> str:
+        cost = self.cost_yuan
+        cost_line = "   Est. cost: 未配置单价" if cost is None else f"   Est. cost: Y{cost:.3f}"
         return (
             f"Token Stats:\n"
             f"   Input: {self.input_tokens:,} tokens\n"
@@ -79,7 +97,7 @@ class TokenStats:
             f"   Cache hit: {self.cached_tokens:,} tokens\n"
             f"   Translation cache hits: {self.translation_cache_hits}\n"
             f"   API calls: {self.api_calls} (failed {self.failed_calls})\n"
-            f"   Est. cost: Y{self.cost_yuan:.3f}"
+            + cost_line
         )
 
 
@@ -145,7 +163,9 @@ Translation rules:
             raise ValueError("API Key 不能为空")
         if not model or not str(model).strip():
             raise ValueError("模型名称不能为空")
+        base_url = validate_base_url(base_url)
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.base_url = base_url
         self.model = model
         self.glossary = {}
         self.retry_count = 3
@@ -213,6 +233,36 @@ Translation rules:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
+    def _read_completion(self, response, max_tokens: int) -> str:
+        """Extract translated text, rejecting responses cut off by max_tokens.
+
+        A ``finish_reason`` of "length" means the model ran out of output budget
+        mid-sentence. The partial text looks like a normal translation, so it has
+        to be rejected here — otherwise half a page gets written to the progress
+        cache and every later run happily reuses it.
+        """
+        usage = response.usage
+        if usage:
+            cached = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+            self.stats.add(
+                getattr(usage, "prompt_tokens", 0) or 0,
+                getattr(usage, "completion_tokens", 0) or 0,
+                cached,
+            )
+        if not response.choices:
+            raise RuntimeError("API 返回空 choices")
+        choice = response.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            raise TruncatedResponseError(
+                f"模型输出在 max_tokens={max_tokens} 处被截断（finish_reason=length），"
+                f"译文不完整"
+            )
+        content = (choice.message.content or "").strip()
+        if not content:
+            raise RuntimeError("API 返回空译文")
+        ensure_no_prompt_leak(content)
+        return content
+
     def _cached_translation_or_empty(self, cache, cache_key: str) -> str:
         if cache is None:
             return ""
@@ -269,27 +319,19 @@ Translation rules:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.3,
+                    temperature=TRANSLATION_TEMPERATURE,
                     max_tokens=4096,
                 )
-                usage = response.usage
-                if usage:
-                    cached = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
-                    self.stats.add(
-                        getattr(usage, "prompt_tokens", 0) or 0,
-                        getattr(usage, "completion_tokens", 0) or 0,
-                        cached,
-                    )
-                if not response.choices:
-                    raise RuntimeError("API 返回空 choices")
-                content = response.choices[0].message.content or ""
-                content = content.strip()
-                if not content:
-                    raise RuntimeError("API 返回空译文")
-                ensure_no_prompt_leak(content)
+                content = self._read_completion(response, 4096)
                 if cache is not None:
                     cache.mark_cached_prompt_translation(cache_key, content)
                 return content
+            except TruncatedResponseError as e:
+                # Retrying the same prompt would truncate at the same point, so
+                # fail fast and let the caller split or re-queue the page.
+                self.stats.add_failure()
+                print(f"\n  译文截断，已丢弃且未缓存: {e}")
+                return f"{TRANSLATION_FAILURE_PREFIX} {e}]\n\nOriginal:\n{text[:200]}..."
             except Exception as e:
                 self.stats.add_failure()
                 if attempt < self.retry_count - 1:
@@ -360,27 +402,19 @@ Translation rules:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.3,
+                    temperature=TRANSLATION_TEMPERATURE,
                     max_tokens=token_limit,
                 )
-                usage = response.usage
-                if usage:
-                    cached = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
-                    self.stats.add(
-                        getattr(usage, "prompt_tokens", 0) or 0,
-                        getattr(usage, "completion_tokens", 0) or 0,
-                        cached,
-                    )
-                if not response.choices:
-                    raise RuntimeError("API 返回空 choices")
-                content = response.choices[0].message.content or ""
-                content = content.strip()
-                if not content:
-                    raise RuntimeError("API 返回空译文")
-                ensure_no_prompt_leak(content)
+                content = self._read_completion(response, token_limit)
                 if cache is not None:
                     cache.mark_cached_prompt_translation(cache_key, content)
                 return content
+            except TruncatedResponseError as e:
+                # Fail fast so recursive_translate_group splits this group and
+                # retranslates the halves within the token budget.
+                self.stats.add_failure()
+                print(f"\n  译文截断，已丢弃且未缓存: {e}")
+                return f"{TRANSLATION_FAILURE_PREFIX} {e}]\n\nOriginal:\n{text[:200]}..."
             except Exception as e:
                 self.stats.add_failure()
                 if attempt < self.retry_count - 1:

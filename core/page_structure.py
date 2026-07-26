@@ -6,10 +6,12 @@ vector decorations (lines, rects), and text region bounding boxes.
 Outputs a PageStructureDocument that can be serialized to page_structure.json.
 """
 
+from dataclasses import replace
 from io import BytesIO
 import hashlib
 import math
 from pathlib import Path
+from statistics import median
 
 from PIL import Image, ImageChops
 
@@ -34,6 +36,11 @@ from core.typeset_models import (
     TextRegionBBox,
 )
 from core.utils import ensure_output_parent
+
+# Plausible baseline-to-baseline distance for body text, used to tell a wrapped
+# line apart from a real paragraph break.
+_MIN_LINE_PITCH_PT = 3.0
+_MAX_LINE_PITCH_PT = 40.0
 
 
 def _round_bbox(bbox) -> list[float]:
@@ -379,6 +386,86 @@ def _text_lines(lines, traces: list[dict]) -> list[TextLineBBox]:
             spans=_line_spans(line, traces),
         ))
     return result
+
+
+def _dominant_font_size(lines: list[TextLineBBox]) -> float:
+    sizes = [float(line.font_size) for line in lines if line.font_size]
+    return median(sizes) if sizes else 0.0
+
+
+def _line_pitch(lines: list[TextLineBBox]) -> float | None:
+    tops = sorted(float(line.bbox[1]) for line in lines)
+    advances = [
+        later - earlier
+        for earlier, later in zip(tops, tops[1:])
+        if _MIN_LINE_PITCH_PT < later - earlier < _MAX_LINE_PITCH_PT
+    ]
+    return median(advances) if advances else None
+
+
+def _is_paragraph_continuation(previous: TextRegionBBox, following: TextRegionBBox) -> bool:
+    """Return True when two adjacent PDF text blocks are one flowing paragraph.
+
+    PyMuPDF splits a hanging-indent paragraph into one block per line, which makes
+    every line its own translation unit and cuts sentences apart mid-clause.
+    """
+    previous_size = _dominant_font_size(previous.lines)
+    following_size = _dominant_font_size(following.lines)
+    if previous_size <= 0 or following_size <= 0:
+        return False
+    if abs(previous_size - following_size) > max(previous_size, following_size) * 0.12:
+        return False
+
+    horizontal_overlap = (
+        min(float(previous.bbox[2]), float(following.bbox[2]))
+        - max(float(previous.bbox[0]), float(following.bbox[0]))
+    )
+    if horizontal_overlap <= 0:
+        return False
+
+    # Starting further left than the previous block marks a new indent regime
+    # (a bullet list giving way to body text), not a wrapped line.
+    if (
+        min(float(line.bbox[0]) for line in following.lines)
+        < min(float(line.bbox[0]) for line in previous.lines) - previous_size * 0.8
+    ):
+        return False
+
+    vertical_gap = float(following.bbox[1]) - float(previous.bbox[3])
+    if vertical_gap < 0:
+        return False
+    pitch = (
+        _line_pitch(previous.lines)
+        or _line_pitch(following.lines)
+        or previous_size * 1.6
+    )
+    return vertical_gap <= pitch * 0.6
+
+
+def _merge_flowing_text_regions(regions: list[TextRegionBBox]) -> list[TextRegionBBox]:
+    """Merge adjacent regions that PyMuPDF split out of a single paragraph.
+
+    Regions keep their original paint order: reordering them by position would
+    break the reading order of multi-column pages.
+    """
+    merged: list[TextRegionBBox] = []
+    for region in regions:
+        if merged and _is_paragraph_continuation(merged[-1], region):
+            previous = merged[-1]
+            merged[-1] = replace(
+                previous,
+                bbox=_round_bbox([
+                    min(float(previous.bbox[0]), float(region.bbox[0])),
+                    min(float(previous.bbox[1]), float(region.bbox[1])),
+                    max(float(previous.bbox[2]), float(region.bbox[2])),
+                    max(float(previous.bbox[3]), float(region.bbox[3])),
+                ]),
+                block_ids=list(previous.block_ids) + list(region.block_ids),
+                lines=list(previous.lines) + list(region.lines),
+            )
+            continue
+        merged.append(region)
+    return merged
 
 
 class PageStructureExtractor:
@@ -862,8 +949,7 @@ class PageStructureExtractor:
         page_index = page.number
         page_dict = page.get_text("rawdict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
 
-        region_idx = 0
-        for block in page_dict.get("blocks", []):
+        for block_idx, block in enumerate(page_dict.get("blocks", [])):
             block_type = block.get("type")
             if block_type != 0:  # Only text blocks
                 continue
@@ -881,20 +967,19 @@ class PageStructureExtractor:
             if not has_text:
                 continue
 
-            region_id = f"p{page_index + 1:04d}_r{region_idx + 1:04d}"
-            # Generate a block_id referencing the layout text block
-            block_id = f"p{page_index + 1:04d}_t{region_idx:04d}"
-
             text_regions.append(TextRegionBBox(
-                id=region_id,
+                id="",
                 bbox=_round_bbox(block["bbox"]),
-                block_ids=[block_id],
+                # Generate a block_id referencing the layout text block
+                block_ids=[f"p{page_index + 1:04d}_t{block_idx:04d}"],
                 angle=_dominant_text_angle(block.get("lines", [])),
                 lines=_text_lines(block.get("lines", []), text_traces or []),
             ))
-            region_idx += 1
 
-        return text_regions
+        return [
+            replace(region, id=f"p{page_index + 1:04d}_r{region_idx + 1:04d}")
+            for region_idx, region in enumerate(_merge_flowing_text_regions(text_regions))
+        ]
 
     def extract_display_list(
         self,

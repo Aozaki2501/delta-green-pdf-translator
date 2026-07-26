@@ -149,6 +149,39 @@ def file_digest(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+# Files saved by save_uploaded_file_once end in "_<sha256>.<ext>".
+_UPLOAD_DIGEST_PATTERN = re.compile(r"_([0-9a-f]{64})$")
+
+# Cache for files whose name carries no digest, keyed by identity + mtime.
+_digest_cache: dict[tuple[str, int, int], str] = {}
+
+
+def cached_file_digest(path: Path) -> str:
+    """SHA256 of a stored upload, avoiding a re-read whenever possible.
+
+    Deduplicating an upload used to hash every same-suffix file in uploads/ on
+    every rerun, which grows linearly with the library. Files this function
+    wrote already carry their digest in the name, and anything else is cached
+    against (path, size, mtime).
+    """
+    name_match = _UPLOAD_DIGEST_PATTERN.search(path.stem)
+    if name_match:
+        return name_match.group(1)
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return ""
+    cache_key = (str(path), stat.st_size, int(stat.st_mtime_ns))
+    cached = _digest_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    digest = file_digest(path)
+    _digest_cache[cache_key] = digest
+    return digest
+
+
 def save_uploaded_file_once(uploaded_file, upload_dir: Path, default_name: str = "document") -> Path:
     ensure_dir(upload_dir)
     data = uploaded_file.getvalue()
@@ -162,7 +195,7 @@ def save_uploaded_file_once(uploaded_file, upload_dir: Path, default_name: str =
     )
 
     for existing in sorted(upload_dir.glob(f"*{suffix}")):
-        if existing.is_file() and file_digest(existing) == digest:
+        if existing.is_file() and cached_file_digest(existing) == digest:
             return existing
 
     target = upload_dir / f"{prefix}{stem}_{digest}{suffix}"

@@ -51,6 +51,9 @@ from webui.glossary_review import (
 from webui.theme import render_app_theme, render_government_theme_override, render_workstation_effects
 
 # MD / DOCX translation support
+from webui.storage_ui import render_storage_manager
+from core.pricing import build_pricing, format_cost_yuan
+from core.utils import validate_base_url
 from translate_md import translate_md_file
 from translate_docx import translate_docx_file
 from core.md_extractor import MarkdownExtractor
@@ -143,6 +146,15 @@ def _extract_texts_for_glossary_review(
     return {}
 
 
+def _base_url_error(base_url: str) -> str:
+    """Return a user-facing problem with the endpoint, or "" when it is fine."""
+    try:
+        validate_base_url(base_url)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
 def _has_review_changes(review_rows: list[dict]) -> bool:
     if review_rows is None:
         return False
@@ -224,6 +236,23 @@ def _render_task_controls(office_mode: bool) -> dict:
         cooldown = st.slider("批次冷却（秒）", 0.0, 5.0, 1.0, 0.1, key="cooldown_input")
         max_split_depth = st.slider("最大拆分深度", 1, 20, 10, key="split_depth_input")
         fuzzy_matching = st.checkbox("模糊术语匹配", value=False, key="fuzzy_matching_input")
+        st.caption(
+            "费用单价（可选）。留空或 0 表示不显示金额，只显示 Token 与调用次数。"
+            "单价按上面填写的接口地址生效，换接口后请重新填写。"
+        )
+        price_cols = st.columns(3)
+        price_input_per_m = price_cols[0].number_input(
+            "输入 ¥/百万 token", value=0.0, min_value=0.0, step=0.1,
+            format="%.3f", key="price_input_per_m",
+        )
+        price_output_per_m = price_cols[1].number_input(
+            "输出 ¥/百万 token", value=0.0, min_value=0.0, step=0.1,
+            format="%.3f", key="price_output_per_m",
+        )
+        price_cached_per_m = price_cols[2].number_input(
+            "缓存 ¥/百万 token", value=0.0, min_value=0.0, step=0.1,
+            format="%.3f", key="price_cached_per_m",
+        )
         retranslate_pages_str = st.text_input(
             "重翻页码", key="retranslate_pages_input", placeholder="如：8, 12-15"
         )
@@ -675,6 +704,12 @@ rate_limit = controls["rate_limit"]
 cooldown = controls["cooldown"]
 max_split_depth = controls["max_split_depth"]
 fuzzy_matching = controls["fuzzy_matching"]
+pricing_config = {
+    "base_url": controls["base_url"],
+    "input_per_m": controls.get("price_input_per_m", 0.0),
+    "output_per_m": controls.get("price_output_per_m", 0.0),
+    "cached_per_m": controls.get("price_cached_per_m", 0.0),
+}
 retranslate_pages_str = controls["retranslate_pages_str"]
 retry_failed_pages = controls["retry_failed_pages"]
 show_review_workbench = controls["show_review_workbench"]
@@ -914,8 +949,8 @@ if launch_pressed:
         st.error(f"✗ 术语候选扫描失败，请先处理：{glossary_review_error}")
     elif not api_key:
         st.error("✗ 请输入接口密钥")
-    elif not base_url.strip():
-        st.error("✗ 请输入接口地址")
+    elif _base_url_error(base_url):
+        st.error(f"✗ {_base_url_error(base_url)}")
     elif not model.strip():
         st.error("✗ 请输入模型名称")
     elif source_type == "pdf" and not formats:
@@ -1036,7 +1071,10 @@ if launch_pressed:
             progress_metric.metric("进度", f"{completed_count}/{total_count}")
             elapsed_metric.metric("已用时", format_duration(elapsed))
             speed_metric.metric("速度", f"{speed:.1f} 块/分钟" if speed else "估算中")
-            cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}" if stats else "估算中")
+            cost_metric.metric(
+                "费用",
+                format_cost_yuan(stats.cost_yuan) if stats else "估算中",
+            )
 
         try:
             if source_type == "markdown":
@@ -1054,6 +1092,7 @@ if launch_pressed:
                     cooldown=cooldown,
                     max_split_depth=max_split_depth,
                     fuzzy_matching=fuzzy_matching,
+                    pricing=pricing_config,
                 )
             else:
                 result = translate_docx_file(
@@ -1071,6 +1110,7 @@ if launch_pressed:
                     cooldown=cooldown,
                     max_split_depth=max_split_depth,
                     fuzzy_matching=fuzzy_matching,
+                    pricing=pricing_config,
                 )
 
             if result.get("block_count", 0) and not result.get("translated_count", 0):
@@ -1214,7 +1254,7 @@ if launch_pressed:
         })
 
         # Init
-        stats = TokenStats()
+        stats = TokenStats(pricing=build_pricing(pricing_config, base_url))
         extractor = PDFExtractor(pdf_path)
         total = extractor.total_pages
         try:
@@ -1440,7 +1480,7 @@ if launch_pressed:
                     else f"{stats.api_calls} 次 / 失败 {stats.failed_calls}",
                 )
                 typeset_token_metric.metric("Token", f"{stats.total_tokens:,}")
-                typeset_cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}")
+                typeset_cost_metric.metric("费用", format_cost_yuan(stats.cost_yuan))
 
             layout_hints_generator = None
             if typeset_auto_layout_hints and not layout_hints_path:
@@ -1534,7 +1574,7 @@ if launch_pressed:
             typeset_status.text(
                 "✓ 图文重绘完成! "
                 f"总用时 {format_duration(elapsed_total)} | "
-                f"Token {result.total_tokens:,} | 费用 ¥{result.cost_yuan:.3f}"
+                f"Token {result.total_tokens:,} | 费用 {format_cost_yuan(result.cost_yuan)}"
             )
 
             if result.export_errors:
@@ -1583,7 +1623,7 @@ if launch_pressed:
                 "失败区域": result.failed_regions,
                 "API 调用": result.api_calls,
                 "Token": f"{result.total_tokens:,}",
-                "费用": f"¥{result.cost_yuan:.3f}",
+                "费用": format_cost_yuan(result.cost_yuan),
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             })
             extractor.close()
@@ -1598,6 +1638,7 @@ if launch_pressed:
             base_url=base_url,
             start_page=start_page,
             end_page=end_page,
+            fuzzy_matching=fuzzy_matching,
         )
         tracker = ProgressTracker(
             progress_file,
@@ -1605,6 +1646,11 @@ if launch_pressed:
             reuse_mismatched=reuse_mismatched_progress,
         )
         tracker.save()
+        if tracker.progress_corrupted:
+            st.error(
+                f"原 progress.json 无法解析，已备份为 {Path(tracker.corrupt_backup_path).name}，"
+                "本次会整本重译并重新计费。"
+            )
         if tracker.metadata_mismatches:
             st.warning(
                 "检测到 progress.json 与当前设置不一致："
@@ -1750,13 +1796,13 @@ if launch_pressed:
             set_progress(min(pct, 1.0), progress_text)
             status_text.text(
                 f"翻译中: 已完成 {completed_count}/{total_count} 页{latest_text} | "
-                f"费用 ¥{stats.cost_yuan:.3f}"
+                f"费用 {format_cost_yuan(stats.cost_yuan)}"
             )
             progress_metric.metric("进度", f"{completed_count}/{total_count}")
             elapsed_metric.metric("已用时", format_duration(elapsed))
             eta_metric.metric("预计剩余", format_duration(remaining_seconds))
             speed_metric.metric("速度", f"{speed:.1f} 页/分钟" if speed else "估算中")
-            cost_metric.metric("费用", f"¥{stats.cost_yuan:.3f}")
+            cost_metric.metric("费用", format_cost_yuan(stats.cost_yuan))
 
         def update_translation_progress(page_num, translation, completed_count, total_count):
             render_progress(completed_count, total_count, page_num)
@@ -2025,7 +2071,7 @@ if launch_pressed:
         # Stats
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("📄 页数", f"{completeness.translated_pages}")
-        col_b.metric("💰 费用", f"¥{stats.cost_yuan:.3f}")
+        col_b.metric("💰 费用", format_cost_yuan(stats.cost_yuan))
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
         # Output & Download
@@ -2296,3 +2342,6 @@ if not office_mode:
     st.markdown('<span id="secure-archive"></span>', unsafe_allow_html=True)
 with st.expander("历史输出" if office_mode else "档案库", expanded=False):
     render_output_history(APP_DIR / "output", office_mode=office_mode)
+
+with st.expander("存储管理" if office_mode else "存储清理", expanded=False):
+    render_storage_manager(APP_DIR / "uploads", APP_DIR / "output")

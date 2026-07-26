@@ -285,6 +285,11 @@ class TestBlockMarkers:
         with pytest.raises(ValueError, match="重复"):
             _parse_marked_translations(text, {"b1"})
 
+    def test_parse_marked_translations_rejects_elision_placeholder(self):
+        text = "[BLOCK b1]\n《新时代》的触发事件是[...]之间的信任丧失。\n[/BLOCK b1]"
+        with pytest.raises(ValueError, match="省略占位符"):
+            _parse_marked_translations(text, {"b1"})
+
     def test_parse_marked_translations_rejects_prompt_leak(self):
         text = (
             "[BLOCK b1]\n您是专业的TRPG翻译，翻译规则包括："

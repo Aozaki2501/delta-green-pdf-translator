@@ -231,10 +231,17 @@ class SemanticAnalyzer:
             (spec["line"].bbox[0] for spec in line_specs if spec["font_role"] == FontRole.BODY),
             default=region.bbox[0],
         )
+        hanging_baseline = _hanging_indent_baseline(line_specs, context.median_font_size)
         groups: list[list[dict]] = []
         current: list[dict] = []
         for spec in line_specs:
-            if current and _starts_new_segment(current, spec, body_x0, context.median_font_size):
+            if current and _starts_new_segment(
+                current,
+                spec,
+                body_x0,
+                context.median_font_size,
+                hanging_baseline,
+            ):
                 groups.append(current)
                 current = []
             current.append(spec)
@@ -755,11 +762,58 @@ def _classify_line_style(
     return FontRole.BODY, SemanticRole.BODY_COLUMN
 
 
+def _hanging_indent_baseline(
+    line_specs: list[dict],
+    body_font_size: float,
+) -> float | None:
+    """Return the body left edge when the region uses a hanging indent.
+
+    In a hanging-indent block the first line of each paragraph starts *left* of
+    the continuation lines, so the usual "indented line starts a paragraph" rule
+    is inverted and would otherwise split every wrapped line into its own block.
+    """
+    body_x0s = [
+        float(spec["line"].bbox[0])
+        for spec in line_specs
+        if spec["font_role"] == FontRole.BODY
+    ]
+    if len(body_x0s) < 3:
+        return None
+
+    tolerance = body_font_size * 0.8
+    baseline = max(
+        body_x0s,
+        key=lambda candidate: sum(1 for x0 in body_x0s if abs(x0 - candidate) < tolerance),
+    )
+    # Continuation lines must outnumber paragraph starts. Without this a regular
+    # first-line indent, where both edges are equally common, reads as hanging.
+    at_baseline = sum(1 for x0 in body_x0s if abs(x0 - baseline) < tolerance)
+    if at_baseline * 2 <= len(body_x0s):
+        return None
+
+    shallow_indices = [
+        index for index, x0 in enumerate(body_x0s) if x0 <= baseline - tolerance
+    ]
+    if not shallow_indices:
+        return None
+    # A hanging paragraph start is followed by its own continuation lines. A
+    # region that merely ends on a short outdented line is not hanging.
+    continued = sum(
+        1
+        for index in shallow_indices
+        if index + 1 < len(body_x0s) and body_x0s[index + 1] > baseline - tolerance
+    )
+    if continued * 2 <= len(shallow_indices):
+        return None
+    return baseline
+
+
 def _starts_new_segment(
     current: list[dict],
     next_spec: dict,
     body_x0: float,
     body_font_size: float,
+    hanging_baseline: float | None,
 ) -> bool:
     previous = current[-1]
     if next_spec["font_role"] != previous["font_role"]:
@@ -770,7 +824,10 @@ def _starts_new_segment(
         return True
 
     current_x0 = float(next_spec["line"].bbox[0])
-    if current_x0 - body_x0 >= body_font_size * 0.8:
+    if hanging_baseline is not None:
+        if current_x0 <= hanging_baseline - body_font_size * 0.8:
+            return True
+    elif current_x0 - body_x0 >= body_font_size * 0.8:
         return True
     advances = [
         float(current[index]["line"].bbox[1]) - float(current[index - 1]["line"].bbox[1])

@@ -22,7 +22,12 @@ from pathlib import Path
 from typing import Callable
 
 from core.constants import TRANSLATION_FAILURE_PREFIX
-from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
+from core.translation_validation import (
+    contains_elision_placeholder,
+    contains_prompt_leak,
+    ensure_no_elision_placeholder,
+    ensure_no_prompt_leak,
+)
 from core.utils import replace_with_retry
 from core.typeset_models import (
     ContentBlock,
@@ -34,6 +39,11 @@ from core.typeset_models import (
 # ---------------------------------------------------------------------------
 # TypesetTranslationProgress — checkpoint/resume for typeset translation
 # ---------------------------------------------------------------------------
+
+
+def _is_unusable_translation(text: str) -> bool:
+    """Stored translations from an older run may predate current validation."""
+    return contains_prompt_leak(text) or contains_elision_placeholder(text)
 
 
 class TypesetTranslationProgress:
@@ -112,12 +122,12 @@ class TypesetTranslationProgress:
                 stored_hash = self.source_hashes.get(block_id)
                 if stored_hash not in {"*", _source_text_hash(source_text)}:
                     return False
-            return not contains_prompt_leak(self.translations.get(block_id, ""))
+            return not _is_unusable_translation(self.translations.get(block_id, ""))
 
     def get_translation(self, block_id: str) -> str:
         with self._lock:
             translation = self.translations.get(block_id, "")
-        if contains_prompt_leak(translation):
+        if _is_unusable_translation(translation):
             return ""
         return translation
 
@@ -130,13 +140,14 @@ class TypesetTranslationProgress:
     def get_cached_prompt_translation(self, cache_key: str) -> str:
         with self._lock:
             translation = self.translation_cache.get(cache_key, "")
-        if contains_prompt_leak(translation):
+        if _is_unusable_translation(translation):
             return ""
         return translation
 
     def mark_cached_prompt_translation(self, cache_key: str, translation: str):
         if cache_key and translation:
             ensure_no_prompt_leak(translation, "缓存译文")
+            ensure_no_elision_placeholder(translation, "缓存译文")
             with self._lock:
                 self.translation_cache[cache_key] = translation
                 self.save()
@@ -162,6 +173,7 @@ class TypesetTranslationProgress:
         if not translation:
             raise ValueError(f"译文为空：{block_id}")
         ensure_no_prompt_leak(translation)
+        ensure_no_elision_placeholder(translation)
         with self._lock:
             self.translations[block_id] = translation
             self.source_hashes[block_id] = (
@@ -256,6 +268,7 @@ def _parse_marked_translations(text: str, expected_ids: set[str]) -> dict[str, s
         raise ValueError("译文为空：" + ", ".join(sorted(empty)[:10]))
     for block_id, translated in parsed.items():
         ensure_no_prompt_leak(translated, f"译文块 {block_id}")
+        ensure_no_elision_placeholder(translated, f"译文块 {block_id}")
     return parsed
 
 

@@ -193,8 +193,14 @@ class ConcurrentDispatcher:
         completed_count = 0
         # Lock for thread-safe updates to shared state
         results_lock = threading.Lock()
-        # Sliding context window: last 500 chars of most recently completed translation
-        context_window = ""
+
+        # Context is the tail of the preceding group's *source* text, computed up
+        # front. Using translations instead made the prompt depend on which
+        # results happened to be ready, so the same document translated with a
+        # different concurrency produced different text — and reused the old
+        # cache anyway. Source text is known before any call, so every group gets
+        # the same context no matter how the batches are scheduled.
+        group_contexts = self._build_group_contexts(groups)
 
         batch_size = self._config.concurrency
         batches = [groups[i:i + batch_size] for i in range(0, len(groups), batch_size)]
@@ -206,9 +212,6 @@ class ConcurrentDispatcher:
             # Insert cooldown between batches (not before the first one)
             if batch_idx > 0 and self._config.cooldown > 0:
                 time.sleep(self._config.cooldown)
-
-            # Capture current context for this batch (all groups in batch share it)
-            batch_context = context_window
 
             def _dispatch_group(group, prev_context):
                 """Dispatch a single group through RecursiveSplitter."""
@@ -231,8 +234,11 @@ class ConcurrentDispatcher:
             # Execute batch concurrently
             with ThreadPoolExecutor(max_workers=batch_size) as executor:
                 futures = {}
-                for group in batch:
-                    future = executor.submit(_dispatch_group, group, batch_context)
+                for group_offset, group in enumerate(batch):
+                    group_index = batch_idx * batch_size + group_offset
+                    future = executor.submit(
+                        _dispatch_group, group, group_contexts[group_index]
+                    )
                     futures[future] = group
 
                 for future in as_completed(futures):
@@ -256,8 +262,8 @@ class ConcurrentDispatcher:
                         self._record_success()
                         with results_lock:
                             all_translations.update(result.translations)
+                        self._tracker.mark_completed_many(result.translations)
                         for idx, text in result.translations.items():
-                            self._tracker.mark_completed(idx, text)
                             with results_lock:
                                 completed_count += 1
                                 current_count = completed_count
@@ -275,22 +281,20 @@ class ConcurrentDispatcher:
                             self._report_progress(idx, "translation failed after recursive split",
                                                   current_count, total_blocks)
 
-            # Update context window from this batch's results
-            # Use the translation with the highest block index from this batch
-            batch_translations = {
-                idx: text for idx, text in all_translations.items()
-                if any(
-                    any(getattr(b, 'index', None) == idx for b in group)
-                    for group in batch
-                )
-            }
-            if batch_translations:
-                max_idx = max(batch_translations.keys())
-                last_text = batch_translations[max_idx]
-                context_window = last_text[-_CONTEXT_WINDOW_SIZE:] if last_text else ""
-
+        self._tracker.flush()
         # Return results sorted by block index
         return dict(sorted(all_translations.items()))
+
+    @staticmethod
+    def _build_group_contexts(groups: list[list]) -> list[str]:
+        """Return, for each group, the source-text tail of the group before it."""
+        contexts = []
+        previous_tail = ""
+        for group in groups:
+            contexts.append(previous_tail)
+            source = "\n\n".join(str(getattr(block, "text", "") or "") for block in group)
+            previous_tail = source[-_CONTEXT_WINDOW_SIZE:] if source else previous_tail
+        return contexts
 
     def _report_progress(self, block_idx: int, text: str,
                          completed_count: int, total_count: int) -> None:

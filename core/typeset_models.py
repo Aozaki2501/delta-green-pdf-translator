@@ -390,7 +390,7 @@ class TypesetResult:
     api_calls: int = 0
     failed_calls: int = 0
     translation_cache_hits: int = 0
-    cost_yuan: float = 0.0
+    cost_yuan: float | None = None
 
 
 # ===========================================================================

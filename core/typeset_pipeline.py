@@ -35,6 +35,20 @@ from core.typeset_models import (
 
 logger = logging.getLogger(__name__)
 
+# Project root, used to bound where layout hints may be read from.
+APP_DIR = Path(__file__).resolve().parent.parent
+
+
+def _report_file_name(path: str | None) -> str:
+    """Reduce a path to its file name for reports.
+
+    _typeset_report.json is shipped alongside the outputs, so it must not carry
+    the local absolute path of the machine that produced it.
+    """
+    if not path:
+        return ""
+    return Path(str(path)).name
+
 
 # ---------------------------------------------------------------------------
 # TypesetPipeline
@@ -684,18 +698,41 @@ class TypesetPipeline:
         return result
 
     def _resolve_layout_hints_path(self) -> Path | None:
-        """Return the configured or conventional layout hints path."""
+        """Return the configured or conventional layout hints path.
+
+        The path is restricted to the project directory or the output directory.
+        The pipeline reads and parses whatever it is given, so an unconstrained
+        path turns a networked Streamlit instance into an arbitrary local-file
+        reader and existence prober.
+        """
         configured = self.config.layout_hints_path
         if configured:
             path = Path(configured).expanduser()
             if not path.exists():
                 raise FileNotFoundError(f"layout_hints 文件不存在：{path}")
-            return path.resolve()
+            resolved = path.resolve()
+            self._ensure_path_allowed(resolved)
+            return resolved
 
         candidate = self.output_dir / "layout_hints.json"
         if candidate.exists():
             return candidate.resolve()
         return None
+
+    def _ensure_path_allowed(self, path: Path) -> None:
+        """Reject layout hints outside the project or output directory."""
+        allowed_roots = [APP_DIR]
+        try:
+            allowed_roots.append(self.output_dir.resolve())
+        except OSError:
+            pass
+        for root in allowed_roots:
+            if path == root or root in path.parents:
+                return
+        allowed_text = "、".join(str(root) for root in allowed_roots)
+        raise ValueError(
+            f"layout_hints 路径超出允许范围：{path}。只能放在 {allowed_text} 之内。"
+        )
 
     def _current_source_sha256(self) -> str:
         """Return the exact digest of the current source PDF."""
@@ -806,7 +843,7 @@ class TypesetPipeline:
             translation_cache_hits=int(
                 getattr(stats, "translation_cache_hits", 0) or 0
             ),
-            cost_yuan=float(getattr(stats, "cost_yuan", 0.0) or 0.0),
+            cost_yuan=getattr(stats, "cost_yuan", None),
         )
 
     def _write_report(self, result: TypesetResult) -> None:
@@ -818,9 +855,9 @@ class TypesetPipeline:
             "total_pages": result.total_pages,
             "translated_regions": result.translated_regions,
             "failed_regions": result.failed_regions,
-            "pdf_output": result.pdf_path,
-            "html_output": result.html_path,
-            "reading_html_output": result.reading_html_path,
+            "pdf_output": _report_file_name(result.pdf_path),
+            "html_output": _report_file_name(result.html_path),
+            "reading_html_output": _report_file_name(result.reading_html_path),
             "errors": result.export_errors,
             "usage": {
                 "input_tokens": result.input_tokens,
@@ -837,7 +874,7 @@ class TypesetPipeline:
                 "fallback_fonts": self.config.fallback_fonts,
                 "body_font_size_pt": self.config.body_font_size_pt,
                 "line_height": self.config.line_height,
-                "layout_hints_path": self.config.layout_hints_path,
+                "layout_hints_path": _report_file_name(self.config.layout_hints_path),
             },
         }
         try:

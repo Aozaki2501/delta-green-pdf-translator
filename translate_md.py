@@ -6,7 +6,7 @@ Translates a Markdown file from English to Chinese, preserving structure.
 
 Usage:
     python translate_md.py input.md --api-key YOUR_KEY
-    python translate_md.py input.md --api-key YOUR_KEY --model deepseek-chat --workers 8
+    python translate_md.py input.md --api-key YOUR_KEY --model deepseek-v4-pro --workers 8
     python translate_md.py input.md --api-key YOUR_KEY --glossary glossary.tsv
 """
 
@@ -21,8 +21,10 @@ from core.translator import Translator, TokenStats
 from core.progress import ProgressTracker
 from core.glossary import load_glossary, build_glossary_matcher, select_core_glossary_terms
 from core.dispatcher import ConcurrentDispatcher, DispatcherConfig
-from core.utils import file_sha256, configure_console_output
-from core.constants import PROMPT_VERSION
+from core.utils import configure_console_output, validate_base_url
+from core.constants import PROMPT_VERSION, TRANSLATION_TEMPERATURE
+from core.pricing import build_pricing
+from core.progress import PROGRESS_SCHEMA_VERSION, fingerprint_file
 from core.translation_validation import ensure_no_prompt_leak
 from exporters.md_preserve import write_md_output
 
@@ -30,6 +32,7 @@ configure_console_output()
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_GLOSSARY_PATH = APP_DIR / "glossary.tsv"
+DEFAULT_MODEL = "deepseek-v4-pro"
 
 
 def _marked_md_group_text(group: list[MdBlock]) -> str:
@@ -83,23 +86,26 @@ def _parse_marked_md_translation(translated: str, group: list[MdBlock]) -> dict[
 
 
 def build_md_progress_metadata(md_path: str, glossary_path: str | None,
-                                model: str, base_url: str) -> dict:
+                                model: str, base_url: str,
+                                fuzzy_matching: bool = False) -> dict:
     """Build metadata fingerprint for a Markdown translation session."""
     return {
-        "schema": 1,
+        "schema": PROGRESS_SCHEMA_VERSION,
         "source_type": "markdown",
-        "source_sha256": file_sha256(md_path),
-        "glossary_sha256": file_sha256(glossary_path) if glossary_path else "",
+        "source_sha256": fingerprint_file(md_path),
+        "glossary_sha256": fingerprint_file(glossary_path),
         "model": model,
         "base_url": base_url,
         "prompt_version": PROMPT_VERSION,
+        "temperature": TRANSLATION_TEMPERATURE,
+        "fuzzy_matching": bool(fuzzy_matching),
     }
 
 
 def translate_md_file(
     md_path: str,
     api_key: str,
-    model: str = "deepseek-chat",
+    model: str = DEFAULT_MODEL,
     base_url: str = "https://api.deepseek.com",
     glossary_path: str | None = None,
     output_path: str | None = None,
@@ -110,6 +116,7 @@ def translate_md_file(
     cooldown: float = 1.0,
     max_split_depth: int = 10,
     fuzzy_matching: bool = False,
+    pricing=None,
 ) -> dict:
     """
     Translate a Markdown file end-to-end.
@@ -121,6 +128,7 @@ def translate_md_file(
     Returns dict with keys: output_path, stats_summary, block_count, translated_count
     """
     md_path = str(Path(md_path).resolve())
+    base_url = validate_base_url(base_url)
 
     # Default output path
     if not output_path:
@@ -156,13 +164,26 @@ def translate_md_file(
         write_md_output(all_blocks, {}, output_path)
         return {"output_path": output_path, "stats_summary": "", "block_count": 0, "translated_count": 0}
 
-    # Setup progress tracker
-    progress_file = str(Path(output_path).parent / ".progress.json")
-    metadata = build_md_progress_metadata(md_path, glossary_path, model, base_url)
+    # Setup progress tracker. The progress file is named after the output file:
+    # a shared ".progress.json" per directory meant two documents written to the
+    # same --output folder fought over one file, and the fingerprint mismatch
+    # made each run wipe the other's translations.
+    progress_file = str(Path(output_path).with_suffix("")) + ".progress.json"
+    metadata = build_md_progress_metadata(
+        md_path, glossary_path, model, base_url, fuzzy_matching
+    )
     tracker = ProgressTracker(progress_file, expected_metadata=metadata)
+    if tracker.progress_corrupted:
+        print(f"⚠️  原进度文件无法解析，已备份为 {tracker.corrupt_backup_path}，本次全部重译。")
+    if tracker.metadata_mismatches:
+        print("⚠️  进度文件与当前设置不一致：")
+        for mismatch in tracker.metadata_mismatches[:5]:
+            print(f"   - {mismatch}")
+        if tracker.ignored_existing_progress:
+            print("   已保留文件但本次不复用旧译文。")
 
     # Setup translator with AC glossary matcher
-    stats = TokenStats()
+    stats = TokenStats(pricing=build_pricing(pricing, base_url))
     glossary_matcher = build_glossary_matcher(glossary, fuzzy=fuzzy_matching) if glossary else None
     translator = Translator(api_key=api_key, model=model, base_url=base_url, stats=stats,
                             glossary_matcher=glossary_matcher)
@@ -230,7 +251,7 @@ def main():
     parser = argparse.ArgumentParser(description="Translate Markdown file (EN → ZH)")
     parser.add_argument("input", help="Input .md file path")
     parser.add_argument("--api-key", required=True, help="API key")
-    parser.add_argument("--model", default="deepseek-chat", help="Model name")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name")
     parser.add_argument("--base-url", default="https://api.deepseek.com", help="API base URL")
     parser.add_argument("--glossary", default=None, help="Glossary TSV file path")
     parser.add_argument("--output", default=None, help="Output file path")

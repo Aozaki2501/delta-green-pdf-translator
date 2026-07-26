@@ -1,8 +1,10 @@
 """
 Validation for model output before it is persisted.
 
-Prompt text must never be treated as translated content. These checks are
-signature-based and fail closed: callers retry or mark the unit as failed.
+Prompt text must never be treated as translated content, and neither must an
+elision placeholder standing in for text the model could not reconstruct. These
+checks are signature-based and fail closed: callers retry or mark the unit as
+failed.
 """
 
 from __future__ import annotations
@@ -81,3 +83,23 @@ def ensure_no_prompt_leak(text: str, label: str = "译文") -> None:
     """Raise when translated text contains internal prompt signatures."""
     if contains_prompt_leak(text):
         raise ValueError(f"{label}包含内部翻译指令")
+
+
+# A sentence split across two translation units cannot be reconstructed from
+# either half alone, and the model fills the missing clause with an ellipsis
+# placeholder instead of failing. Bracketed ASCII/CJK ellipses and "省略" notes
+# cover every form observed in real output.
+_ELISION_PLACEHOLDER = re.compile(
+    r"[\[\(（【]\s*(?:\.{2,}|。{2,}|…+|省略[^\]\)）】]*)\s*[\]\)）】]"
+)
+
+
+def contains_elision_placeholder(text: str) -> bool:
+    """Return True when text contains an elision placeholder such as ``[...]``."""
+    return bool(_ELISION_PLACEHOLDER.search(str(text or "")))
+
+
+def ensure_no_elision_placeholder(text: str, label: str = "译文") -> None:
+    """Raise when translated text elides content it failed to reconstruct."""
+    if contains_elision_placeholder(text):
+        raise ValueError(f"{label}包含省略占位符，原文可能被切断")

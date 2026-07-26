@@ -19,6 +19,29 @@ SKILL_WORDS = (
     "Unnatural",
 )
 
+# Numbers that carry game rules. Each pattern captures the digits that must
+# survive translation; the surrounding English label is expected to be
+# translated, so only the captured value is checked against the Chinese text.
+RULE_VALUE_PATTERNS = (
+    ("百分比", re.compile(r"(?<![\d.])(\d{1,3})\s*%")),
+    ("伤害修正", re.compile(r"\d+\s*[dD]\s*\d+\s*[+\-]\s*(\d+)")),
+    ("护甲", re.compile(r"\bArmou?r\b\s*:?\s*(\d+)", re.IGNORECASE)),
+    ("致死率", re.compile(r"\bLethality\b\s*:?\s*(\d{1,3})", re.IGNORECASE)),
+    (
+        "射程",
+        re.compile(
+            r"(?<![\d.])(\d+)\s*(?:m|km|ft|yd|meters?|metres?|kilometers?|kilometres?|feet|yards?)(?![A-Za-z])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "技能值",
+        re.compile(
+            r"\b(?:" + "|".join(re.escape(skill) for skill in SKILL_WORDS) + r")\b\s*:?\s*(\d{1,3})"
+        ),
+    ),
+)
+
 
 @dataclass
 class RuleSymbolIssue:
@@ -42,6 +65,7 @@ def build_rule_symbol_issues(
             continue
         display_page = page_num + 1
         issues.extend(_missing_source_symbols(display_page, source, translation))
+        issues.extend(_missing_rule_values(display_page, source, translation))
         issues.extend(_translated_abbreviation_issues(display_page, source, translation))
         issues.extend(_skill_name_residue_issues(display_page, source, translation))
     issues.sort(key=lambda item: (item.page_num, item.kind, item.symbol))
@@ -90,6 +114,35 @@ def _missing_source_symbols(page_num: int, source: str, translation: str) -> lis
                 symbol=symbol,
                 message="原文有该规则符号，译文未保留。",
                 source_excerpt=_excerpt_around(source, symbol),
+                translation_excerpt=_excerpt(translation),
+            ))
+    return issues
+
+
+def _missing_rule_values(page_num: int, source: str, translation: str) -> list[RuleSymbolIssue]:
+    """Check that rule numbers (skill %, damage, armor, lethality, range) survive.
+
+    Only the number is checked: labels like "Armor" or "Lethality" are supposed
+    to be translated, but a Chinese rules text that changes or drops the value
+    itself is a mistranslation the character-ratio check cannot see.
+    """
+    issues = []
+    normalized_source = re.sub(r"\s+", " ", source)
+    seen: set[tuple[str, str]] = set()
+    for kind, pattern in RULE_VALUE_PATTERNS:
+        for match in pattern.finditer(normalized_source):
+            value = match.group(1)
+            if (kind, value) in seen:
+                continue
+            seen.add((kind, value))
+            if re.search(rf"(?<!\d){re.escape(value)}(?!\d)", translation):
+                continue
+            issues.append(RuleSymbolIssue(
+                page_num=page_num,
+                kind=kind,
+                symbol=match.group(0).strip(),
+                message=f"原文规则数值 {value} 在译文中找不到，需人工核对。",
+                source_excerpt=_excerpt_around(source, match.group(0).strip()),
                 translation_excerpt=_excerpt(translation),
             ))
     return issues

@@ -352,3 +352,54 @@ def test_timeline_dates_are_split_into_stable_heading_blocks():
         FontRole.SUBSECTION,
         FontRole.BODY,
     ]
+
+
+def test_hanging_indent_block_splits_on_outdented_lines_only():
+    """Monster stat blocks hang their continuation lines to the right.
+
+    Geometry mirrors page 4 of the real New Age artifact: paragraph starts sit at
+    x0=45.7 and wrapped lines at x0=54.4. Applying the usual "indented line starts
+    a paragraph" rule here would make every wrapped line its own block, which is
+    what forced the page into line-by-line translation.
+    """
+    rows = [
+        ("ETERNAL: Ghroth could, theoretically, be destroyed", 45.7, 401.9),
+        ("enough force could shatter the thing's flesh into", 54.4, 416.9),
+        ("require is not within humanity's grasp. Even if", 54.4, 431.9),
+        ("CELESTIAL PIPING: Ghroth obeys the vibrations", 45.7, 446.9),
+        ("atmosphere, that call manifests to human ears as", 54.4, 461.9),
+        ("technology to re-create that control signal.", 54.4, 476.9),
+    ]
+    specs = [
+        _line(
+            text=text,
+            bbox=[x0, y0, 540.0, y0 + 11.7],
+            font_size=9.0,
+            line_index=index,
+        )
+        for index, (text, x0, y0) in enumerate(rows)
+    ]
+    lines = [line for line, _ in specs]
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox("stats", [45.7, 401.9, 540.0, 488.6], [], lines=lines),
+        ],
+    )
+    analyzer = _analyzer_for_fixture({"stats": [run for _, run in specs]})
+
+    page = analyzer.analyze_page(structure)
+
+    assert [block.source_text for block in page.blocks] == [
+        "ETERNAL: Ghroth could, theoretically, be destroyed\n"
+        "enough force could shatter the thing's flesh into\n"
+        "require is not within humanity's grasp. Even if",
+        "CELESTIAL PIPING: Ghroth obeys the vibrations\n"
+        "atmosphere, that call manifests to human ears as\n"
+        "technology to re-create that control signal.",
+    ]

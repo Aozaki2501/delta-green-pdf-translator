@@ -13,8 +13,37 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from core.constants import TRANSLATION_FAILURE_PREFIX
+
+# Hosts that stay on the local machine, where plain HTTP carries no exposure.
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def validate_base_url(base_url: str) -> str:
+    """Validate an OpenAI-compatible endpoint and return it stripped.
+
+    Any compatible endpoint is allowed by design, but a remote plain-HTTP URL
+    would send the API key (Authorization header) and the full source text over
+    the wire in clear text, so it is rejected outright.
+    """
+    url = str(base_url or "").strip()
+    if not url:
+        raise ValueError("Base URL 不能为空")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"接口地址必须以 http:// 或 https:// 开头：{url}"
+        )
+    if not parsed.hostname:
+        raise ValueError(f"接口地址缺少主机名：{url}")
+    if parsed.scheme == "http" and parsed.hostname.lower() not in LOCAL_HOSTS:
+        raise ValueError(
+            f"远程接口地址必须使用 HTTPS，否则 API Key 和原文会明文出网：{url}"
+        )
+    return url
 
 
 def configure_console_output():
@@ -121,6 +150,24 @@ def looks_untranslated_page(source_text: str, translated_text: str, layout: str 
     return latin_ratio >= 0.72
 
 
+# Minimum translated/source visible-character ratio before a page is treated as
+# truncated. Calibrated on 31 healthy pages from two finished Delta Green runs
+# (exact code path: PDFExtractor text vs. stored translation): the observed
+# range was 0.383–0.542. 0.25 therefore keeps a ~1.5x margin below the worst
+# healthy page while flagging any page that lost roughly a third of its content.
+# Non-body layouts have no measured baseline, so they stay deliberately lenient.
+INCOMPLETE_RATIO_DEFAULT = 0.25
+INCOMPLETE_RATIO_BY_LAYOUT = {
+    "toc": 0.18,
+    "handout": 0.18,
+}
+
+
+def incomplete_ratio_threshold(layout: str = "") -> float:
+    """Return the truncation ratio threshold for a page layout."""
+    return INCOMPLETE_RATIO_BY_LAYOUT.get(str(layout or ""), INCOMPLETE_RATIO_DEFAULT)
+
+
 def looks_incomplete_translation(source_text: str, translated_text: str, layout: str = "") -> bool:
     if layout == "art":
         return False
@@ -146,7 +193,8 @@ def looks_incomplete_translation(source_text: str, translated_text: str, layout:
     if translated_cjk < 80:
         return False
 
-    return translated_visible_len / max(source_visible_len, 1) < 0.15
+    ratio = translated_visible_len / max(source_visible_len, 1)
+    return ratio < incomplete_ratio_threshold(layout)
 
 
 def parse_page_selection(selection: str, total_pages: int) -> set[int]:

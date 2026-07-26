@@ -56,10 +56,38 @@ class TestSaveLoadRoundTrip:
 
         tracker = ProgressTracker(progress_file, expected_metadata=metadata)
         tracker.mark_cached_prompt_translation("abc123", "cached translation")
+        tracker.flush()
 
         tracker2 = ProgressTracker(progress_file, expected_metadata=metadata)
         assert tracker2.get_cached_prompt_translation("abc123") == "cached translation"
         assert tracker2.get_cached_prompt_translation("missing") == ""
+
+    def test_prompt_cache_write_is_flushed_by_mark_completed(self, tmp_path):
+        """A deferred prompt-cache write lands on the next forced save.
+
+        mark_cached_prompt_translation defers its write because every caller
+        records the same text through mark_completed immediately afterwards;
+        that forced save must persist both.
+        """
+        progress_file = str(tmp_path / "deferred.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.mark_cached_prompt_translation("key-1", "翻译结果")
+        tracker.mark_completed(3, "翻译结果")
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.get_cached_prompt_translation("key-1") == "翻译结果"
+        assert tracker2.get_translation(3) == "翻译结果"
+
+    def test_mark_completed_many_persists_all_blocks_in_one_write(self, tmp_path):
+        progress_file = str(tmp_path / "batch.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.mark_completed_many({0: "第一块", 1: "第二块", 2: "第三块"})
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.completed_pages == {0, 1, 2}
+        assert tracker2.get_translation(1) == "第二块"
 
     def test_delete_cached_prompt_translations_by_value(self, tmp_path):
         progress_file = str(tmp_path / "cache_value.progress.json")

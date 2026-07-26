@@ -1,6 +1,11 @@
 import pytest
 
-from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
+from core.translation_validation import (
+    contains_elision_placeholder,
+    contains_prompt_leak,
+    ensure_no_elision_placeholder,
+    ensure_no_prompt_leak,
+)
 
 
 def test_detects_prompt_leak_like_user_screenshot():
@@ -20,3 +25,34 @@ def test_allows_normal_translation_text():
 
     assert contains_prompt_leak(text) is False
     ensure_no_prompt_leak(text)
+
+
+def test_detects_elision_placeholder_from_split_sentence():
+    """Observed in a real artifact when one sentence spanned two columns."""
+    text = "《新时代》的触发事件是[...]之间的信任丧失，"
+
+    assert contains_elision_placeholder(text) is True
+    with pytest.raises(ValueError, match="省略占位符"):
+        ensure_no_elision_placeholder(text)
+
+
+@pytest.mark.parametrize("text", [
+    "触发事件是（……）之间的信任丧失",
+    "触发事件是【…】之间的信任丧失",
+    "触发事件是(...)之间的信任丧失",
+    "触发事件是[省略部分内容]之间的信任丧失",
+])
+def test_detects_elision_placeholder_variants(text):
+    assert contains_elision_placeholder(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "调查员沉默了很久……然后开口。",
+    "他低声说：“别过去……”",
+    "[BLOCK p0001_r0001_b0001]",
+    "伤害为1D6[穿甲]，射程30米。",
+    "参见第7页的“觉醒”一节。",
+])
+def test_allows_legitimate_brackets_and_ellipses(text):
+    assert contains_elision_placeholder(text) is False
+    ensure_no_elision_placeholder(text)

@@ -59,20 +59,35 @@ class MockTranslator:
 
 
 class MockTracker:
-    """Mock ProgressTracker with mark_completed and mark_failed."""
+    """Mock ProgressTracker with mark_completed, mark_failed and batch saving."""
 
     def __init__(self):
         self.completed = {}
         self.failed = {}
+        self.save_calls = 0
+        self.flush_calls = 0
         self._lock = threading.Lock()
 
     def mark_completed(self, page_num, translation):
         with self._lock:
             self.completed[page_num] = translation
+            self.save_calls += 1
+
+    def mark_completed_many(self, translations):
+        if not translations:
+            return
+        with self._lock:
+            self.completed.update(translations)
+            self.save_calls += 1
 
     def mark_failed(self, page_num, message):
         with self._lock:
             self.failed[page_num] = message
+            self.save_calls += 1
+
+    def flush(self):
+        with self._lock:
+            self.flush_calls += 1
 
     def get_cached_prompt_translation(self, cache_key):
         return ""
@@ -396,8 +411,8 @@ class TestCooldown:
 # ---------------------------------------------------------------------------
 
 class TestContextWindow:
-    def test_context_window_passed_to_next_batch(self):
-        """Context from previous batch is passed to next batch's translations."""
+    def test_context_comes_from_previous_group_source(self):
+        """Each group receives the tail of the previous group's source text."""
         config = DispatcherConfig(concurrency=1, rate_limit=1000, cooldown=0.0)
         translator = MockTranslator()
         tracker = MockTracker()
@@ -411,61 +426,65 @@ class TestContextWindow:
         dispatcher = ConcurrentDispatcher(config, translator, tracker, stats)
         dispatcher.dispatch_all(groups, simple_build_text_fn, simple_parse_fn)
 
-        # The second call should have received prev_context from the first
-        # With concurrency=1, batch 1 = [group0], batch 2 = [group1]
-        # After batch 1 completes, context should be set from block 0's translation
         calls = translator.call_log
         assert len(calls) >= 2
-        # First call should have empty context
         assert calls[0]["prev_context"] == ""
-        # Second call should have context from first translation
-        assert calls[1]["prev_context"] != ""
+        assert calls[1]["prev_context"] == "First block"
 
     def test_context_window_truncated_to_500_chars(self):
         """Context window is truncated to 500 characters maximum."""
         config = DispatcherConfig(concurrency=1, rate_limit=1000, cooldown=0.0)
-
-        # Create a translator that returns long text
-        long_text = "A" * 1000
-
-        class LongTranslator:
-            def __init__(self):
-                self.call_log = []
-                self._lock = threading.Lock()
-
-            def translate_block(self, text, block_index=None, prev_context="",
-                                source_type="markdown", cache=None):
-                with self._lock:
-                    self.call_log.append({
-                        "prev_context": prev_context,
-                        "block_index": block_index,
-                    })
-                return long_text
-
-        translator = LongTranslator()
+        translator = MockTranslator()
         tracker = MockTracker()
         stats = MockStats()
 
         groups = [
-            [MockBlock(index=0, text="First")],
+            [MockBlock(index=0, text="A" * 1000)],
             [MockBlock(index=1, text="Second")],
         ]
 
         dispatcher = ConcurrentDispatcher(config, translator, tracker, stats)
         dispatcher.dispatch_all(groups, simple_build_text_fn, simple_parse_fn)
 
-        # Second call's prev_context should be at most 500 chars
         assert len(translator.call_log) >= 2
         second_context = translator.call_log[1]["prev_context"]
-        assert len(second_context) <= _CONTEXT_WINDOW_SIZE
-        # It should be the last 500 chars of the 1000-char translation
+        assert len(second_context) == _CONTEXT_WINDOW_SIZE
         assert second_context == "A" * _CONTEXT_WINDOW_SIZE
 
-    def test_empty_groups_produce_no_context(self):
-        """When no translations succeed, context remains empty."""
+    def test_context_is_independent_of_concurrency(self):
+        """The same document produces the same prompts at any worker count.
+
+        Context used to be seeded from whichever translation finished last, so
+        changing --workers silently changed the translated text while the old
+        cache was still reused. Source-derived context removes that coupling.
+        """
+        groups_for = lambda: [
+            [MockBlock(index=i, text=f"Block number {i} body text")]
+            for i in range(6)
+        ]
+
+        contexts_by_concurrency = {}
+        for concurrency in (1, 2, 4):
+            config = DispatcherConfig(
+                concurrency=concurrency, rate_limit=1000, cooldown=0.0
+            )
+            translator = MockTranslator()
+            dispatcher = ConcurrentDispatcher(
+                config, translator, MockTracker(), MockStats()
+            )
+            dispatcher.dispatch_all(groups_for(), simple_build_text_fn, simple_parse_fn)
+            contexts_by_concurrency[concurrency] = {
+                call["block_index"]: call["prev_context"]
+                for call in translator.call_log
+            }
+
+        assert contexts_by_concurrency[1] == contexts_by_concurrency[2]
+        assert contexts_by_concurrency[1] == contexts_by_concurrency[4]
+
+    def test_failed_translations_do_not_change_context(self):
+        """Context is source-derived, so failures upstream do not blank it."""
         config = DispatcherConfig(concurrency=1, rate_limit=1000, cooldown=0.0)
-        # All blocks fail
-        translator = MockTranslator(fail_indices={0, 1})
+        translator = MockTranslator(fail_indices={0})
         tracker = MockTracker()
         stats = MockStats()
 
@@ -477,9 +496,8 @@ class TestContextWindow:
         dispatcher = ConcurrentDispatcher(config, translator, tracker, stats)
         dispatcher.dispatch_all(groups, simple_build_text_fn, simple_parse_fn)
 
-        # Both calls should have empty context (nothing succeeded)
-        for call in translator.call_log:
-            assert call["prev_context"] == ""
+        assert translator.call_log[0]["prev_context"] == ""
+        assert translator.call_log[1]["prev_context"] == "Fail"
 
 
 # ---------------------------------------------------------------------------

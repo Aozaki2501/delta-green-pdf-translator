@@ -86,6 +86,8 @@ from core.layout_adapters import (
 )
 from core.dispatcher import RateLimiter
 from core.glossary import build_glossary_matcher
+from core.pricing import build_pricing, format_cost_yuan
+from core.utils import validate_base_url
 
 from exporters import (
     write_html_output,
@@ -110,7 +112,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                   output_format="markdown", max_workers=8,
                   provider="deepseek", base_url="https://api.deepseek.com",
                   retry_failed=False, retranslate_pages="", fuzzy_matching=False,
-                  rate_limit=60, cooldown=1.0):
+                  rate_limit=60, cooldown=1.0, pricing=None):
     print("=" * 60)
     print("  DG TRPG PDF Translator v2.0")
     print("=" * 60)
@@ -122,8 +124,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
         raise FileNotFoundError(f"PDF 文件不存在：{pdf_path}")
     if glossary_path and not os.path.exists(glossary_path):
         raise FileNotFoundError(f"术语表文件不存在：{glossary_path}")
-    if not base_url or not str(base_url).strip():
-        raise ValueError("Base URL 不能为空")
+    base_url = validate_base_url(base_url)
     if not provider or not str(provider).strip():
         raise ValueError("服务名称不能为空")
     max_workers = 8 if max_workers is None else int(max_workers)
@@ -142,7 +143,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
     output_base = output_base_in_own_dir(output_base)
     ensure_output_parent(output_base + ".tmp")
 
-    stats = TokenStats()
+    stats = TokenStats(pricing=build_pricing(pricing, base_url))
 
     print(f"Opening PDF: {pdf_path}")
     extractor = PDFExtractor(pdf_path)
@@ -191,8 +192,11 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             base_url=base_url,
             start_page=start_page,
             end_page=end_page,
+            fuzzy_matching=fuzzy_matching,
         )
         tracker = ProgressTracker(progress_file, expected_metadata=progress_metadata)
+        if tracker.progress_corrupted:
+            print(f"⚠️  原进度文件无法解析，已备份为 {tracker.corrupt_backup_path}，本次整本重译。")
         if tracker.metadata_mismatches:
             print("⚠️  进度文件与当前设置不一致。")
             for mismatch in tracker.metadata_mismatches[:5]:
@@ -307,8 +311,11 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
             )
             translated_pages = [(pn, t) for pn, t in results.items() if t.strip()]
         else:
+            # Serial mode uses the same adjacent-source-page context as the
+            # concurrent path. It used to feed the previous page's *translation*
+            # instead, so the same PDF produced different text depending only on
+            # the worker count while still reusing the other mode's cache.
             translated_pages = []
-            prev_translation_tail = ""
             pages_to_process = list(start_end_pages)
             total_to_do = len(pages_to_process)
             done_count = 0
@@ -322,7 +329,6 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     translation = tracker.get_translation(page_num)
                     if translation:
                         translated_pages.append((page_num, translation))
-                        prev_translation_tail = translation[-300:]
                     print(f"  [skip] Page {page_num + 1}/{total}")
                     continue
 
@@ -336,10 +342,11 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     time.sleep(cooldown)
                 rate_limiter.wait_if_needed()
                 print(f"  [{progress_pct:.0f}%] Page {page_num + 1}/{total}", end="", flush=True)
+                prev_context = page_contexts.get(page_num - 1, "")
                 translation = translator.translate_chunk(
                     text,
                     page_num,
-                    prev_context=prev_translation_tail,
+                    prev_context=prev_context[-900:] if prev_context else "",
                     next_context=page_contexts.get(page_num + 1, "")[:900],
                     cache=tracker,
                 )
@@ -347,8 +354,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 if translation and not is_failed_translation(translation):
                     translated_pages.append((page_num, translation))
                     tracker.mark_completed(page_num, translation)
-                    prev_translation_tail = translation[-300:]
-                    print(f" done (Y{stats.cost_yuan:.3f})")
+                    print(f" done ({format_cost_yuan(stats.cost_yuan)})")
                 elif is_failed_translation(translation):
                     translated_pages.append((page_num, translation))
                     tracker.mark_failed(page_num, translation)
@@ -358,6 +364,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                     tracker.mark_completed(page_num, "")
 
         elapsed = time.time() - start_time
+        tracker.flush()
         print("-" * 40)
         print()
 
@@ -599,6 +606,7 @@ PDF_CONFIG_KEYS = {
     "retranslate_pages",
     "start",
     "end",
+    "pricing",
 }
 
 
@@ -760,6 +768,7 @@ def main():
         fuzzy_matching=fuzzy_matching,
         rate_limit=rate_limit,
         cooldown=cooldown,
+        pricing=config.get("pricing"),
     )
 
 

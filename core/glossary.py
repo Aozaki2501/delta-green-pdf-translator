@@ -16,10 +16,20 @@ from core.utils import ensure_output_parent
 
 
 def load_glossary(glossary_path: str) -> dict:
+    """Load a glossary TSV, refusing to silently drop conflicting entries.
+
+    Matching is case-sensitive-preferred (see ``ACGlossaryMatcher``), so terms
+    that differ only in case — ``Agent`` vs ``agent`` — are kept as separate,
+    both-live entries. Two rows with the *identical* English term, however, can
+    only ever resolve to one translation, so the loser used to disappear without
+    a word. That is now a hard error.
+    """
     glossary = {}
     if not glossary_path or not os.path.exists(glossary_path):
         return glossary
     corrupted_entries = []
+    seen_lines = {}
+    duplicate_entries = []
     with open(glossary_path, "r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
             line = line.strip()
@@ -36,6 +46,13 @@ def load_glossary(glossary_path: str) -> dict:
                     if "?" in chinese:
                         corrupted_entries.append((line_number, chinese, english))
                         continue
+                    if english in glossary and glossary[english] != chinese:
+                        duplicate_entries.append(
+                            (english, seen_lines[english], glossary[english],
+                             line_number, chinese)
+                        )
+                        continue
+                    seen_lines[english] = line_number
                     glossary[english] = chinese
     if corrupted_entries:
         examples = "; ".join(
@@ -46,35 +63,61 @@ def load_glossary(glossary_path: str) -> dict:
             f"术语表疑似编码损坏：{glossary_path}。"
             f"中文列含英文问号的词条 {len(corrupted_entries)} 条，例如：{examples}"
         )
+    if duplicate_entries:
+        examples = "; ".join(
+            f"{english}：第 {first_line} 行 {first_chinese} / 第 {line_number} 行 {chinese}"
+            for english, first_line, first_chinese, line_number, chinese in duplicate_entries[:10]
+        )
+        raise ValueError(
+            f"术语表存在同一英文词条的冲突译名：{glossary_path}。"
+            f"冲突 {len(duplicate_entries)} 组，请合并或删除其中一条，例如：{examples}"
+        )
     return glossary
 
 
+def _resolve_case_preferred_entry(entries, matched_text: str):
+    """Pick the glossary entry whose written form matches the source casing.
+
+    ``entries`` are ``(english, chinese, surface)`` triples that all collapse to
+    the same lowercase key. When the source text reproduces one entry's exact
+    casing that entry wins, so ``Agent`` (特工, the Delta Green role) and
+    ``agent`` (探员, the common noun) can coexist. Anything else — ``AGENT`` in a
+    heading, for instance — falls back to the first entry in file order.
+    """
+    for english, chinese, surface in entries:
+        if surface == matched_text:
+            return english, chinese
+    return entries[0][0], entries[0][1]
+
+
 def _find_relevant_glossary_terms_regex(text: str, glossary: dict) -> dict:
-    """Original regex-based glossary matching (longest-match-first, non-overlapping).
+    """Regex-based glossary matching (longest-match-first, non-overlapping).
 
     This is the internal implementation preserved for backward compatibility and
-    as a fallback when pyahocorasick is not installed.
+    as a fallback when pyahocorasick is not installed. It resolves case-different
+    entries exactly like ``ACGlossaryMatcher`` so both paths agree.
     """
+    groups: dict[str, list[tuple[str, str, str]]] = {}
+    for eng, chn in glossary.items():
+        groups.setdefault(eng.lower(), []).append((eng, chn, eng))
+
     matches = []
-    for eng, chn in sorted(glossary.items(), key=lambda item: len(item[0]), reverse=True):
+    for key in sorted(groups, key=len, reverse=True):
         pattern = re.compile(
-            r"(?<![A-Za-z0-9])" + re.escape(eng) + r"(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])" + re.escape(key) + r"(?![A-Za-z0-9])",
             re.IGNORECASE,
         )
         for match in pattern.finditer(text):
+            eng, chn = _resolve_case_preferred_entry(groups[key], match.group(0))
             matches.append((match.start(), match.end(), eng, chn))
 
-    selected = []
+    relevant = {}
     occupied_spans = []
     for start, end, eng, chn in matches:
         if any(start < occupied_end and end > occupied_start for occupied_start, occupied_end in occupied_spans):
             continue
-        selected.append((eng, chn))
-        occupied_spans.append((start, end))
-
-    relevant = {}
-    for eng, chn in selected:
         relevant[eng] = chn
+        occupied_spans.append((start, end))
     return relevant
 
 
@@ -406,9 +449,11 @@ class ACGlossaryMatcher:
         self._filter_articles = filter_articles
         self._fallback = not _HAS_AHOCORASICK
         self._automaton = None
-        # Maps lowercase key -> list of (canonical_eng, chinese, pattern_length)
-        # Multiple entries possible when glossary has case-different terms (e.g. "Agent" vs "agent")
-        self._variant_map: dict[str, list[tuple[str, str, int]]] = {}
+        # Maps lowercase key -> list of (canonical_eng, chinese, pattern_length, surface)
+        # Multiple entries possible when the glossary has case-different terms
+        # ("Agent" vs "agent"). `surface` is the original-cased spelling that
+        # produced this key, used to prefer the entry matching the source casing.
+        self._variant_map: dict[str, list[tuple[str, str, int, str]]] = {}
 
         if self._fallback:
             print(
@@ -428,7 +473,7 @@ class ACGlossaryMatcher:
             # (e.g. "Agent" -> "特工" and "agent" -> "探员")
             if key not in self._variant_map:
                 self._variant_map[key] = []
-            self._variant_map[key].append((eng, chn, len(key)))
+            self._variant_map[key].append((eng, chn, len(key), eng))
 
             # Insert plural variants if enabled
             if self._normalize_plurals:
@@ -438,8 +483,8 @@ class ACGlossaryMatcher:
                         if vkey not in self._variant_map:
                             self._variant_map[vkey] = []
                         # Only add if this canonical term isn't already mapped for this variant
-                        if not any(e == eng for e, _, _ in self._variant_map[vkey]):
-                            self._variant_map[vkey].append((eng, chn, len(vkey)))
+                        if not any(e == eng for e, _, _, _ in self._variant_map[vkey]):
+                            self._variant_map[vkey].append((eng, chn, len(vkey), variant))
 
         # Insert all keys into automaton; store the key itself as value
         # (we'll look up the variant_map during matching to resolve ambiguity)
@@ -609,12 +654,10 @@ class ACGlossaryMatcher:
         Returns list of (start, end, length, canonical_eng, chinese).
 
         When multiple glossary entries share the same lowercase key (e.g. "Agent"
-        and "agent"), we resolve by picking the entry that would win in the regex
-        version's sorted order: sorted by length descending, then by insertion order
-        (which is dict iteration order). Since all entries for the same lowercase
-        key have the same length, the first entry in insertion order wins.
-        This means the first-inserted entry "owns" ALL positions where that
-        lowercase pattern matches, replicating the regex IGNORECASE behavior.
+        and "agent"), matching is case-sensitive-preferred: the entry whose
+        written form equals the matched text wins, so both entries stay live and
+        each keeps its own meaning. Only when no spelling matches (e.g. "AGENT"
+        in an all-caps heading) does the first entry in file order win.
         """
         text_lower = text.lower()
         raw_matches = []
@@ -634,16 +677,13 @@ class ACGlossaryMatcher:
                 if char_after.isalnum():
                     continue
 
-            # Resolve which canonical entry to use.
-            # The regex version uses IGNORECASE and processes terms in sorted order
-            # (length desc, then insertion order for same length). The first term
-            # in that order occupies ALL positions it matches. For same-lowercase
-            # entries, this means the first-inserted entry always wins regardless
-            # of the actual case in the text.
-            entries = self._variant_map[key]
-            # entries[0] is the first-inserted entry for this lowercase key,
-            # which corresponds to the regex version's winner.
-            eng, chn, _ = entries[0]
+            # Resolve which canonical entry to use, preferring the one whose
+            # spelling matches how the term is actually written here.
+            entries = [
+                (english, chinese, surface)
+                for english, chinese, _length, surface in self._variant_map[key]
+            ]
+            eng, chn = _resolve_case_preferred_entry(entries, text[start:end])
 
             raw_matches.append((start, end, end - start, eng, chn))
 

@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from core.pricing import format_cost_yuan
+
 
 def build_run_effect(
     stats,
@@ -16,7 +18,8 @@ def build_run_effect(
 ) -> dict:
     input_tokens = int(getattr(stats, "input_tokens", 0) or 0)
     cached_tokens = int(getattr(stats, "cached_tokens", 0) or 0)
-    cost_yuan = float(getattr(stats, "cost_yuan", 0.0) or 0.0)
+    cost_yuan = getattr(stats, "cost_yuan", None)
+    cost_yuan = None if cost_yuan is None else float(cost_yuan)
     translated_count = max(0, int(translated_pages or 0))
     return {
         "total_pages": int(total_pages or 0),
@@ -33,7 +36,11 @@ def build_run_effect(
         "cache_hit_rate": cached_tokens / input_tokens if input_tokens else 0.0,
         "translation_cache_hits": int(getattr(stats, "translation_cache_hits", 0) or 0),
         "cost_yuan": cost_yuan,
-        "cost_per_page": cost_yuan / translated_count if translated_count else 0.0,
+        "cost_per_page": (
+            cost_yuan / translated_count
+            if cost_yuan is not None and translated_count
+            else None
+        ),
     }
 
 
@@ -61,8 +68,8 @@ def render_run_effect_markdown(effect: dict, title: str = "") -> str:
         f"- 缓存命中 Token：{effect.get('cached_tokens', 0):,}",
         f"- 缓存命中率：{effect.get('cache_hit_rate', 0.0):.1%}",
         f"- 本地提示缓存命中：{effect.get('translation_cache_hits', 0)}",
-        f"- 估算费用：¥{effect.get('cost_yuan', 0.0):.3f}",
-        f"- 平均每页：¥{effect.get('cost_per_page', 0.0):.3f}",
+        f"- 估算费用：{format_cost_yuan(effect.get('cost_yuan'))}",
+        f"- 平均每页：{format_cost_yuan(effect.get('cost_per_page'))}",
         "",
     ])
 
