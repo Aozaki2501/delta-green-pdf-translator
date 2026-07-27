@@ -85,6 +85,20 @@ def ensure_no_prompt_leak(text: str, label: str = "译文") -> None:
         raise ValueError(f"{label}包含内部翻译指令")
 
 
+_JAPANESE_KANA = re.compile(r"[\u3040-\u30ff]")
+
+
+def contains_japanese_kana(text: str) -> bool:
+    """Return True when purported Chinese output still contains Japanese kana."""
+    return bool(_JAPANESE_KANA.search(str(text or "")))
+
+
+def ensure_no_japanese_kana(text: str, label: str = "译文") -> None:
+    """Reject output that was returned in Japanese instead of Chinese."""
+    if contains_japanese_kana(text):
+        raise ValueError(f"{label}包含日文假名，原文可能未翻译")
+
+
 # A sentence split across two translation units cannot be reconstructed from
 # either half alone, and the model fills the missing clause with an ellipsis
 # placeholder instead of failing. Bracketed ASCII/CJK ellipses and "省略" notes

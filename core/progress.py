@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import Optional
 
 from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION, TRANSLATION_TEMPERATURE
-from core.translation_validation import contains_prompt_leak, ensure_no_prompt_leak
+from core.translation_validation import (
+    contains_japanese_kana,
+    contains_prompt_leak,
+    ensure_no_japanese_kana,
+    ensure_no_prompt_leak,
+)
 from core.utils import file_sha256, replace_with_retry
 
 # Fingerprint schema. Bumped to 2 when fuzzy_matching/temperature were added and
@@ -198,7 +203,8 @@ class ProgressTracker:
         """Check whether a page has already been translated."""
         if page_num not in self.completed_pages:
             return False
-        return not contains_prompt_leak(self.translations.get(str(page_num), ""))
+        translation = self.translations.get(str(page_num), "")
+        return not contains_prompt_leak(translation) and not contains_japanese_kana(translation)
 
     def flush(self):
         """Write out any deferred save. Safe to call when nothing is pending."""
@@ -208,6 +214,7 @@ class ProgressTracker:
     def mark_completed(self, page_num: int, translation: str):
         """Record a page translation and persist immediately."""
         ensure_no_prompt_leak(translation)
+        ensure_no_japanese_kana(translation)
         with self._lock:
             self.completed_pages.add(page_num)
             self.translations[str(page_num)] = translation
@@ -225,6 +232,7 @@ class ProgressTracker:
             return
         for translation in translations.values():
             ensure_no_prompt_leak(translation)
+            ensure_no_japanese_kana(translation)
         with self._lock:
             for page_num, translation in translations.items():
                 self.completed_pages.add(page_num)
@@ -294,7 +302,7 @@ class ProgressTracker:
     def get_translation(self, page_num: int) -> str:
         """Retrieve the cached translation for a page, or empty string."""
         translation = self.translations.get(str(page_num), "")
-        if contains_prompt_leak(translation):
+        if contains_prompt_leak(translation) or contains_japanese_kana(translation):
             return ""
         return translation
 
@@ -304,7 +312,7 @@ class ProgressTracker:
             return ""
         with self._lock:
             translation = self.translation_cache.get(cache_key, "")
-        if contains_prompt_leak(translation):
+        if contains_prompt_leak(translation) or contains_japanese_kana(translation):
             return ""
         return translation
 
@@ -313,6 +321,7 @@ class ProgressTracker:
         if not cache_key or not translation:
             return
         ensure_no_prompt_leak(translation, "缓存译文")
+        ensure_no_japanese_kana(translation, "缓存译文")
         with self._lock:
             self.translation_cache[cache_key] = translation
         # Deferred: the caller records this same text via mark_completed a moment

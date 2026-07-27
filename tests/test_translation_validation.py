@@ -2,8 +2,10 @@ import pytest
 
 from core.translation_validation import (
     contains_elision_placeholder,
+    contains_japanese_kana,
     contains_prompt_leak,
     ensure_no_elision_placeholder,
+    ensure_no_japanese_kana,
     ensure_no_prompt_leak,
 )
 
@@ -25,6 +27,21 @@ def test_allows_normal_translation_text():
 
     assert contains_prompt_leak(text) is False
     ensure_no_prompt_leak(text)
+
+
+def test_detects_japanese_output_returned_unchanged():
+    text = "探索者がよく知っている先生が2人いる。"
+
+    assert contains_japanese_kana(text) is True
+    with pytest.raises(ValueError, match="日文假名"):
+        ensure_no_japanese_kana(text)
+
+
+def test_allows_chinese_translation_with_japanese_names_transliterated():
+    text = "调查员熟悉两位老师：凯瑟琳与川崎克也。"
+
+    assert contains_japanese_kana(text) is False
+    ensure_no_japanese_kana(text)
 
 
 def test_detects_elision_placeholder_from_split_sentence():

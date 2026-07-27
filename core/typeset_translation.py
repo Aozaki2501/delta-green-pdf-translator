@@ -24,8 +24,10 @@ from typing import Callable
 from core.constants import TRANSLATION_FAILURE_PREFIX
 from core.translation_validation import (
     contains_elision_placeholder,
+    contains_japanese_kana,
     contains_prompt_leak,
     ensure_no_elision_placeholder,
+    ensure_no_japanese_kana,
     ensure_no_prompt_leak,
 )
 from core.utils import replace_with_retry
@@ -43,7 +45,11 @@ from core.typeset_models import (
 
 def _is_unusable_translation(text: str) -> bool:
     """Stored translations from an older run may predate current validation."""
-    return contains_prompt_leak(text) or contains_elision_placeholder(text)
+    return (
+        contains_prompt_leak(text)
+        or contains_elision_placeholder(text)
+        or contains_japanese_kana(text)
+    )
 
 
 class TypesetTranslationProgress:
@@ -148,6 +154,7 @@ class TypesetTranslationProgress:
         if cache_key and translation:
             ensure_no_prompt_leak(translation, "缓存译文")
             ensure_no_elision_placeholder(translation, "缓存译文")
+            ensure_no_japanese_kana(translation, "缓存译文")
             with self._lock:
                 self.translation_cache[cache_key] = translation
                 self.save()
@@ -174,6 +181,7 @@ class TypesetTranslationProgress:
             raise ValueError(f"译文为空：{block_id}")
         ensure_no_prompt_leak(translation)
         ensure_no_elision_placeholder(translation)
+        ensure_no_japanese_kana(translation)
         with self._lock:
             self.translations[block_id] = translation
             self.source_hashes[block_id] = (
@@ -241,6 +249,7 @@ def _build_marked_text(blocks: list[ContentBlock]) -> str:
 def _parse_marked_translations(text: str, expected_ids: set[str]) -> dict[str, str]:
     """Parse translation response to extract per-block translations."""
     ensure_no_prompt_leak(text, "模型返回")
+    ensure_no_japanese_kana(text, "模型返回")
     pattern = re.compile(
         r"\[BLOCK ([^\]\s]+)\]\s*(.*?)\s*\[/BLOCK \1\]",
         re.DOTALL,
@@ -269,6 +278,7 @@ def _parse_marked_translations(text: str, expected_ids: set[str]) -> dict[str, s
     for block_id, translated in parsed.items():
         ensure_no_prompt_leak(translated, f"译文块 {block_id}")
         ensure_no_elision_placeholder(translated, f"译文块 {block_id}")
+        ensure_no_japanese_kana(translated, f"译文块 {block_id}")
     return parsed
 
 

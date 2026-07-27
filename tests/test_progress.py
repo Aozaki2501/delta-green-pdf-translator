@@ -148,6 +148,29 @@ class TestSaveLoadRoundTrip:
         assert tracker2.is_completed(1) is False
         assert tracker2.get_translation(1) == ""
 
+    def test_mark_completed_many_rejects_japanese_translation(self, tmp_path):
+        tracker = ProgressTracker(str(tmp_path / "japanese_batch.progress.json"))
+
+        with pytest.raises(ValueError, match="日文假名"):
+            tracker.mark_completed_many({
+                0: "探索者がよく知っている先生が2人いる。",
+                1: "调查员继续前进。",
+            })
+
+    def test_japanese_translation_is_not_completed_or_reused(self, tmp_path):
+        progress_file = str(tmp_path / "japanese_leak.progress.json")
+
+        tracker = ProgressTracker(progress_file)
+        tracker.completed_pages.add(1)
+        tracker.translations["1"] = "探索者がよく知っている先生が2人いる。"
+        tracker.translation_cache["page-1"] = tracker.translations["1"]
+        tracker.save()
+
+        tracker2 = ProgressTracker(progress_file)
+        assert tracker2.is_completed(1) is False
+        assert tracker2.get_translation(1) == ""
+        assert tracker2.get_cached_prompt_translation("page-1") == ""
+
     def test_completed_pages_sorted_in_json(self, tmp_path):
         """The saved JSON file stores completed_pages as a sorted integer array."""
         progress_file = str(tmp_path / "sorted.progress.json")

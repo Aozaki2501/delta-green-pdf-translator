@@ -25,7 +25,7 @@ from core.constants import (
 )
 from core.glossary import find_relevant_glossary_terms
 from core.pricing import TokenPricing
-from core.translation_validation import ensure_no_prompt_leak
+from core.translation_validation import ensure_no_japanese_kana, ensure_no_prompt_leak
 from core.utils import is_failed_translation, validate_base_url
 
 
@@ -261,6 +261,7 @@ Translation rules:
         if not content:
             raise RuntimeError("API 返回空译文")
         ensure_no_prompt_leak(content)
+        ensure_no_japanese_kana(content)
         return content
 
     def _cached_translation_or_empty(self, cache, cache_key: str) -> str:
@@ -271,6 +272,7 @@ Translation rules:
             return ""
         try:
             ensure_no_prompt_leak(cached_translation, "缓存译文")
+            ensure_no_japanese_kana(cached_translation, "缓存译文")
         except ValueError:
             delete_fn = getattr(cache, "delete_cached_prompt_translation", None)
             if callable(delete_fn):
