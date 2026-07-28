@@ -1,7 +1,7 @@
-"""Configurable token unit prices.
+"""Configurable token unit prices in USD.
 
 Unit prices belong to a specific provider endpoint, not to this project. The
-old hard-coded DeepSeek prices produced confident but wrong CNY amounts as soon
+old hard-coded DeepSeek prices produced confident but wrong amounts as soon
 as the user pointed ``base_url`` at another OpenAI-compatible service, so a
 price is only ever applied when it was configured for the endpoint in use.
 
@@ -13,14 +13,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class TokenPricing:
-    """CNY per one million tokens for one API endpoint."""
+    """USD per one million tokens for one API endpoint."""
 
     input_per_m: float
     output_per_m: float
     cached_per_m: float = 0.0
     base_url: str = ""
 
-    def cost_yuan(self, *, input_tokens: int, output_tokens: int,
+    def cost_usd(self, *, input_tokens: int, output_tokens: int,
                   cached_tokens: int = 0) -> float:
         billed_input = max(0, int(input_tokens) - int(cached_tokens))
         return (
@@ -74,8 +74,8 @@ def build_pricing(config, base_url: str) -> TokenPricing | None:
     )
 
 
-def format_cost_yuan(cost: float | None, placeholder: str = "未配置单价") -> str:
-    """Render a cost for display, or a placeholder when prices are unknown."""
+def format_cost_usd(cost: float | None, placeholder: str = "未配置单价") -> str:
+    """Render a USD cost for display, or a placeholder when prices are unknown."""
     if cost is None:
         return placeholder
-    return f"¥{cost:.3f}"
+    return f"${cost:.3f}"

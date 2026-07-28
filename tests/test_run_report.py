@@ -16,7 +16,7 @@ def test_run_effect_computes_cache_and_cost_rates():
         api_calls=4,
         failed_calls=1,
         translation_cache_hits=2,
-        cost_yuan=0.6,
+        cost_usd=0.6,
     )
 
     effect = build_run_effect(
@@ -48,13 +48,13 @@ def test_run_effect_markdown_is_human_readable():
         "cached_tokens": 25,
         "cache_hit_rate": 0.25,
         "translation_cache_hits": 1,
-        "cost_yuan": 0.12,
+        "cost_usd": 0.12,
         "cost_per_page": 0.06,
     }, "测试")
 
     assert markdown.startswith("# 测试")
     assert "缓存命中率：25.0%" in markdown
-    assert "平均每页：¥0.060" in markdown
+    assert "平均每页：$0.060" in markdown
 
 
 def test_run_manifest_keeps_outputs_and_reports_separate():

@@ -88,7 +88,7 @@ class _Stats:
     api_calls = 3
     failed_calls = 1
     translation_cache_hits = 2
-    cost_yuan = 0.00125
+    cost_usd = 0.00125
 
 
 class _Translator:
@@ -117,7 +117,7 @@ def test_pipeline_result_includes_token_usage(tmp_path):
     assert result.api_calls == 3
     assert result.failed_calls == 1
     assert result.translation_cache_hits == 2
-    assert result.cost_yuan == 0.00125
+    assert result.cost_usd == 0.00125
 
 
 def test_pipeline_uses_layout_hints_from_output_dir(tmp_path):

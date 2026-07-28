@@ -73,23 +73,23 @@ class TokenStats:
         return self.input_tokens + self.output_tokens
 
     @property
-    def cost_yuan(self) -> float | None:
-        """Estimated cost in CNY, or None when no unit prices are configured.
+    def cost_usd(self) -> float | None:
+        """Estimated cost in USD, or None when no unit prices are configured.
 
         Unit prices depend on the provider behind ``base_url``, so an amount is
         only reported when the caller supplied prices for that endpoint.
         """
         if self.pricing is None:
             return None
-        return self.pricing.cost_yuan(
+        return self.pricing.cost_usd(
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cached_tokens=self.cached_tokens,
         )
 
     def summary(self) -> str:
-        cost = self.cost_yuan
-        cost_line = "   Est. cost: 未配置单价" if cost is None else f"   Est. cost: Y{cost:.3f}"
+        cost = self.cost_usd
+        cost_line = "   Est. cost: 未配置单价" if cost is None else f"   Est. cost: ${cost:.3f}"
         return (
             f"Token Stats:\n"
             f"   Input: {self.input_tokens:,} tokens\n"

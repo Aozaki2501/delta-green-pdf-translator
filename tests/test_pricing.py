@@ -9,7 +9,7 @@ import pytest
 from core.pricing import (
     TokenPricing,
     build_pricing,
-    format_cost_yuan,
+    format_cost_usd,
     normalize_endpoint,
 )
 from core.translator import TokenStats
@@ -19,7 +19,7 @@ class TestCostCalculation:
     def test_cost_uses_configured_rates(self):
         pricing = TokenPricing(input_per_m=2.0, output_per_m=8.0, cached_per_m=0.5)
 
-        cost = pricing.cost_yuan(
+        cost = pricing.cost_usd(
             input_tokens=1_000_000, output_tokens=500_000, cached_tokens=0
         )
 
@@ -28,7 +28,7 @@ class TestCostCalculation:
     def test_cached_tokens_are_billed_at_the_cached_rate(self):
         pricing = TokenPricing(input_per_m=2.0, output_per_m=8.0, cached_per_m=0.5)
 
-        cost = pricing.cost_yuan(
+        cost = pricing.cost_usd(
             input_tokens=1_000_000, output_tokens=0, cached_tokens=400_000
         )
 
@@ -38,7 +38,7 @@ class TestCostCalculation:
     def test_zero_usage_costs_nothing(self):
         pricing = TokenPricing(input_per_m=2.0, output_per_m=8.0, cached_per_m=0.5)
 
-        assert pricing.cost_yuan(input_tokens=0, output_tokens=0, cached_tokens=0) == 0.0
+        assert pricing.cost_usd(input_tokens=0, output_tokens=0, cached_tokens=0) == 0.0
 
 
 class TestBuildPricing:
@@ -98,7 +98,7 @@ class TestTokenStatsIntegration:
         stats = TokenStats()
         stats.add(1000, 500, 0)
 
-        assert stats.cost_yuan is None
+        assert stats.cost_usd is None
         assert "未配置单价" in stats.summary()
 
     def test_cost_is_reported_with_pricing(self):
@@ -107,14 +107,14 @@ class TestTokenStatsIntegration:
         )
         stats.add(1_000_000, 0, 0)
 
-        assert stats.cost_yuan == pytest.approx(2.0)
+        assert stats.cost_usd == pytest.approx(2.0)
         assert "未配置单价" not in stats.summary()
 
 
-class TestFormatCostYuan:
+class TestFormatCostUsd:
     def test_none_shows_a_placeholder_not_zero(self):
-        """"¥0.000" would read as "this run was free", which is a lie."""
-        assert format_cost_yuan(None) == "未配置单价"
+        """"$0.000" would read as "this run was free", which is a lie."""
+        assert format_cost_usd(None) == "未配置单价"
 
-    def test_amount_is_formatted_in_yuan(self):
-        assert format_cost_yuan(1.2345) == "¥1.234"
+    def test_amount_is_formatted_in_usd(self):
+        assert format_cost_usd(1.2345) == "$1.234"

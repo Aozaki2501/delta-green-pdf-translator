@@ -27,7 +27,7 @@
 | 1 | 译文截断检测（`finish_reason == "length"`） | ✅ | `core/translator.py` 新增 `TruncatedResponseError` + `_read_completion()`；截断不入缓存、不重试、计入失败 |
 | 2 | 收紧"译文疑似不完整"阈值 | ✅（并修正了文档的错误建议） | `core/utils.py`：`0.15 → 0.25`，TOC/handout 用 0.18 |
 | 3 | `deepseek-chat` 默认模型改为 `deepseek-v4-pro` | ✅ | `translate_md.py`、`translate_docx.py`（含 `DEFAULT_MODEL` 常量与 `--model` 默认值、docstring 示例） |
-| 4 | 硬编码单价改为可配置 | ✅ | 新增 `core/pricing.py`；`TokenStats.cost_yuan` 可为 `None`；6 处 UI + 报告显示改为 `format_cost_yuan()`；Web UI 高级区新增 3 个单价输入框 |
+| 4 | 单价按模型自动载入 | ✅ | `core/pricing.py` 统一以美元计价；内置 DeepSeek / Gemini 模型自动载入官方标准档单价，自定义接口仍可手动填写 |
 | 5 | `base_url` 校验（拒绝非 http(s)、远程明文 HTTP） | ✅ | `core/utils.py::validate_base_url()`；接入 PDF/MD/DOCX 入口与 Web UI 启动校验 |
 | 6 | 提示词与并发数解耦 | ✅ | `core/dispatcher.py`：滑动窗口改为**开跑前一次性算好的上一组"原文"尾部**，同一文档任意并发数产出一致 |
 | 7 | 进度指纹补齐设置项 | ✅ | `core/progress.py` schema → 2，新增 `temperature` / `fuzzy_matching`；MD/DOCX 指纹同步补齐（DOCX 另加 `translate_headers`） |
@@ -297,7 +297,7 @@ core/run_report.py        费用可为 None
 core/semantic_analyzer.py T1：悬挂缩进感知的段落切分
 core/translation_validation.py  T2：[...] 省略占位符判为硬失败
 core/translator.py        截断检测、可配置单价、base_url 校验
-core/typeset_models.py    cost_yuan: float | None
+core/typeset_models.py    cost_usd: float | None
 core/typeset_pipeline.py  报告去绝对路径、layout_hints 路径限制、费用
 core/typeset_translation.py     T2：接入占位符校验（写入 + 读取两侧）
 core/utils.py             validate_base_url、阈值标定

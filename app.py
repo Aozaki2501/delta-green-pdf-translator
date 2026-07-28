@@ -52,7 +52,7 @@ from webui.theme import render_app_theme, render_government_theme_override, rend
 
 # MD / DOCX translation support
 from webui.storage_ui import render_storage_manager
-from core.pricing import build_pricing, format_cost_yuan
+from core.pricing import build_pricing, format_cost_usd
 from core.utils import validate_base_url
 from translate_md import translate_md_file
 from translate_docx import translate_docx_file
@@ -78,6 +78,12 @@ from core.rule_symbols import build_rule_symbol_issues, write_rule_symbol_report
 from core.word_review import write_word_review_docx, write_word_review_markdown, build_word_review_items
 from core.utils import file_sha256, looks_incomplete_translation, looks_untranslated_page
 from core.constants import EXTRACTOR_VERSION, PROMPT_VERSION
+from core.model_catalog import (
+    CUSTOM_PROVIDER,
+    MODEL_PROVIDERS,
+    pricing_for_model,
+    provider_for_endpoint,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -102,6 +108,50 @@ def _typeset_formats_are_exclusive(formats) -> bool:
     """Return whether selected typeset formats are separate from page outputs."""
     selected = set(formats or ())
     return bool(selected & TYPESET_FORMATS) and selected <= TYPESET_FORMATS
+
+
+def _initialize_translation_model_selector() -> None:
+    """Migrate an existing session's manual values into the new selector once."""
+    state = st.session_state
+    if state.get("translation_model_selector_initialized"):
+        return
+
+    legacy_base_url = state.get("base_url_input", "https://api.deepseek.com")
+    legacy_model = state.get("model_input", "deepseek-v4-pro")
+    provider_key = provider_for_endpoint(legacy_base_url, legacy_model)
+    state["translation_provider_input"] = provider_key
+    if provider_key != CUSTOM_PROVIDER:
+        state["translation_model_select_input"] = legacy_model
+        _set_model_pricing_defaults(legacy_model)
+    state["translation_model_selector_initialized"] = True
+
+
+def _reset_translation_model_for_provider() -> None:
+    provider_key = st.session_state["translation_provider_input"]
+    if provider_key == CUSTOM_PROVIDER:
+        st.session_state["price_input_per_m_usd"] = 0.0
+        st.session_state["price_output_per_m_usd"] = 0.0
+        st.session_state["price_cached_per_m_usd"] = 0.0
+        return
+    model = MODEL_PROVIDERS[provider_key].default_model
+    st.session_state["translation_model_select_input"] = model
+    _set_model_pricing_defaults(model)
+
+
+def _set_model_pricing_defaults(model: str) -> None:
+    """Set official USD prices when the selected built-in model changes."""
+    pricing = pricing_for_model(model)
+    if pricing is None:
+        return
+    st.session_state["price_input_per_m_usd"] = pricing.input_per_m
+    st.session_state["price_output_per_m_usd"] = pricing.output_per_m
+    st.session_state["price_cached_per_m_usd"] = pricing.cached_per_m
+
+
+def _reset_pricing_for_selected_model() -> None:
+    _set_model_pricing_defaults(st.session_state["translation_model_select_input"])
+
+
 office_mode = bool(st.session_state.get("office_mode", False))
 dossier_id_prefix = "DOC" if office_mode else "DG"
 subject_label = "文件" if office_mode else "档案"
@@ -228,39 +278,62 @@ def _render_task_controls(office_mode: bool) -> dict:
     show_extraction_preview = False
     preview_page = 1
     with st.expander("高级任务控制", expanded=False):
-        base_url = st.text_input("接口地址", value=base_url, key="base_url_input")
-        model = st.text_input("模型名称", value=model, key="model_input")
+        _initialize_translation_model_selector()
+        provider_key = st.selectbox(
+            "翻译接口",
+            [*MODEL_PROVIDERS, CUSTOM_PROVIDER],
+            format_func=lambda key: "自定义兼容接口" if key == CUSTOM_PROVIDER else MODEL_PROVIDERS[key].label,
+            key="translation_provider_input",
+            on_change=_reset_translation_model_for_provider,
+        )
+        if provider_key == CUSTOM_PROVIDER:
+            base_url = st.text_input("接口地址", value=base_url, key="base_url_input")
+            model = st.text_input("模型名称", value=model, key="model_input")
+        else:
+            provider = MODEL_PROVIDERS[provider_key]
+            base_url = provider.base_url
+            model_options = [model_id for model_id, _ in provider.models]
+            model_labels = dict(provider.models)
+            model = st.selectbox(
+                "翻译模型",
+                model_options,
+                format_func=lambda model_id: model_labels[model_id],
+                key="translation_model_select_input",
+                on_change=_reset_pricing_for_selected_model,
+            )
+            st.caption(f"接口地址：{base_url}")
         rate_limit = st.number_input(
             "速率限制（次/分钟）", value=60, min_value=1, max_value=1000, step=10, key="rate_limit_input"
         )
         cooldown = st.slider("批次冷却（秒）", 0.0, 5.0, 1.0, 0.1, key="cooldown_input")
         max_split_depth = st.slider("最大拆分深度", 1, 20, 10, key="split_depth_input")
-        fuzzy_matching = st.checkbox("模糊术语匹配", value=False, key="fuzzy_matching_input")
         st.caption(
-            "费用单价（可选）。留空或 0 表示不显示金额，只显示 Token 与调用次数。"
-            "单价按上面填写的接口地址生效，换接口后请重新填写。"
+            "费用单价：官方标准付费档美元价格。切换内置模型会自动更新；"
+            "自定义接口可手动填写。"
         )
         price_cols = st.columns(3)
         price_input_per_m = price_cols[0].number_input(
-            "输入 ¥/百万 token", value=0.0, min_value=0.0, step=0.1,
-            format="%.3f", key="price_input_per_m",
+            "输入 $/百万 token", min_value=0.0, step=0.001,
+            format="%.6f", key="price_input_per_m_usd",
         )
         price_output_per_m = price_cols[1].number_input(
-            "输出 ¥/百万 token", value=0.0, min_value=0.0, step=0.1,
-            format="%.3f", key="price_output_per_m",
+            "输出 $/百万 token", min_value=0.0, step=0.001,
+            format="%.6f", key="price_output_per_m_usd",
         )
         price_cached_per_m = price_cols[2].number_input(
-            "缓存 ¥/百万 token", value=0.0, min_value=0.0, step=0.1,
-            format="%.3f", key="price_cached_per_m",
+            "缓存 $/百万 token", min_value=0.0, step=0.0001,
+            format="%.6f", key="price_cached_per_m_usd",
         )
         retranslate_pages_str = st.text_input(
             "重翻页码", key="retranslate_pages_input", placeholder="如：8, 12-15"
         )
         retry_failed_pages = st.checkbox("只重试失败页", value=False, key="retry_failed_pages_input")
         show_review_workbench = st.checkbox(
-            "显示翻译后校对区", value=False, key="show_review_workbench_input"
+            "生成翻译后校对工作台（仅排查问题时开启）", value=False, key="show_review_workbench_input"
         )
-        show_extraction_preview = st.checkbox("显示提取预览", value=False, key="show_extraction_preview_input")
+        show_extraction_preview = st.checkbox(
+            "翻译前查看提取文本（诊断用）", value=False, key="show_extraction_preview_input"
+        )
         if show_extraction_preview:
             preview_page = st.number_input("预览页（从 1 开始）", value=1, min_value=1, key="preview_page_input")
 
@@ -952,7 +1025,7 @@ if launch_pressed:
     elif _base_url_error(base_url):
         st.error(f"✗ {_base_url_error(base_url)}")
     elif not model.strip():
-        st.error("✗ 请输入模型名称")
+        st.error("✗ 请选择或输入模型名称")
     elif source_type == "pdf" and not formats:
         st.error("✗ 请至少选择一种输出格式")
     elif source_type == "pdf" and _typeset_formats_selected(formats) and not _typeset_formats_are_exclusive(formats):
@@ -1073,7 +1146,7 @@ if launch_pressed:
             speed_metric.metric("速度", f"{speed:.1f} 块/分钟" if speed else "估算中")
             cost_metric.metric(
                 "费用",
-                format_cost_yuan(stats.cost_yuan) if stats else "估算中",
+                format_cost_usd(stats.cost_usd) if stats else "估算中",
             )
 
         try:
@@ -1482,7 +1555,7 @@ if launch_pressed:
                     else f"{stats.api_calls} 次 / 失败 {stats.failed_calls}",
                 )
                 typeset_token_metric.metric("Token", f"{stats.total_tokens:,}")
-                typeset_cost_metric.metric("费用", format_cost_yuan(stats.cost_yuan))
+                typeset_cost_metric.metric("费用", format_cost_usd(stats.cost_usd))
 
             layout_hints_generator = None
             if typeset_auto_layout_hints and not layout_hints_path:
@@ -1576,7 +1649,7 @@ if launch_pressed:
             typeset_status.text(
                 "✓ 图文重绘完成! "
                 f"总用时 {format_duration(elapsed_total)} | "
-                f"Token {result.total_tokens:,} | 费用 {format_cost_yuan(result.cost_yuan)}"
+                f"Token {result.total_tokens:,} | 费用 {format_cost_usd(result.cost_usd)}"
             )
 
             if result.export_errors:
@@ -1609,7 +1682,7 @@ if launch_pressed:
                 "api_calls": result.api_calls,
                 "failed_calls": result.failed_calls,
                 "translation_cache_hits": result.translation_cache_hits,
-                "cost_yuan": result.cost_yuan,
+                "cost_usd": result.cost_usd,
                 "glossary": Path(glossary_path).name if glossary_path else "",
                 "font_family": typeset_config.font_family,
                 "outputs": [Path(path).name for path in existing_output_files(generated_files, final_only=True)],
@@ -1625,7 +1698,7 @@ if launch_pressed:
                 "失败区域": result.failed_regions,
                 "API 调用": result.api_calls,
                 "Token": f"{result.total_tokens:,}",
-                "费用": format_cost_yuan(result.cost_yuan),
+                "费用": format_cost_usd(result.cost_usd),
                 "成品数": len(existing_output_files(generated_files, final_only=True)),
             })
             extractor.close()
@@ -1798,13 +1871,13 @@ if launch_pressed:
             set_progress(min(pct, 1.0), progress_text)
             status_text.text(
                 f"翻译中: 已完成 {completed_count}/{total_count} 页{latest_text} | "
-                f"费用 {format_cost_yuan(stats.cost_yuan)}"
+                f"费用 {format_cost_usd(stats.cost_usd)}"
             )
             progress_metric.metric("进度", f"{completed_count}/{total_count}")
             elapsed_metric.metric("已用时", format_duration(elapsed))
             eta_metric.metric("预计剩余", format_duration(remaining_seconds))
             speed_metric.metric("速度", f"{speed:.1f} 页/分钟" if speed else "估算中")
-            cost_metric.metric("费用", format_cost_yuan(stats.cost_yuan))
+            cost_metric.metric("费用", format_cost_usd(stats.cost_usd))
 
         def update_translation_progress(page_num, translation, completed_count, total_count):
             render_progress(completed_count, total_count, page_num)
@@ -2073,7 +2146,7 @@ if launch_pressed:
         # Stats
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("📄 页数", f"{completeness.translated_pages}")
-        col_b.metric("💰 费用", format_cost_yuan(stats.cost_yuan))
+        col_b.metric("💰 费用", format_cost_usd(stats.cost_usd))
         col_c.metric("🔢 Token", f"{stats.total_tokens:,}")
 
         # Output & Download

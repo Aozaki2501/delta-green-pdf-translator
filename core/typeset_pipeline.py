@@ -843,7 +843,7 @@ class TypesetPipeline:
             translation_cache_hits=int(
                 getattr(stats, "translation_cache_hits", 0) or 0
             ),
-            cost_yuan=getattr(stats, "cost_yuan", None),
+            cost_usd=getattr(stats, "cost_usd", None),
         )
 
     def _write_report(self, result: TypesetResult) -> None:
@@ -867,7 +867,7 @@ class TypesetPipeline:
                 "api_calls": result.api_calls,
                 "failed_calls": result.failed_calls,
                 "translation_cache_hits": result.translation_cache_hits,
-                "cost_yuan": result.cost_yuan,
+                "cost_usd": result.cost_usd,
             },
             "config": {
                 "font_family": self.config.font_family,

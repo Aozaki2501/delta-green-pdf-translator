@@ -86,7 +86,7 @@ from core.layout_adapters import (
 )
 from core.dispatcher import RateLimiter
 from core.glossary import build_glossary_matcher
-from core.pricing import build_pricing, format_cost_yuan
+from core.pricing import build_pricing, format_cost_usd
 from core.utils import validate_base_url
 
 from exporters import (
@@ -354,7 +354,7 @@ def translate_pdf(pdf_path, output_path, api_key, glossary_path=None,
                 if translation and not is_failed_translation(translation):
                     translated_pages.append((page_num, translation))
                     tracker.mark_completed(page_num, translation)
-                    print(f" done ({format_cost_yuan(stats.cost_yuan)})")
+                    print(f" done ({format_cost_usd(stats.cost_usd)})")
                 elif is_failed_translation(translation):
                     translated_pages.append((page_num, translation))
                     tracker.mark_failed(page_num, translation)
