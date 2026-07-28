@@ -127,7 +127,8 @@ Translation rules:
 13. Preserve [CARD] and [/CARD] marker lines exactly. Text inside a card must stay inside the card and must not be merged into surrounding body text.
 14. Preserve [FULL_WIDTH_TITLE] and [/FULL_WIDTH_TITLE] marker lines exactly. Text inside marks a full-width section title; translate only the title text inside.
 15. Preserve [STAT_BLOCK], [/STAT_BLOCK], [IMAGE], and [/IMAGE] marker lines exactly. Translate stat-block labels only when they are prose; do not translate game abbreviations. Do not translate "Illustration placeholder" inside image markers.
-16. If the source contains [BLOCK id] marker lines, preserve those marker lines exactly. Return one translated block for each source block and no text outside the block markers."""
+16. If the source contains [BLOCK id] marker lines, preserve those marker lines exactly. Return one translated block for each source block and no text outside the block markers.
+17. Translate prose labels even when they are all caps (for example, ETERNAL:). Only keep the abbreviations explicitly listed in rule 2."""
 
     SYSTEM_PROMPT_MARKDOWN = """You are a professional TRPG translator. Translate the following Markdown content from English to Chinese.
 

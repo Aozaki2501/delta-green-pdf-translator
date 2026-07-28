@@ -7,6 +7,8 @@ from core.translation_validation import (
     ensure_no_elision_placeholder,
     ensure_no_japanese_kana,
     ensure_no_prompt_leak,
+    ensure_no_untranslated_leading_labels,
+    untranslated_leading_labels,
 )
 
 
@@ -73,3 +75,20 @@ def test_detects_elision_placeholder_variants(text):
 def test_allows_legitimate_brackets_and_ellipses(text):
     assert contains_elision_placeholder(text) is False
     ensure_no_elision_placeholder(text)
+
+
+def test_rejects_untranslated_all_caps_prose_label():
+    source = "ETERNAL: In theory, Glaaki can be destroyed."
+    translation = "ETERNAL: 理论上，格拉基可以被摧毁。"
+
+    assert untranslated_leading_labels(source, translation) == ("ETERNAL",)
+    with pytest.raises(ValueError, match="ETERNAL"):
+        ensure_no_untranslated_leading_labels(source, translation)
+
+
+def test_allows_explicitly_preserved_rule_labels():
+    source = "SAN: Loss is 1/1D6."
+    translation = "SAN: 损失为1/1D6。"
+
+    assert untranslated_leading_labels(source, translation) == ()
+    ensure_no_untranslated_leading_labels(source, translation)

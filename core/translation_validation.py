@@ -107,6 +107,15 @@ _ELISION_PLACEHOLDER = re.compile(
     r"[\[\(（【]\s*(?:\.{2,}|。{2,}|…+|省略[^\]\)）】]*)\s*[\]\)）】]"
 )
 
+# These are the only all-caps labels the translator is explicitly told to keep
+# in English. Other labels introduce prose and must be translated rather than
+# leaking into the Chinese output.
+_PRESERVED_LEADING_LABELS = frozenset({
+    "STR", "CON", "DEX", "INT", "POW", "CHA", "SAN", "WP", "HP",
+    "FBI", "CIA", "MJ-12", "A-CELL",
+})
+_LEADING_ALL_CAPS_LABEL = re.compile(r"(?m)^\s*([A-Z][A-Z0-9 _-]*)\s*:")
+
 
 def contains_elision_placeholder(text: str) -> bool:
     """Return True when text contains an elision placeholder such as ``[...]``."""
@@ -117,3 +126,36 @@ def ensure_no_elision_placeholder(text: str, label: str = "译文") -> None:
     """Raise when translated text elides content it failed to reconstruct."""
     if contains_elision_placeholder(text):
         raise ValueError(f"{label}包含省略占位符，原文可能被切断")
+
+
+def untranslated_leading_labels(source: str, translation: str) -> tuple[str, ...]:
+    """Return source labels that were copied into Chinese output unchanged.
+
+    The rule deliberately covers only the exact ``ALL CAPS:`` syntax used for
+    prose labels. Game abbreviations have an explicit allowlist above; unknown
+    labels fail closed so they can be translated or added to that allowlist.
+    """
+    source_labels = {
+        match.group(1).strip()
+        for match in _LEADING_ALL_CAPS_LABEL.finditer(str(source or ""))
+    }
+    translated_labels = {
+        match.group(1).strip()
+        for match in _LEADING_ALL_CAPS_LABEL.finditer(str(translation or ""))
+    }
+    return tuple(sorted(
+        label
+        for label in source_labels & translated_labels
+        if label not in _PRESERVED_LEADING_LABELS
+    ))
+
+
+def ensure_no_untranslated_leading_labels(
+    source: str,
+    translation: str,
+    label: str = "译文",
+) -> None:
+    """Raise when a prose label was copied into the Chinese translation."""
+    labels = untranslated_leading_labels(source, translation)
+    if labels:
+        raise ValueError(f"{label}保留了未翻译标签：{', '.join(labels)}")

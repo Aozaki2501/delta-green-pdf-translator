@@ -29,6 +29,8 @@ from core.translation_validation import (
     ensure_no_elision_placeholder,
     ensure_no_japanese_kana,
     ensure_no_prompt_leak,
+    ensure_no_untranslated_leading_labels,
+    untranslated_leading_labels,
 )
 from core.utils import replace_with_retry
 from core.typeset_models import (
@@ -43,12 +45,13 @@ from core.typeset_models import (
 # ---------------------------------------------------------------------------
 
 
-def _is_unusable_translation(text: str) -> bool:
+def _is_unusable_translation(text: str, source_text: str | None = None) -> bool:
     """Stored translations from an older run may predate current validation."""
     return (
         contains_prompt_leak(text)
         or contains_elision_placeholder(text)
         or contains_japanese_kana(text)
+        or bool(source_text and untranslated_leading_labels(source_text, text))
     )
 
 
@@ -128,12 +131,14 @@ class TypesetTranslationProgress:
                 stored_hash = self.source_hashes.get(block_id)
                 if stored_hash not in {"*", _source_text_hash(source_text)}:
                     return False
-            return not _is_unusable_translation(self.translations.get(block_id, ""))
+            return not _is_unusable_translation(
+                self.translations.get(block_id, ""), source_text
+            )
 
-    def get_translation(self, block_id: str) -> str:
+    def get_translation(self, block_id: str, source_text: str | None = None) -> str:
         with self._lock:
             translation = self.translations.get(block_id, "")
-        if _is_unusable_translation(translation):
+        if _is_unusable_translation(translation, source_text):
             return ""
         return translation
 
@@ -143,18 +148,31 @@ class TypesetTranslationProgress:
 
     # -- Cache interface (compatible with Translator.translate_chunk cache param) --
 
-    def get_cached_prompt_translation(self, cache_key: str) -> str:
+    def get_cached_prompt_translation(
+        self,
+        cache_key: str,
+        source_text: str | None = None,
+    ) -> str:
         with self._lock:
             translation = self.translation_cache.get(cache_key, "")
-        if _is_unusable_translation(translation):
+        if _is_unusable_translation(translation, source_text):
             return ""
         return translation
 
-    def mark_cached_prompt_translation(self, cache_key: str, translation: str):
+    def mark_cached_prompt_translation(
+        self,
+        cache_key: str,
+        translation: str,
+        source_text: str | None = None,
+    ):
         if cache_key and translation:
             ensure_no_prompt_leak(translation, "缓存译文")
             ensure_no_elision_placeholder(translation, "缓存译文")
             ensure_no_japanese_kana(translation, "缓存译文")
+            if source_text is not None:
+                ensure_no_untranslated_leading_labels(
+                    source_text, translation, "缓存译文"
+                )
             with self._lock:
                 self.translation_cache[cache_key] = translation
                 self.save()
@@ -182,6 +200,8 @@ class TypesetTranslationProgress:
         ensure_no_prompt_leak(translation)
         ensure_no_elision_placeholder(translation)
         ensure_no_japanese_kana(translation)
+        if source_text is not None:
+            ensure_no_untranslated_leading_labels(source_text, translation)
         with self._lock:
             self.translations[block_id] = translation
             self.source_hashes[block_id] = (
@@ -246,7 +266,11 @@ def _build_marked_text(blocks: list[ContentBlock]) -> str:
     return "\n\n".join(parts)
 
 
-def _parse_marked_translations(text: str, expected_ids: set[str]) -> dict[str, str]:
+def _parse_marked_translations(
+    text: str,
+    expected_ids: set[str],
+    source_text_by_id: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Parse translation response to extract per-block translations."""
     ensure_no_prompt_leak(text, "模型返回")
     ensure_no_japanese_kana(text, "模型返回")
@@ -279,6 +303,10 @@ def _parse_marked_translations(text: str, expected_ids: set[str]) -> dict[str, s
         ensure_no_prompt_leak(translated, f"译文块 {block_id}")
         ensure_no_elision_placeholder(translated, f"译文块 {block_id}")
         ensure_no_japanese_kana(translated, f"译文块 {block_id}")
+        if source_text_by_id is not None:
+            ensure_no_untranslated_leading_labels(
+                source_text_by_id[block_id], translated, f"译文块 {block_id}"
+            )
     return parsed
 
 
@@ -417,7 +445,11 @@ def translate_typeset_content(
                     progress.mark_failed(block.id, f"{TRANSLATION_FAILURE_PREFIX} missing translation]")
                     continue
                 progress.mark_completed(block.id, block_translation, block.source_text)
-                progress.mark_cached_prompt_translation(_source_text_hash(block.source_text), block_translation)
+                progress.mark_cached_prompt_translation(
+                    _source_text_hash(block.source_text),
+                    block_translation,
+                    block.source_text,
+                )
 
             progress.last_translated_page = page_index
             progress.save()
@@ -437,7 +469,7 @@ def _finish_cached_unit(
     all_cached = True
     for block in blocks:
         cache_key = _source_text_hash(block.source_text)
-        cached = progress.get_cached_prompt_translation(cache_key)
+        cached = progress.get_cached_prompt_translation(cache_key, block.source_text)
         if cached:
             if not progress.is_completed(block.id, block.source_text):
                 progress.mark_completed(block.id, cached, block.source_text)
@@ -475,7 +507,11 @@ def _translate_typeset_unit(
             last_error = RuntimeError(translation)
         else:
             try:
-                return _parse_marked_translations(translation, pending_ids)
+                return _parse_marked_translations(
+                    translation,
+                    pending_ids,
+                    {block.id: block.source_text for block in pending_blocks},
+                )
             except ValueError as exc:
                 last_error = exc
         if attempt < MAX_RETRIES - 1:
@@ -522,7 +558,7 @@ def _build_translated_document(
         translated_blocks = []
         for block in page.blocks:
             if block.translatable and progress.is_completed(block.id, block.source_text):
-                translated_text = progress.get_translation(block.id)
+                translated_text = progress.get_translation(block.id, block.source_text)
             else:
                 translated_text = block.translated_text
             translated_blocks.append(replace(block, translated_text=translated_text))

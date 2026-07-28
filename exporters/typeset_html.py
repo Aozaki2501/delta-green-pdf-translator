@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -153,6 +154,13 @@ class TypesetHTMLRebuilder:
             return "h2"
         return "h3"
 
+    def _document_title(self, structure: PageStructureDocument) -> str:
+        """Return the user-facing title stored with the source document."""
+        title = (self.config.document_title or "").strip()
+        if title:
+            return title
+        return Path(structure.source_pdf).stem
+
     def rebuild_document(
         self,
         structure: PageStructureDocument,
@@ -251,7 +259,7 @@ class TypesetHTMLRebuilder:
             "<head>",
             '<meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
-            f"<title>{html.escape(structure.source_pdf)} typeset</title>",
+            f"<title>{html.escape(self._document_title(structure))}</title>",
             f"<style>{css}</style>",
             "</head>",
             "<body>",
@@ -503,19 +511,19 @@ body {{
 }}
 .typeset-positioned-block .typeset-body-text {{
     margin: 0;
-    line-height: 1.15;
+    line-height: 1.4;
     text-indent: 0;
     overflow-wrap: anywhere;
     word-break: break-word;
 }}
 .typeset-positioned-block .typeset-heading {{
     margin: 0;
-    line-height: 1.15;
+    line-height: 1.2;
     text-indent: 0;
     text-align: center;
-    white-space: nowrap;
-    overflow-wrap: normal;
-    word-break: keep-all;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
 }}
 .typeset-reflow-area {{
     position: absolute;
@@ -1196,13 +1204,14 @@ body {{
             f'{"source-font-display-condensed" if is_title else "source-font-geometric"}" '
             f'data-block-id="{html.escape(block.id)}" '
             f'data-region-id="{html.escape(block.region_id)}" '
+            f'data-fit="text" '
             f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
             f'width:{_pt_to_px_str(max(1.0, x1 - x0))};'
             f'height:{_pt_to_px_str(max(1.0, y1 - y0))};'
             f'font-size:{_pt_to_px_str(font_size_pt)};line-height:1;'
             f'display:flex;align-items:center;justify-content:center;'
             f'{background}'
-            f'text-align:center;white-space:nowrap;color:#ffffff;'
+            f'text-align:center;white-space:normal;overflow-wrap:anywhere;line-height:1.2;color:#ffffff;'
             f'font-weight:400;text-shadow:0 1px 3px rgba(0,0,0,.95)">'
             f"{html.escape(text)}</div>"
         )
@@ -2679,6 +2688,8 @@ body {{
         return f"font-role-{block.font_role.value.replace('_', '-')}"
 
     def _source_font_class(self, block: ContentBlock) -> str:
+        if self._block_renders_as_heading(block):
+            return "source-font-default"
         source_font = (block.source_font or "").lower()
         if "industria" in source_font:
             return (

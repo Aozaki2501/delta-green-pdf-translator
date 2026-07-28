@@ -347,6 +347,7 @@ class PageContentDocument:
 class TypesetConfig:
     """纯重绘管线配置。"""
 
+    document_title: str | None = None
     font_family: str = "DG Fandol Song"
     fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Serif SC", "Source Han Serif CN", "SimSun", "serif"])
     heading_font_family: str = "DG Lanting Kanhei"

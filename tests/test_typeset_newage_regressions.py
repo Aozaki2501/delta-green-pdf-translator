@@ -12,6 +12,7 @@ from core.typeset_models import (
     SemanticRole,
     StyledTextRun,
     TextRegionBBox,
+    TypesetConfig,
 )
 from exporters.typeset_html import TypesetHTMLRebuilder
 
@@ -126,7 +127,7 @@ def test_three_stacked_cards_do_not_leave_the_last_card_blank():
     assert "typeset-reflow-area" not in html
 
 
-def test_source_font_family_and_heading_color_survive_translation():
+def test_semantic_heading_font_and_color_survive_translation():
     _, title = _block(
         0,
         [36, 61, 215, 85],
@@ -152,9 +153,54 @@ def test_source_font_family_and_heading_color_survive_translation():
 
     html = TypesetHTMLRebuilder()._render_block(title)
 
-    assert "source-font-geometric" in html
+    assert "font-role-display" in html
+    assert "source-font-default" in html
+    assert "source-font-geometric" not in html
     assert "color:#eb4f24" in html
     assert "font-weight:400" in html
+
+
+def test_positioned_chinese_text_uses_readable_line_height_and_wrappable_heading():
+    css = TypesetHTMLRebuilder()._build_global_css(8.5, 11.0)
+    heading_css = css.split(".typeset-positioned-block .typeset-heading", 1)[1].split("}", 1)[0]
+
+    assert ".typeset-positioned-block .typeset-body-text" in css
+    assert "line-height: 1.4;" in css
+    assert ".typeset-positioned-block .typeset-heading" in css
+    assert "line-height: 1.2;" in heading_css
+    assert "white-space: normal;" in heading_css
+    assert "overflow-wrap: anywhere;" in heading_css
+    assert "overflow-wrap: normal;" not in heading_css
+
+
+def test_document_uses_original_upload_name_as_html_title():
+    content, structure = _page([_block(0, [36, 100, 540, 180], "Body", "正文")])
+    from core.typeset_models import (
+        PAGE_CONTENT_SCHEMA_VERSION,
+        PAGE_STRUCTURE_SCHEMA_VERSION,
+        PageContentDocument,
+        PageStructureDocument,
+    )
+
+    document = TypesetHTMLRebuilder(
+        TypesetConfig(document_title="Delta Green：新时代")
+    ).rebuild_document(
+        PageStructureDocument(
+            schema_version=PAGE_STRUCTURE_SCHEMA_VERSION,
+            source_pdf="_upload_hash.pdf",
+            page_count=1,
+            pages=[structure],
+        ),
+        PageContentDocument(
+            schema_version=PAGE_CONTENT_SCHEMA_VERSION,
+            source_pdf="_upload_hash.pdf",
+            page_count=1,
+            pages=[content],
+        ),
+    )
+
+    assert "<title>Delta Green：新时代</title>" in document
+    assert "_upload_hash.pdf typeset" not in document
 
 
 def test_typewriter_source_uses_distinct_chinese_font_role():

@@ -180,6 +180,17 @@ class TestTypesetTranslationProgress:
         assert progress.is_completed("block_1", "old source")
         assert not progress.is_completed("block_1", "new source")
 
+    def test_old_untranslated_label_is_not_reused(self, tmp_path):
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+        source = "ETERNAL: In theory, Ghroth can be destroyed."
+        progress.translations["block_1"] = "ETERNAL: 理论上，格赫罗斯可以被摧毁。"
+        progress.source_hashes["block_1"] = _source_text_hash(source)
+        progress.translation_cache[_source_text_hash(source)] = progress.translations["block_1"]
+
+        assert not progress.is_completed("block_1", source)
+        assert progress.get_translation("block_1", source) == ""
+        assert progress.get_cached_prompt_translation(_source_text_hash(source), source) == ""
+
     def test_legacy_progress_schema_is_not_reused(self, tmp_path):
         progress_file = tmp_path / "progress.json"
         progress_file.write_text(
@@ -289,6 +300,15 @@ class TestBlockMarkers:
         text = "[BLOCK b1]\n《新时代》的触发事件是[...]之间的信任丧失。\n[/BLOCK b1]"
         with pytest.raises(ValueError, match="省略占位符"):
             _parse_marked_translations(text, {"b1"})
+
+    def test_parse_marked_translations_rejects_untranslated_prose_label(self):
+        text = "[BLOCK b1]\nETERNAL: 理论上，格赫罗斯可以被摧毁。\n[/BLOCK b1]"
+        with pytest.raises(ValueError, match="ETERNAL"):
+            _parse_marked_translations(
+                text,
+                {"b1"},
+                {"b1": "ETERNAL: In theory, Ghroth can be destroyed."},
+            )
 
     def test_parse_marked_translations_rejects_prompt_leak(self):
         text = (

@@ -1300,6 +1300,7 @@ if launch_pressed:
             if layout_hints_path and typeset_auto_layout_hints:
                 st.warning("已填写 layout_hints.json 路径，本次优先使用该文件，不再自动生成。")
             typeset_config = TypesetConfig(
+                document_title=Path(pdf_file.name).stem,
                 font_family=typeset_font_family,
                 layout_hints_path=layout_hints_path,
             )
@@ -1343,6 +1344,7 @@ if launch_pressed:
                         f"已回退到 '{_fallback_used}'。"
                     )
                     typeset_config = TypesetConfig(
+                        document_title=Path(pdf_file.name).stem,
                         font_family=_fallback_used,
                         layout_hints_path=layout_hints_path,
                     )
