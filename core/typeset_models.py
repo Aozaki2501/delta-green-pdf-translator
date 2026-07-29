@@ -347,6 +347,8 @@ class PageContentDocument:
 class TypesetConfig:
     """纯重绘管线配置。"""
 
+    profile_id: str = "delta_green"
+    source_language: str = "English"
     document_title: str | None = None
     font_family: str = "DG Fandol Song"
     fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Serif SC", "Source Han Serif CN", "SimSun", "serif"])
@@ -359,6 +361,7 @@ class TypesetConfig:
     text_indent: str = "2em"
     title_color: str = "#231f20"
     subtitle_color: str = "#dc2527"
+    accent_heading_colors: tuple[str, ...] = ("#ed1c24", "#dc2527", "#eb4f24")
     body_color: str = "#231f20"
     display_font_size_pt: float = 30.0
     section_font_size_pt: float = 20.0

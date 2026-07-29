@@ -62,7 +62,12 @@ class SemanticAnalyzer:
     layouts.
     """
 
-    def __init__(self, pdf_path: str, output_dir: str):
+    def __init__(
+        self,
+        pdf_path: str,
+        output_dir: str,
+        accent_heading_colors: tuple[str, ...] | None = None,
+    ):
         """
         Args:
             pdf_path: Path to the source PDF file (needed for font info extraction).
@@ -71,6 +76,9 @@ class SemanticAnalyzer:
         self.pdf_path = str(pdf_path)
         self.output_dir = Path(output_dir)
         self.doc = pymupdf.open(self.pdf_path)
+        self.accent_heading_colors = frozenset(
+            color.lower() for color in (accent_heading_colors or ("#ed1c24", "#dc2527", "#eb4f24"))
+        )
 
     def __enter__(self):
         return self
@@ -189,6 +197,9 @@ class SemanticAnalyzer:
             blocks.extend(region_blocks)
 
         blocks = _dedupe_overprinted_blocks(blocks)
+        blocks = _merge_drop_caps(blocks)
+        blocks = _promote_hero_title_blocks(blocks, page_structure)
+        blocks = _mark_image_float_blocks(blocks, page_structure)
         if _structured_table_grid_bounds(page_structure) is not None:
             blocks = _coalesce_structured_table_cells(blocks, page_structure)
         blocks = [replace(block, order=index) for index, block in enumerate(blocks)]
@@ -215,7 +226,16 @@ class SemanticAnalyzer:
             runs = _styled_runs_from_line(line, line_index)
             if not runs:
                 continue
-            font_role, role = _classify_line_style(line, runs, context)
+            font_role, role = _classify_line_style(
+                line,
+                runs,
+                context,
+                getattr(
+                    self,
+                    "accent_heading_colors",
+                    frozenset({"#ed1c24", "#dc2527", "#eb4f24"}),
+                ),
+            )
             line_specs.append({
                 "line_index": line_index,
                 "line_id": f"{region.id}_l{line_index + 1:04d}",
@@ -722,6 +742,7 @@ def _classify_line_style(
     line: TextLineBBox,
     runs: list[StyledTextRun],
     context: PageContext,
+    accent_heading_colors: frozenset[str],
 ) -> tuple[FontRole, SemanticRole]:
     size = _weighted_avg_font_size(runs)
     y0, y1 = float(line.bbox[1]), float(line.bbox[3])
@@ -732,7 +753,11 @@ def _classify_line_style(
         return FontRole.FOOTER, SemanticRole.FOOTER
     if size >= context.max_font_size * 0.85 and size >= context.median_font_size * 1.55:
         return FontRole.DISPLAY, SemanticRole.TITLE
-    if _has_accent_heading_color(runs):
+    if _has_accent_heading_color(runs, accent_heading_colors) and (
+        accent_heading_colors == frozenset({"#ed1c24", "#dc2527", "#eb4f24"})
+        or size >= context.median_font_size * 1.15
+        or (len(text) <= 48 and any(run.bold for run in runs))
+    ):
         return FontRole.SECTION, SemanticRole.SUBTITLE
     if (
         any(run.bold for run in runs)
@@ -850,6 +875,116 @@ def _union_bboxes(bboxes: list[list[float]]) -> list[float]:
     ]
 
 
+def _promote_hero_title_blocks(
+    blocks: list[ContentBlock],
+    page_structure: PageStructure,
+) -> list[ContentBlock]:
+    """Merge the decorative multi-line title of a hero chapter opening."""
+    hero_bottom = _top_hero_bottom(page_structure)
+    if hero_bottom is None:
+        return blocks
+
+    drop_cap = next((block for block in blocks if block.layout_mode == "drop_cap"), None)
+    if drop_cap is None or drop_cap.bbox is None:
+        return blocks
+    title_candidates = [
+        block for block in blocks
+        if block.bbox is not None
+        and block.font_role in {FontRole.SECTION, FontRole.SUBSECTION}
+        and hero_bottom <= block.bbox[1] < drop_cap.bbox[1]
+        and block.bbox[3] <= drop_cap.bbox[1] + 8.0
+    ]
+    if len(title_candidates) < 2:
+        return blocks
+    title_candidates.sort(key=lambda block: (block.bbox[1], block.bbox[0], block.order))
+    first = title_candidates[0]
+    candidate_ids = {block.id for block in title_candidates}
+    title_runs = [run for block in title_candidates for run in block.runs]
+    title_bbox = _union_bboxes([block.bbox for block in title_candidates if block.bbox is not None])
+    title = replace(
+        first,
+        role=SemanticRole.TITLE,
+        font_role=FontRole.DISPLAY,
+        runs=title_runs,
+        source_text=" ".join(block.source_text.strip() for block in title_candidates),
+        translated_text=None,
+        bbox=title_bbox,
+        line_ids=[line_id for block in title_candidates for line_id in block.line_ids],
+        layout_mode="full_width_hero",
+    )
+    result: list[ContentBlock] = []
+    for block in blocks:
+        if block.id == first.id:
+            result.append(title)
+        elif block.id not in candidate_ids:
+            result.append(block)
+    return result
+
+
+def _top_hero_bottom(page: PageStructure) -> float | None:
+    page_area = max(page.width * page.height, 1.0)
+    candidates = [
+        image.bbox[3]
+        for image in page.images
+        if image.bbox[0] <= page.width * 0.08
+        and image.bbox[2] >= page.width * 0.92
+        and image.bbox[1] <= page.height * 0.05
+        and _bbox_area(image.bbox) >= page_area * 0.18
+    ]
+    return max(candidates) if candidates else None
+
+
+def _mark_image_float_blocks(
+    blocks: list[ContentBlock],
+    page_structure: PageStructure,
+) -> list[ContentBlock]:
+    """Mark body blocks that flow alongside a central foreground image.
+
+    The source line geometry remains authoritative for placement.  This semantic
+    flag prevents later templates from treating the page as two uninterrupted
+    rectangular columns.
+    """
+    central_images = [
+        image.bbox
+        for image in page_structure.images
+        if _is_central_float_image(image.bbox, page_structure)
+    ]
+    if not central_images:
+        return blocks
+
+    marked: list[ContentBlock] = []
+    for block in blocks:
+        bbox = block.bbox
+        beside_float = (
+            bbox is not None
+            and block.role == SemanticRole.BODY_COLUMN
+            and block.layout_mode == "paragraph"
+            and any(_vertical_overlap_ratio(bbox, image_bbox) >= 0.12 for image_bbox in central_images)
+        )
+        marked.append(replace(block, layout_mode="image_float") if beside_float else block)
+    return marked
+
+
+def _is_central_float_image(bbox: list[float], page: PageStructure) -> bool:
+    if len(bbox) != 4:
+        return False
+    x0, y0, x1, y1 = bbox
+    width = max(0.0, x1 - x0)
+    height = max(0.0, y1 - y0)
+    if width < page.width * 0.18 or height < page.height * 0.18:
+        return False
+    if width >= page.width * 0.9 and height >= page.height * 0.9:
+        return False
+    page_center = page.width / 2
+    return x0 < page_center < x1 and y0 > page.height * 0.04 and y1 < page.height * 0.96
+
+
+def _vertical_overlap_ratio(a: list[float], b: list[float]) -> float:
+    overlap = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    height = max(1.0, a[3] - a[1])
+    return overlap / height
+
+
 def _column_id_for_bbox(
     bbox: list[float],
     page_width: float,
@@ -891,6 +1026,58 @@ def _dominant_font(runs: list[StyledTextRun]) -> str | None:
     return max(weights, key=weights.get)
 
 
+def _merge_drop_caps(blocks: list[ContentBlock]) -> list[ContentBlock]:
+    """Attach a decorative leading letter to its following paragraph before translation."""
+    merged: list[ContentBlock] = []
+    index = 0
+    while index < len(blocks):
+        block = blocks[index]
+        next_block = blocks[index + 1] if index + 1 < len(blocks) else None
+        lead = (block.source_text or "").strip()
+        if (
+            next_block is not None
+            and block.font_role == FontRole.DISPLAY
+            and len(lead) == 1
+            and lead.isalpha()
+            and next_block.font_role == FontRole.BODY
+            and next_block.source_text
+            and next_block.source_text[0].islower()
+            and block.bbox
+            and next_block.bbox
+            and block.bbox[0] <= next_block.bbox[0]
+            and block.bbox[1] <= next_block.bbox[1] + 2.0
+        ):
+            paragraph = [next_block]
+            cursor = index + 2
+            while cursor < len(blocks):
+                continuation = blocks[cursor]
+                previous = paragraph[-1]
+                if (
+                    continuation.font_role != FontRole.BODY
+                    or continuation.role != SemanticRole.BODY_COLUMN
+                    or not continuation.bbox
+                    or not previous.bbox
+                    or continuation.bbox[1] - previous.bbox[3] > 4.0
+                ):
+                    break
+                paragraph.append(continuation)
+                cursor += 1
+            merged.append(replace(
+                next_block,
+                id=block.id,
+                source_text=lead + " ".join(item.source_text.strip() for item in paragraph),
+                runs=list(block.runs) + [run for item in paragraph for run in item.runs],
+                bbox=_union_bboxes([item.bbox for item in paragraph if item.bbox]),
+                line_ids=list(block.line_ids) + [line_id for item in paragraph for line_id in item.line_ids],
+                layout_mode="drop_cap",
+            ))
+            index = cursor
+            continue
+        merged.append(block)
+        index += 1
+    return merged
+
+
 def _dedupe_overprinted_blocks(blocks: list[ContentBlock]) -> list[ContentBlock]:
     result: list[ContentBlock] = []
     for block in blocks:
@@ -909,9 +1096,13 @@ def _dedupe_overprinted_blocks(blocks: list[ContentBlock]) -> list[ContentBlock]
     return result
 
 
-def _has_accent_heading_color(runs: list[StyledTextRun]) -> bool:
+def _has_accent_heading_color(
+    runs: list[StyledTextRun],
+    accent_heading_colors: frozenset[str] | None = None,
+) -> bool:
+    colors = accent_heading_colors or frozenset({"#ed1c24", "#dc2527", "#eb4f24"})
     return any(
-        run.text.strip() and run.color.lower() in {"#ed1c24", "#dc2527", "#eb4f24"}
+        run.text.strip() and run.color.lower() in colors
         for run in runs
     )
 

@@ -644,6 +644,7 @@ class PageStructureExtractor:
         images: list[ImageElement] = []
         page_dict = page.get_text("dict")
         image_infos = list(page.get_image_info(hashes=True, xrefs=True))
+        source_image_xrefs = self._source_image_xrefs(image_infos)
         image_blocks = [
             block for block in page_dict.get("blocks", [])
             if block.get("type") == 1 and block.get("image")
@@ -701,7 +702,12 @@ class PageStructureExtractor:
             # Relative path from output_dir
             relative_path = f"assets/typeset_images/{img_filename}"
 
-            image_info = self._match_image_info(block, image_infos, image_digest)
+            image_info = self._match_image_info(
+                block,
+                image_infos,
+                image_digest,
+                source_image_xrefs,
+            )
             digest = image_info.get("digest") if image_info else None
             if isinstance(digest, bytes):
                 digest = digest.hex()
@@ -723,23 +729,49 @@ class PageStructureExtractor:
 
         return images
 
+    def _source_image_xrefs(self, image_infos: list[dict]) -> dict[bytes, set[int]]:
+        """Map encoded image bytes to their PDF xrefs without lossy pixel conversion."""
+        result: dict[bytes, set[int]] = {}
+        for info in image_infos:
+            xref = info.get("xref")
+            if not isinstance(xref, int) or xref <= 0:
+                continue
+            extracted = self.doc.extract_image(xref)
+            payload = extracted.get("image") if extracted else None
+            if not payload:
+                continue
+            digest = hashlib.md5(payload).digest()
+            result.setdefault(digest, set()).add(xref)
+        return result
+
     @staticmethod
     def _match_image_info(
         block: dict,
         image_infos: list[dict],
         image_digest: bytes,
+        source_image_xrefs: dict[bytes, set[int]] | None = None,
     ) -> dict:
-        """Match metadata by exact image content, transform, and dimensions."""
+        """Match metadata by exact PDF source bytes, geometry, and dimensions."""
         transform = tuple(block.get("transform") or ())
         width = block.get("width")
         height = block.get("height")
-        candidates = [
+        geometry_candidates = [
             info for info in image_infos
-            if info.get("digest") == image_digest
-            and tuple(info.get("transform") or ()) == transform
+            if tuple(info.get("transform") or ()) == transform
             and info.get("width") == width
             and info.get("height") == height
         ]
+        source_digest = hashlib.md5(block["image"]).digest() if block.get("image") else None
+        xrefs = (source_image_xrefs or {}).get(source_digest, set())
+        candidates = [
+            info for info in geometry_candidates
+            if info.get("xref") in xrefs
+        ]
+        if not xrefs:
+            candidates = [
+                info for info in geometry_candidates
+                if info.get("digest") == image_digest
+            ]
         if not candidates:
             raise ValueError(
                 f"image block {block.get('number')!r} exact identity maps to 0 image metadata entries"

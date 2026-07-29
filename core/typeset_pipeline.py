@@ -273,7 +273,11 @@ class TypesetPipeline:
         from core.semantic_analyzer import SemanticAnalyzer
 
         logger.info("Phase B: 语义化分析...")
-        with SemanticAnalyzer(self.pdf_path, str(self.output_dir)) as analyzer:
+        with SemanticAnalyzer(
+            self.pdf_path,
+            str(self.output_dir),
+            accent_heading_colors=self.config.accent_heading_colors,
+        ) as analyzer:
             content = analyzer.analyze_document(structure)
 
         # Save to file
@@ -870,6 +874,8 @@ class TypesetPipeline:
                 "cost_usd": result.cost_usd,
             },
             "config": {
+                "profile_id": self.config.profile_id,
+                "source_language": self.config.source_language,
                 "font_family": self.config.font_family,
                 "fallback_fonts": self.config.fallback_fonts,
                 "body_font_size_pt": self.config.body_font_size_pt,

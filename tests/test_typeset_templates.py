@@ -57,3 +57,41 @@ def test_selects_line_track_columns_template():
 
     html = TypesetHTMLRebuilder().rebuild_page(structure, content)
     assert 'data-template="line_track_columns"' in html
+
+
+def test_selects_full_width_hero_template_for_drop_cap_chapter_opener():
+    from core.typeset_models import FontRole, ImageElement
+
+    structure = PageStructure(
+        page_index=5,
+        width=479.1,
+        height=677.5,
+        background=BackgroundLayer(),
+        images=[ImageElement("hero", [0.0, 0.0, 479.1, 226.8], "hero.png", 100, 100)],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox("title", [55.0, 245.0, 350.0, 320.0], ["title"], []),
+            TextRegionBBox("intro", [56.0, 342.0, 387.0, 445.0], ["intro"], []),
+        ],
+    )
+    content = PageContent(
+        page_index=5,
+        page_type=PageType.MIXED,
+        columns=[],
+        blocks=[
+            ContentBlock("title", "title", SemanticRole.TITLE, [], "Title", "章节标题", True,
+                         bbox=[55.0, 245.0, 350.0, 320.0], font_role=FontRole.DISPLAY),
+            ContentBlock("intro", "intro", SemanticRole.BODY_COLUMN, [], "Intro", "这是开篇正文。", True,
+                         bbox=[56.0, 342.0, 387.0, 445.0], layout_mode="drop_cap"),
+        ],
+    )
+
+    template = select_typeset_template(content, structure)
+
+    assert template.id == "full_width_hero"
+    assert template.use_source_columns is True
+
+    html = TypesetHTMLRebuilder().rebuild_page(structure, content)
+    assert 'data-template="full_width_hero"' in html
+    assert "typeset-full-width-hero-title" in html
+    assert "typeset-full-width-hero-intro" in html

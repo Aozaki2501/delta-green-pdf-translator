@@ -152,12 +152,18 @@ def test_semantic_heading_font_and_color_survive_translation():
     )
 
     html = TypesetHTMLRebuilder()._render_block(title)
+    reflow_html = TypesetHTMLRebuilder()._render_reflow_block(title)
 
+    assert html.startswith("<h2 ")
+    assert "typeset-source-subtitle" in html
     assert "font-role-display" in html
     assert "source-font-default" in html
     assert "source-font-geometric" not in html
     assert "color:#eb4f24" in html
-    assert "font-weight:400" in html
+    assert "font-weight:700" in html
+    assert "font-size:20.000px" in html
+    assert reflow_html.startswith('<h2 class="typeset-reflow-subtitle ')
+    assert "font-size:20.000px" in reflow_html
 
 
 def test_positioned_chinese_text_uses_readable_line_height_and_wrappable_heading():

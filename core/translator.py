@@ -159,7 +159,7 @@ Translation rules:
 
     def __init__(self, api_key: str, model: str = "deepseek-v4-pro",
                  base_url: str = "https://api.deepseek.com", stats: TokenStats = None,
-                 glossary_matcher=None):
+                 glossary_matcher=None, system_prompt: str | None = None):
         if not api_key or not str(api_key).strip():
             raise ValueError("API Key 不能为空")
         if not model or not str(model).strip():
@@ -174,6 +174,12 @@ Translation rules:
         self.stats = stats or TokenStats()
         self._glossary_matcher = glossary_matcher
         self.core_glossary = {}
+        self.system_prompt = system_prompt or self.SYSTEM_PROMPT
+
+    def set_system_prompt(self, system_prompt: str) -> None:
+        if not system_prompt or not system_prompt.strip():
+            raise ValueError("翻译系统提示不能为空")
+        self.system_prompt = system_prompt
 
     def set_glossary(self, glossary: dict):
         self.glossary = glossary
@@ -287,7 +293,7 @@ Translation rules:
         if not text.strip():
             return ""
         glossary_section = self._build_glossary_for_chunk(text)
-        system_prompt = self.SYSTEM_PROMPT
+        system_prompt = self.system_prompt
 
         page_info = f" (page {page_num + 1})" if page_num is not None else ""
         context_sections = []

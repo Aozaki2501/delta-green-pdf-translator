@@ -1,6 +1,8 @@
+import hashlib
 from pathlib import Path
 
 import pymupdf
+import pytest
 from PIL import Image
 
 from core.page_structure import PageStructureExtractor
@@ -168,3 +170,62 @@ def test_text_regions_keep_line_geometry_and_style(tmp_path):
     assert region.lines[0].spans
     assert region.lines[0].spans[0].text.strip() == "Red title"
     assert region.lines[0].spans[0].color == "#ff0000"
+
+
+
+def test_image_metadata_prefers_exact_encoded_pdf_bytes_over_decoded_digest():
+    encoded = b"encoded-pdf-image"
+    block = {
+        "number": 0,
+        "image": encoded,
+        "transform": (12.0, 0.0, 0.0, 10.0, 20.0, 30.0),
+        "width": 120,
+        "height": 100,
+    }
+    infos = [
+        {
+            "number": 0,
+            "xref": 17,
+            "digest": b"incompatible-decoded-samples",
+            "transform": block["transform"],
+            "width": 120,
+            "height": 100,
+        }
+    ]
+
+    matched = PageStructureExtractor._match_image_info(
+        block,
+        infos,
+        b"different-pixmap-digest",
+        {hashlib.md5(encoded).digest(): {17}},
+    )
+
+    assert matched["xref"] == 17
+
+
+def test_image_metadata_rejects_mismatched_encoded_pdf_bytes():
+    block = {
+        "number": 0,
+        "image": b"encoded-pdf-image",
+        "transform": (12.0, 0.0, 0.0, 10.0, 20.0, 30.0),
+        "width": 120,
+        "height": 100,
+    }
+    infos = [
+        {
+            "number": 0,
+            "xref": 17,
+            "digest": b"incompatible-decoded-samples",
+            "transform": block["transform"],
+            "width": 120,
+            "height": 100,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="exact identity maps to 0"):
+        PageStructureExtractor._match_image_info(
+            block,
+            infos,
+            b"different-pixmap-digest",
+            {hashlib.md5(block["image"]).digest(): {18}},
+        )

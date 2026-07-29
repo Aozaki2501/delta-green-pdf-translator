@@ -37,7 +37,7 @@ function Get-BasePython {
 
 if (-not (Test-Path $VenvPython)) {
     Write-Host "Creating local Python environment..."
-    $basePython = Get-BasePython
+    $basePython = @(Get-BasePython)
     if ($basePython.Length -gt 1) {
         & $basePython[0] $basePython[1] -m venv $VenvDir
     } else {

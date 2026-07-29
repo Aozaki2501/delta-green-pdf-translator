@@ -337,6 +337,24 @@ def test_table_blocks_render_as_semantic_html_table_without_positioned_cells():
     )
 
 
+def test_table_cell_continuations_do_not_create_extra_columns():
+    structure, content = _html_table_fixture(include_body=False)
+    blocks = content.pages[0].blocks
+    continued = next(block for block in blocks if block.id == "p0001_table_row1_c02")
+    blocks.append(replace(
+        continued,
+        id="p0001_table_row1_c02_continued",
+        source_text="continued",
+        translated_text="续行内容",
+        bbox=[continued.bbox[0], continued.bbox[1] + 4.0, continued.bbox[2], continued.bbox[3] + 4.0],
+    ))
+
+    html = TypesetHTMLRebuilder().rebuild_document(structure, content)
+
+    assert len(re.findall(r"<th(?:\\s|>)", html)) == TABLE_COLUMNS
+    assert "甲2续行内容" in html
+
+
 def test_two_table_groups_on_one_page_render_as_two_tables():
     structure, content = _html_table_fixture(include_body=False)
     original_regions = list(structure.pages[0].text_regions)

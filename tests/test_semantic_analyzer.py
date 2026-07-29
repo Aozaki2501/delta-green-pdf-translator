@@ -16,6 +16,10 @@ from core.semantic_analyzer import (
     _looks_like_list,
     _looks_like_table,
     _weighted_avg_font_size,
+    _has_accent_heading_color,
+    _merge_drop_caps,
+    _mark_image_float_blocks,
+    _promote_hero_title_blocks,
 )
 from core.typeset_models import (
     BackgroundLayer,
@@ -23,6 +27,7 @@ from core.typeset_models import (
     ContentBlock,
     DecorationElement,
     ImageElement,
+    FontRole,
     PageStructure,
     PageType,
     SemanticRole,
@@ -399,3 +404,90 @@ class TestGutterDetection:
         page = _make_page_structure(text_regions=regions)
         gutter = SemanticAnalyzer._detect_gutter(None, page)
         assert gutter is None
+
+
+
+def test_kult_profile_accent_color_is_classified_as_heading():
+    runs = [StyledTextRun("Kapitel", 9.0, False, False, "#b8282f")]
+
+    assert _has_accent_heading_color(runs, frozenset({"#b8282f"}))
+    assert not _has_accent_heading_color(runs, frozenset({"#dc2527"}))
+
+
+
+def test_drop_cap_is_merged_with_the_following_paragraph_before_translation():
+    cap = ContentBlock(
+        id="cap", region_id="r", role=SemanticRole.TITLE,
+        runs=[StyledTextRun("T", 23.0, False, False, "#231f20")],
+        source_text="T", translated_text=None, translatable=True,
+        bbox=[30.0, 100.0, 45.0, 128.0], font_role=FontRole.DISPLAY,
+    )
+    body = ContentBlock(
+        id="body", region_id="r", role=SemanticRole.BODY_COLUMN,
+        runs=[StyledTextRun("jugosjätte", 7.8, False, False, "#231f20")],
+        source_text="jugosjätte timmen", translated_text=None, translatable=True,
+        bbox=[42.0, 102.0, 220.0, 130.0], font_role=FontRole.BODY,
+    )
+
+    merged = _merge_drop_caps([cap, body])
+
+    assert len(merged) == 1
+    assert merged[0].id == "cap"
+    assert merged[0].source_text == "Tjugosjätte timmen"
+    assert merged[0].layout_mode == "drop_cap"
+
+
+def test_central_foreground_image_marks_adjacent_body_as_image_float():
+    page = _make_page_structure(
+        width=479.1,
+        height=677.5,
+        images=[ImageElement("float", [169.0, 169.0, 310.0, 415.0], "float.png", 100, 100)],
+    )
+    beside = ContentBlock(
+        id="beside", region_id="r", role=SemanticRole.BODY_COLUMN,
+        runs=[], source_text="Body", translated_text=None, translatable=True,
+        bbox=[33.0, 180.0, 234.0, 300.0],
+    )
+    below = ContentBlock(
+        id="below", region_id="r", role=SemanticRole.BODY_COLUMN,
+        runs=[], source_text="Body", translated_text=None, translatable=True,
+        bbox=[33.0, 440.0, 234.0, 520.0],
+    )
+
+    marked = _mark_image_float_blocks([beside, below], page)
+
+    assert marked[0].layout_mode == "image_float"
+    assert marked[1].layout_mode == "paragraph"
+
+
+def test_two_line_chapter_title_is_merged_above_hero_drop_cap():
+    page = _make_page_structure(
+        width=479.1,
+        height=677.5,
+        images=[ImageElement("hero", [0.0, 0.0, 479.1, 226.8], "hero.png", 100, 100)],
+    )
+    title_one = ContentBlock(
+        id="title-one", region_id="r", role=SemanticRole.SUBTITLE,
+        runs=[StyledTextRun("Tjugosjätte", 24.0, False, False, "#b8282f")],
+        source_text="Tjugosjätte", translated_text=None, translatable=True,
+        bbox=[55.0, 245.0, 337.0, 314.0], font_role=FontRole.SECTION,
+    )
+    title_two = ContentBlock(
+        id="title-two", region_id="r", role=SemanticRole.SUBTITLE,
+        runs=[StyledTextRun("timmen", 24.0, False, False, "#b8282f")],
+        source_text="timmen", translated_text=None, translatable=True,
+        bbox=[55.0, 291.0, 230.0, 360.0], font_role=FontRole.SECTION,
+    )
+    intro = ContentBlock(
+        id="intro", region_id="r", role=SemanticRole.BODY_COLUMN,
+        runs=[], source_text="Intro", translated_text=None, translatable=True,
+        bbox=[57.0, 355.0, 387.0, 445.0], layout_mode="drop_cap",
+    )
+
+    promoted = _promote_hero_title_blocks([title_one, title_two, intro], page)
+
+    assert [block.id for block in promoted] == ["title-one", "intro"]
+    assert promoted[0].role == SemanticRole.TITLE
+    assert promoted[0].font_role == FontRole.DISPLAY
+    assert promoted[0].source_text == "Tjugosjätte timmen"
+    assert promoted[0].layout_mode == "full_width_hero"

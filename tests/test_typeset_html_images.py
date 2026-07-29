@@ -4,6 +4,7 @@ from core.typeset_models import (
     ContentBlock,
     DecorationElement,
     ImageElement,
+    FontRole,
     PageContent,
     PageStructure,
     PageType,
@@ -130,9 +131,10 @@ def test_chinese_text_uses_source_column_flows():
                 region_id="p0001_r0001",
                 role=SemanticRole.BODY_COLUMN,
                 runs=[StyledTextRun("Left", 10.9, False, False, "#000000")],
-                source_text="Left",
+                source_text="» Left",
                 translated_text="左栏正文",
                 translatable=True,
+                source_font="FuturaStd-Book",
             ),
             ContentBlock(
                 id="p0001_r0002_b0001",
@@ -149,6 +151,8 @@ def test_chinese_text_uses_source_column_flows():
     html = rebuilder.render_text_layer(content, structure)
 
     assert 'class="typeset-region-flow"' in html
+    assert "typeset-compact-flow" in html
+    assert "typeset-list-flow" in html
     assert 'data-column="left"' in html
     assert 'data-column="right"' in html
     assert "typeset-reflow-columns" not in html
@@ -436,6 +440,12 @@ def test_source_region_flow_titles_have_spacing():
 
     assert ".typeset-region-flow .typeset-reflow-title" in css
     assert "margin: 13.333px 0 13.333px 0" in css
+    assert ".typeset-region-flow .typeset-reflow-body.source-font-geometric" in css
+    assert "font-size: 13.333px" in css
+    assert '[data-template="single_source_flow"] .typeset-reflow-area' in css
+    assert ".typeset-region-flow.typeset-list-flow" in css
+    assert ".typeset-region-flow.typeset-compact-flow" in css
+    assert "font-size: 12.000px" in css
 
 
 def test_fixed_source_text_renders_span_geometry():
@@ -497,6 +507,79 @@ def test_fixed_source_text_renders_span_geometry():
     assert 'class="typeset-source-span"' in html
     assert "font-style:italic" in html
     assert "// Delta" in html
+
+
+def test_fixed_source_heading_does_not_render_other_spans_from_same_region():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(
+                id="p0001_r0001",
+                bbox=[300.0, 130.0, 540.0, 220.0],
+                block_ids=["p0001_r0001_b0001", "p0001_r0001_b0002"],
+                lines=[
+                    TextLineBBox(
+                        bbox=[304.0, 136.0, 384.0, 160.0],
+                        text="Cooter McGee",
+                        font_size=22.0,
+                        bold=False,
+                        italic=False,
+                        color="#eb4f24",
+                        spans=[TextSpanBBox(
+                            bbox=[304.0, 136.0, 384.0, 160.0],
+                            text="Cooter McGee",
+                            font_size=22.0,
+                            bold=False,
+                            italic=False,
+                            color="#eb4f24",
+                        )],
+                    ),
+                    TextLineBBox(
+                        bbox=[304.0, 162.0, 536.0, 174.0],
+                        text="Source body must not leak",
+                        font_size=10.0,
+                        bold=False,
+                        italic=False,
+                        color="#000000",
+                        spans=[TextSpanBBox(
+                            bbox=[304.0, 162.0, 536.0, 174.0],
+                            text="Source body must not leak",
+                            font_size=10.0,
+                            bold=False,
+                            italic=False,
+                            color="#000000",
+                        )],
+                    ),
+                ],
+            )
+        ],
+    )
+    block = ContentBlock(
+        id="p0001_r0001_b0001",
+        region_id="p0001_r0001",
+        role=SemanticRole.TITLE,
+        runs=[StyledTextRun("Cooter McGee", 22.0, False, False, "#eb4f24")],
+        source_text="Cooter McGee",
+        translated_text="Cooter McGee",
+        translatable=True,
+        bbox=[304.0, 136.0, 384.0, 160.0],
+        font_role=FontRole.DISPLAY,
+    )
+
+    html = rebuilder._render_source_positioned_block(
+        block,
+        structure,
+        structure.text_regions[0].bbox,
+    )
+
+    assert "Cooter McGee" in html
+    assert "Source body must not leak" not in html
 
 
 def test_positioned_translated_title_preserves_light_source_color():

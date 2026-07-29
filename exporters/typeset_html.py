@@ -262,7 +262,7 @@ class TypesetHTMLRebuilder:
             f"<title>{html.escape(self._document_title(structure))}</title>",
             f"<style>{css}</style>",
             "</head>",
-            "<body>",
+            f'<body class="typeset-profile-{html.escape(self.config.profile_id)}">',
         ]
         parts.extend(page_sections)
         parts.append(self._build_fit_script())
@@ -550,6 +550,36 @@ body {{
     text-indent: 0;
     color: {self.config.title_color};
 }}
+.typeset-full-width-hero-title {{
+    position: absolute;
+    margin: 0;
+    overflow: hidden;
+    font-family: {heading_font_stack};
+    font-size: {_pt_to_px(self.config.display_font_size_pt):.3f}px;
+    line-height: 1.05;
+    font-weight: 700;
+    text-align: left;
+    text-indent: 0;
+    overflow-wrap: anywhere;
+}}
+.typeset-full-width-hero-intro {{
+    position: absolute;
+    margin: 0;
+    overflow: hidden;
+    font-size: {body_font_px:.3f}px;
+    line-height: {line_height};
+    text-align: left;
+    text-indent: 0;
+    overflow-wrap: anywhere;
+}}
+.typeset-full-width-hero-intro.typeset-drop-cap::first-letter {{
+    float: left;
+    font-family: {heading_font_stack};
+    font-size: 4.6em;
+    line-height: .78;
+    padding: .08em .06em 0 0;
+    color: {self.config.subtitle_color};
+}}
 .typeset-reflow-section {{
     font-family: {heading_font_stack};
     font-size: {_pt_to_px(self.config.section_font_size_pt):.3f}px;
@@ -640,10 +670,42 @@ body {{
 }}
 .typeset-region-flow .typeset-reflow-body {{
     line-height: {line_height};
-    margin-bottom: 0.72em;
+    margin-bottom: 0.34em;
+}}
+.typeset-region-flow .typeset-reflow-body.source-font-geometric {{
+    font-size: {_pt_to_px(10.0):.3f}px;
+    line-height: 1.25;
+    margin-bottom: 0.18em;
 }}
 .typeset-region-flow .typeset-reflow-title {{
     margin: {_pt_to_px(10.0):.3f}px 0 {_pt_to_px(10.0):.3f}px 0;
+}}
+.typeset-page[data-template="single_source_flow"] .typeset-reflow-area {{
+    font-size: {_pt_to_px(10.0):.3f}px;
+    line-height: 1.35;
+}}
+.typeset-page[data-template="single_source_flow"] .typeset-reflow-area .typeset-reflow-body {{
+    line-height: 1.35;
+    margin-bottom: 0.15em;
+}}
+.typeset-region-flow.typeset-list-flow {{
+    font-size: {_pt_to_px(10.0):.3f}px;
+    line-height: 1.35;
+}}
+.typeset-region-flow.typeset-list-flow .typeset-reflow-body {{
+    font-size: {_pt_to_px(10.0):.3f}px;
+    line-height: 1.35;
+    margin-bottom: 0.1em;
+}}
+.typeset-region-flow.typeset-compact-flow {{
+    font-size: {_pt_to_px(9.0):.3f}px;
+    line-height: 1.25;
+}}
+.typeset-region-flow.typeset-compact-flow .typeset-reflow-body {{
+    font-size: {_pt_to_px(9.0):.3f}px;
+    line-height: 1.25;
+    margin-bottom: 0.05em;
+    text-indent: 0;
 }}
 .typeset-rotated-flow {{
     position: absolute;
@@ -816,6 +878,14 @@ body {{
     overflow-wrap: break-word;
     white-space: normal;
     margin-bottom: 0.72em;
+}}
+.typeset-drop-cap::first-letter {{
+    float: left;
+    font-family: {heading_font_stack};
+    font-size: 3.15em;
+    font-weight: 700;
+    line-height: 0.78;
+    margin: 0.06em 0.10em 0 0;
 }}
 .typeset-heading {{
     font-family: {heading_font_stack};
@@ -1271,6 +1341,8 @@ body {{
         source_page_blocks = [
             block for block in page_content.blocks if block.region_id in region_map
         ]
+        template = getattr(self, "_current_template", None)
+        is_full_width_hero = bool(template and template.id == "full_width_hero")
         if self._is_timeline_page(source_page_blocks):
             timeline_blocks: list[ContentBlock] = []
             for block in source_page_blocks:
@@ -1352,7 +1424,14 @@ body {{
             if block.role == SemanticRole.TABLE:
                 continue
             if block.role == SemanticRole.TITLE:
-                fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+                if is_full_width_hero:
+                    fixed_parts.append(self._render_full_width_hero_title(block, bbox))
+                else:
+                    fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+                fixed_obstacles.append(bbox)
+                continue
+            if is_full_width_hero and block.layout_mode == "drop_cap":
+                fixed_parts.append(self._render_full_width_hero_intro(block, bbox))
                 fixed_obstacles.append(bbox)
                 continue
             if self._is_bottom_credit_block(block, bbox, page_structure):
@@ -1460,6 +1539,40 @@ body {{
             f"{inner}</div>"
         )
         return "\n".join([flow, *fixed_parts])
+
+    def _render_full_width_hero_title(
+        self,
+        block: ContentBlock,
+        bbox: list[float],
+    ) -> str:
+        """Render a chapter opener title as one deliberate display region."""
+        x0, y0, x1, y1 = bbox
+        text = self._display_text_for_block(block)
+        return (
+            '<h1 class="typeset-full-width-hero-title" '
+            f'data-block-id="{html.escape(block.id)}" data-fit="text" '
+            f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
+            f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)};'
+            f'color:{html.escape(self.config.title_color)}">'
+            f'{html.escape(text)}</h1>'
+        )
+
+    def _render_full_width_hero_intro(
+        self,
+        block: ContentBlock,
+        bbox: list[float],
+    ) -> str:
+        """Render the opening paragraph separately so the drop cap stays intact."""
+        x0, y0, x1, y1 = bbox
+        text = self._display_text_for_block(block)
+        return (
+            '<p class="typeset-full-width-hero-intro typeset-drop-cap" '
+            f'data-block-id="{html.escape(block.id)}" data-fit="reflow" '
+            f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
+            f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)};'
+            f'color:{html.escape(self._block_text_color(block))}">'
+            f'{self._format_body_text(block, text)}</p>'
+        )
 
     def _is_bottom_credit_block(
         self,
@@ -1750,8 +1863,32 @@ body {{
             for block in ordered
             if block.id in text_by_id
         )
+        body_blocks = [
+            block for block in ordered
+            if block.font_role in {FontRole.BODY, FontRole.META}
+        ]
+        flow_classes = (
+            " typeset-image-float-flow"
+            if any(block.layout_mode == "image_float" for block in body_blocks)
+            else ""
+        )
+        if any("»" in (block.source_text or "") for block in body_blocks):
+            flow_classes += " typeset-list-flow"
+        is_stat_flow = any(
+            re.search(r"\bSTR\s+\d", block.source_text or "")
+            for block in body_blocks
+        )
+        if body_blocks and (
+            is_stat_flow
+            or bool(flow_classes)
+            or all(
+                self._source_font_class(block) == "source-font-geometric"
+                for block in body_blocks
+            )
+        ):
+            flow_classes += " typeset-compact-flow"
         return (
-            f'<div class="typeset-region-flow" '
+            f'<div class="typeset-region-flow{flow_classes}" '
             f'data-column="{html.escape(side)}" '
             f'data-fit="reflow" '
             f'style="left:{_px(left)};top:{_px(top)};'
@@ -2109,14 +2246,28 @@ body {{
         for group in groups:
             group.sort(key=lambda item: (item.bbox or region_map[item.region_id])[0])
 
-        column_count = max((len(group) for group in groups), default=0)
-        if column_count < 2:
+        raw_column_count = max((len(group) for group in groups), default=0)
+        if raw_column_count < 2:
             raise ValueError("表格至少需要两个可识别的列")
         anchor_index = next(
-            index for index, group in enumerate(groups) if len(group) == column_count
+            index for index, group in enumerate(groups) if len(group) == raw_column_count
         )
         anchor_group = groups[anchor_index]
-        anchor_boxes = [item.bbox or region_map[item.region_id] for item in anchor_group]
+        anchor_boxes: list[list[float]] = []
+        for item in anchor_group:
+            box = list(item.bbox or region_map[item.region_id])
+            if anchor_boxes and box[0] < anchor_boxes[-1][2] - 1.0:
+                anchor_boxes[-1] = [
+                    min(anchor_boxes[-1][0], box[0]),
+                    min(anchor_boxes[-1][1], box[1]),
+                    max(anchor_boxes[-1][2], box[2]),
+                    max(anchor_boxes[-1][3], box[3]),
+                ]
+            else:
+                anchor_boxes.append(box)
+        column_count = len(anchor_boxes)
+        if column_count < 2:
+            raise ValueError("表格至少需要两个可识别的列")
         centers = [(box[0] + box[2]) / 2 for box in anchor_boxes]
         table_x0 = min(box[0] for box in anchor_boxes)
         table_x1 = max(box[2] for box in anchor_boxes)
@@ -2330,7 +2481,7 @@ body {{
         page_structure: PageStructure,
         bbox: list[float],
     ) -> str:
-        span_html = self._render_source_span_block(block, page_structure)
+        span_html = self._render_source_span_block(block, page_structure, bbox)
         if span_html:
             return span_html
         x0, y0, x1, y1 = bbox
@@ -2362,17 +2513,19 @@ body {{
         self,
         block: ContentBlock,
         page_structure: PageStructure,
+        bbox: list[float],
     ) -> str:
-        if block.translated_text and block.translated_text.strip() != (block.source_text or "").strip():
+        if block.translatable:
             return ""
         region = {item.id: item for item in page_structure.text_regions}.get(block.region_id)
         if region is None or not getattr(region, "lines", None):
             return ""
+        target_bbox = block.bbox or bbox
         spans_html: list[str] = []
         for line in region.lines:
             for span in getattr(line, "spans", []):
                 text = getattr(span, "text", "")
-                if not text:
+                if not text or not self._boxes_overlap(target_bbox, span.bbox):
                     continue
                 x0, y0, x1, y1 = span.bbox
                 font_size_px = _pt_to_px(float(span.font_size))
@@ -2401,6 +2554,9 @@ body {{
     ) -> list[ContentBlock]:
         result: list[ContentBlock] = []
         for block in blocks:
+            if block.layout_mode in {"full_width_hero", "drop_cap"}:
+                result.append(block)
+                continue
             text = _normalized_text(block.source_text)
             if len(text) < 8:
                 result.append(block)
@@ -2640,6 +2796,16 @@ body {{
             f' data-block-id="{html.escape(block.id)}"'
             f' data-region-id="{html.escape(block.region_id)}"'
         )
+        if (
+            block.font_role in {FontRole.DISPLAY, FontRole.SECTION}
+            and self._block_is_accent_heading(block)
+        ):
+            escaped = self._format_text(text)
+            size_px = _pt_to_px(self.config.accent_font_size_pt)
+            return (
+                f'<h2 class="typeset-reflow-subtitle {role_class}"{block_attrs} '
+                f'style="font-size:{_px(size_px)};color:{html.escape(color)}">{escaped}</h2>'
+            )
         if block.font_role == FontRole.DISPLAY or block.role == SemanticRole.TITLE:
             escaped = self._format_text(text)
             return (
@@ -2648,12 +2814,6 @@ body {{
             )
         if block.font_role == FontRole.SECTION:
             escaped = self._format_text(text)
-            if self._block_is_accent_heading(block):
-                size_px = _pt_to_px(self.config.accent_font_size_pt)
-                return (
-                    f'<h2 class="typeset-reflow-subtitle {role_class}"{block_attrs} '
-                    f'style="font-size:{_px(size_px)};color:{html.escape(color)}">{escaped}</h2>'
-                )
             return (
                 f'<h2 class="typeset-reflow-section {role_class}"{block_attrs} '
                 f'style="color:{html.escape(color)}">{escaped}</h2>'
@@ -2672,6 +2832,8 @@ body {{
             )
         escaped = self._format_body_text(block, text)
         class_name = f"typeset-reflow-body {role_class}{self._source_style_classes(block)}"
+        if block.layout_mode == "drop_cap":
+            class_name += " typeset-drop-cap"
         if self._looks_like_timeline_text(block, text):
             class_name += " typeset-timeline-text"
         paragraph_attr = (
@@ -3267,6 +3429,11 @@ body {{
 
         block_font_size_pt = self._target_font_size_pt(block)
 
+        if (
+            block.font_role in {FontRole.DISPLAY, FontRole.SECTION}
+            and self._block_is_accent_heading(block)
+        ):
+            return self._render_subtitle_block(block, text, block_font_size_pt)
         if block.font_role == FontRole.DISPLAY or block.role == SemanticRole.TITLE:
             return self._render_heading_block(block, text, block_font_size_pt)
         if block.font_role in {FontRole.SECTION, FontRole.SUBSECTION, FontRole.CALLOUT}:
@@ -3276,14 +3443,15 @@ body {{
         return self._render_body_block(block, text, block_font_size_pt)
 
     def _target_font_size_pt(self, block: ContentBlock) -> float:
+        if (
+            block.font_role in {FontRole.DISPLAY, FontRole.SECTION}
+            and self._block_is_accent_heading(block)
+        ):
+            return self.config.accent_font_size_pt
         if block.font_role == FontRole.DISPLAY or block.role == SemanticRole.TITLE:
             return min(self.config.display_font_size_pt, self._get_block_font_size(block))
         if block.font_role == FontRole.SECTION:
-            return (
-                self.config.accent_font_size_pt
-                if self._block_is_accent_heading(block)
-                else self.config.section_font_size_pt
-            )
+            return self.config.section_font_size_pt
         if block.font_role == FontRole.SUBSECTION:
             return self.config.subsection_font_size_pt
         if block.font_role == FontRole.RUNNING_HEADER:
@@ -3338,26 +3506,26 @@ body {{
         font_size_px = _pt_to_px(font_size_pt)
         escaped_text = self._format_text(text)
         role_class = self._font_role_class(block)
+        is_accent_heading = self._block_is_accent_heading(block)
         extra_class = (
-            "typeset-source-subtitle" if self._block_is_accent_heading(block)
+            "typeset-source-subtitle" if is_accent_heading
             else "typeset-reflow-section" if block.font_role == FontRole.SECTION
             else "typeset-reflow-callout" if block.font_role == FontRole.CALLOUT
             else "typeset-reflow-subsection"
         )
+        tag = "h2" if is_accent_heading else "h3"
         return (
-            f'<h3 class="typeset-heading {extra_class} {role_class} '
+            f'<{tag} class="typeset-heading {extra_class} {role_class} '
             f'{self._source_font_class(block)}" '
             f'data-block-id="{html.escape(block.id)}" '
             f'style="font-size:{_px(font_size_px)};'
             f'font-weight:{self._source_font_weight(block)};'
             f'color:{html.escape(self._block_text_color(block))}">'
-            f"{escaped_text}</h3>"
+            f"{escaped_text}</{tag}>"
         )
 
     def _source_font_weight(self, block: ContentBlock) -> str:
         source_font = (block.source_font or "").lower()
-        if "industria" in source_font:
-            return "400"
         is_heavy_family = "bold" in source_font or "solid" in source_font
         return "700" if is_heavy_family or any(run.bold for run in block.runs if run.text.strip()) else "400"
 
@@ -3389,6 +3557,8 @@ body {{
         )
         if self._looks_like_timeline_text(block, text):
             class_name += " typeset-timeline-text"
+        if block.layout_mode == "drop_cap":
+            class_name += " typeset-drop-cap"
 
         return (
             f'<p class="{class_name}" '

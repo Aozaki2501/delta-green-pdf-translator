@@ -370,6 +370,7 @@ def _render_task_controls(office_mode: bool) -> dict:
                 "页眉右侧", value="", placeholder="留空则使用文件名", key="word_header_right_input"
             )
 
+    typeset_profile_id = "delta_green"
     typeset_font_family = "DG Fandol Song"
     typeset_layout_hints_path = ""
     typeset_auto_layout_hints = False
@@ -379,8 +380,23 @@ def _render_task_controls(office_mode: bool) -> dict:
     typeset_layout_review_model = "gemini-2.5-flash"
     typeset_layout_review_pages = ""
     if _typeset_formats_selected(formats):
+        from core.typeset_profiles import get_typeset_profile, list_typeset_profiles
+
+        profiles = list_typeset_profiles()
         with st.expander("图文重绘排版配置", expanded=False):
-            typeset_font_family = st.text_input("中文字体", value=typeset_font_family, key="typeset_font_input")
+            typeset_profile_id = st.selectbox(
+                "高保真排版",
+                [profile.id for profile in profiles],
+                format_func=lambda profile_id: get_typeset_profile(profile_id).label,
+                key="typeset_profile_input",
+            )
+            selected_typeset_profile = get_typeset_profile(typeset_profile_id)
+            typeset_font_family = st.text_input(
+                "中文字体",
+                value=selected_typeset_profile.font_family,
+                key="typeset_font_input",
+            )
+            st.caption(f"来源语言：{selected_typeset_profile.source_language}；KULT 使用原版页面结构。")
             typeset_layout_hints_path = st.text_input(
                 "layout_hints.json 路径", value="", key="typeset_hints_input"
             )
@@ -1366,13 +1382,15 @@ if launch_pressed:
             # ============================================================
             import logging as _logging
             from core.typeset_pipeline import TypesetPipeline
-            from core.typeset_models import TypesetConfig
+            from core.typeset_profiles import get_typeset_profile
 
             # Check font availability and set up fallback
             layout_hints_path = typeset_layout_hints_path.strip() or None
             if layout_hints_path and typeset_auto_layout_hints:
                 st.warning("已填写 layout_hints.json 路径，本次优先使用该文件，不再自动生成。")
-            typeset_config = TypesetConfig(
+            typeset_profile = get_typeset_profile(typeset_profile_id)
+            translator.set_system_prompt(typeset_profile.system_prompt)
+            typeset_config = typeset_profile.build_config(
                 document_title=Path(pdf_file.name).stem,
                 font_family=typeset_font_family,
                 layout_hints_path=layout_hints_path,
@@ -1416,7 +1434,7 @@ if launch_pressed:
                         f"⚠️ 字体 '{typeset_font_family}' 不可用，"
                         f"已回退到 '{_fallback_used}'。"
                     )
-                    typeset_config = TypesetConfig(
+                    typeset_config = typeset_profile.build_config(
                         document_title=Path(pdf_file.name).stem,
                         font_family=_fallback_used,
                         layout_hints_path=layout_hints_path,
