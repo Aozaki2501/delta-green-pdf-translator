@@ -1451,9 +1451,10 @@ if launch_pressed:
 
             export_pdf = "typeset_pdf" in formats
             export_typeset_html = "typeset_html" in formats
-            export_reading_html = "typeset_reading_html" in formats
-            if export_pdf and not playwright_chromium_installed():
-                st.warning("本次导出纯重绘 PDF 需要先加载浏览器内核插件。")
+            export_reading_html = "typeset_reading_html" in formats or export_typeset_html
+            needs_browser_layout = export_pdf or export_typeset_html
+            if needs_browser_layout and not playwright_chromium_installed():
+                st.warning("本次高保真排版需要先加载浏览器内核插件。")
                 browser_progress_bar = st.progress(0)
                 browser_status = st.empty()
                 browser_log = st.empty()
@@ -1489,7 +1490,7 @@ if launch_pressed:
                     progress_callback=update_browser_install_progress,
                 )
                 if not install_ok:
-                    browser_status.error("浏览器内核插件加载失败，已停止本次纯重绘 PDF 导出。")
+                    browser_status.error("浏览器内核插件加载失败，已停止本次高保真排版。")
                     st.code(
                         r".\.venv\Scripts\python.exe -m playwright install chromium",
                         language="powershell",
@@ -1500,11 +1501,11 @@ if launch_pressed:
                     browser_progress_bar.progress(1.0, text="浏览器内核加载完成")
                 except TypeError:
                     browser_progress_bar.progress(1.0)
-                browser_status.success("浏览器内核插件已就绪，开始执行纯重绘 PDF。")
-            elif export_pdf:
-                st.caption("浏览器内核已就绪，将直接执行纯重绘 PDF。")
+                browser_status.success("浏览器内核插件已就绪，开始执行高保真排版。")
+            elif needs_browser_layout:
+                st.caption("浏览器内核已就绪，将检查并生成高保真排版。")
             else:
-                st.caption("仅生成高保真 HTML，不加载浏览器内核。")
+                st.caption("仅生成图文阅读 HTML，不加载浏览器内核。")
 
             render_status_flow(active_index=1, office_mode=office_mode)
             st.info(f"📐 图文重绘管线：第 {start_page + 1}-{end_page} 页")

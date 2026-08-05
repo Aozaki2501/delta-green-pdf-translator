@@ -120,6 +120,66 @@ def test_pipeline_result_includes_token_usage(tmp_path):
     assert result.cost_usd == 0.00125
 
 
+def test_fixed_html_output_runs_browser_layout_gate(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    content = _content_doc()
+    content.pages[0].blocks[:] = [
+        replace(block, translated_text=f"{block.source_text}-cn")
+        for block in content.pages[0].blocks
+    ]
+    calls = []
+    monkeypatch.setattr(pipeline, "_ensure_typeset_fonts", lambda: None)
+    monkeypatch.setattr(pipeline, "_load_page_visuals_for_structure", lambda _structure: None)
+    from exporters.typeset_pdf import TypesetPDFExporter
+    monkeypatch.setattr(
+        TypesetPDFExporter,
+        "validate_html_layout",
+        lambda _self, path: calls.append(path),
+    )
+
+    result = pipeline.run_phase_d(_structure_doc(), content)
+
+    assert calls == [result]
+
+
+def test_kult_merges_built_in_swedish_terms_and_user_override(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={"zelother": "用户指定译名"},
+        config=TypesetConfig(profile_id="kult", source_language="Swedish"),
+    )
+
+    assert pipeline.glossary["gransanghtir"] == "千魂水蛭"
+    assert pipeline.glossary["zelother"] == "用户指定译名"
+
+
+def test_translated_content_cache_requires_matching_translation_context(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    content = _content_doc()
+    content.pages[0].blocks[:] = [
+        replace(block, translated_text=f"{block.source_text}-cn")
+        for block in content.pages[0].blocks
+    ]
+    (tmp_path / "page_content_translated.json").write_text(content.to_json(), encoding="utf-8")
+    monkeypatch.setattr(pipeline, "_matches_current_source", lambda *_args: True)
+
+    assert pipeline._load_existing_translated_content() is None
+    pipeline._write_translation_context()
+    assert pipeline._load_existing_translated_content() is not None
+
+
 def test_pipeline_uses_layout_hints_from_output_dir(tmp_path):
     (tmp_path / "layout_hints.json").write_text(
         json.dumps({

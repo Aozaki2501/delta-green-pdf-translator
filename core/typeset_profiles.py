@@ -66,13 +66,17 @@ _DG_PROMPT = Translator.SYSTEM_PROMPT
 
 _KULT_PROMPT = """You are a professional TRPG translator working on KULT: Divinity Lost material.
 
-Translate the source from Swedish to Chinese. Follow the glossary strictly.
-Preserve dice notation, explicit game abbreviations, proper names, and all
-[BLOCK id] marker lines exactly. Return one translated block for every source
-block and no text outside those markers. Do not translate standalone page
-numbers, running headers, footers, or decorative-only symbols. Keep the Chinese
-concise, literary, and suitable for dark contemporary horror. Do not add
-explanations or rewrite rules."""
+Translate the source from Swedish to Simplified Chinese. Follow the glossary
+strictly. Translate Swedish common nouns, rules terms, scenario titles, and
+word fragments; preserve only actual proper names, dice notation, and explicit
+game abbreviations. Never retain soft hyphens or source line-break hyphenation.
+When source text contains <strong> or <em>, preserve exactly those tags around
+the corresponding translated emphasis and output no other HTML tags.
+Preserve all [BLOCK id] marker lines exactly. Return one translated block for
+every source block and no text outside those markers. Do not translate
+standalone page numbers, running headers, footers, or decorative-only symbols.
+Keep the Chinese concise, literary, and suitable for dark contemporary horror.
+Do not add explanations or rewrite rules."""
 
 
 _PROFILES = {
@@ -90,8 +94,8 @@ _PROFILES = {
     "kult": TypesetProfile(
         id="kult", label="KULT（忠实原版）", source_language="Swedish",
         system_prompt=_KULT_PROMPT, font_family="DG Fandol Song",
-        heading_font_family="DG Lanting Kanhei", body_font_size_pt=8.5,
-        min_body_font_size_pt=8.0, line_height=1.42, column_gap_pt=22.0,
+        heading_font_family="DG Lanting Kanhei", body_font_size_pt=7.5,
+        min_body_font_size_pt=7.5, line_height=1.30, column_gap_pt=22.0,
         title_color="#231f20", subtitle_color="#b8282f",
         accent_heading_colors=("#b8282f",), body_color="#231f20",
         display_font_size_pt=26.0, section_font_size_pt=17.0,

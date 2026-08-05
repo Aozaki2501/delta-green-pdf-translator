@@ -17,3 +17,5 @@ scratch/
 diag_*.py
 test_card_*.py
 .playwright-cli/
+.obsidian/
+tmp/

@@ -132,6 +132,29 @@ def test_mobile_css_and_print_controls_are_included():
     output = render_reading_html(structure, content, {0: "assets/page_visuals/p0001.svg"})
     assert "@media (max-width: 760px)" in output
     assert "grid-template-columns: minmax(0, 1fr)" in output
+
+
+def test_reading_html_can_link_back_to_fixed_layout():
+    structure, content = _documents()
+
+    output = ReadingHTMLRenderer().render(
+        structure,
+        content,
+        {0: "assets/page_visuals/p0001.svg"},
+        fixed_html_href="book_typeset.html",
+    )
+
+    assert 'href="book_typeset.html"' in output
+    assert "原版排版" in output
+
+
+def test_reading_html_preserves_safe_translation_emphasis_markup():
+    structure, content = _documents(blocks=[_block("b1", "r1", "<strong>重点</strong> <em>斜体</em>")])
+
+    output = render_reading_html(structure, content, {0: "assets/page_visuals/p0001.svg"})
+
+    assert "<strong>重点</strong>" in output
+    assert "<em>斜体</em>" in output
     assert ".reading-zoom-trigger" in output and "@media print" in output
     assert "prefers-reduced-motion" in output
 

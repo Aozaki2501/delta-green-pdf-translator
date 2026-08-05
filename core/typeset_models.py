@@ -372,6 +372,7 @@ class TypesetConfig:
     embedded_font_dir: str = "assets/typeset_fonts"
     translation_concurrency: int = 4
     layout_hints_path: str | None = None
+    reading_html_href: str | None = None
 
 
 @dataclass

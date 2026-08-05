@@ -264,6 +264,12 @@ class TypesetHTMLRebuilder:
             "</head>",
             f'<body class="typeset-profile-{html.escape(self.config.profile_id)}">',
         ]
+        if self.config.reading_html_href:
+            parts.append(
+                '<nav class="typeset-view-toolbar" aria-label="阅读视图">'
+                f'<a href="{html.escape(self.config.reading_html_href, quote=True)}">切换到阅读版</a>'
+                '</nav>'
+            )
         parts.extend(page_sections)
         parts.append(self._build_fit_script())
         parts.extend([
@@ -451,6 +457,22 @@ body {{
     font-size: {body_font_px:.3f}px;
     line-height: {line_height};
 }}
+.typeset-view-toolbar {{
+    width: min(100%, 960px);
+    margin: 0 auto 12px;
+    text-align: right;
+}}
+.typeset-view-toolbar a {{
+    display: inline-block;
+    padding: 7px 11px;
+    border-radius: 4px;
+    background: #f7f3eb;
+    color: #231f20;
+    font-family: {heading_font_stack};
+    font-size: 14px;
+    line-height: 1;
+    text-decoration: none;
+}}
 .typeset-page {{
     position: relative;
     overflow: hidden;
@@ -524,6 +546,22 @@ body {{
     white-space: normal;
     overflow-wrap: anywhere;
     word-break: normal;
+}}
+.typeset-kult-credit-block {{
+    position: absolute;
+    margin: 0;
+    text-align: center;
+    text-indent: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}}
+.typeset-kult-credit-block--title {{
+    font-family: {heading_font_stack};
+    font-weight: 700;
+    line-height: 1.05;
+}}
+.typeset-kult-credit-block--legal {{
+    line-height: 1.18;
 }}
 .typeset-reflow-area {{
     position: absolute;
@@ -921,6 +959,7 @@ body {{
         box-shadow: none;
         zoom: 1 !important;
     }}
+    .typeset-view-toolbar {{ display: none; }}
 }}
 @media screen and (max-width: 840px) {{
     body {{
@@ -1193,6 +1232,7 @@ body {{
                 parts.append("</div>")
                 return "\n".join(parts)
             if page_content.page_type == PageType.COVER:
+                parts.append(self._render_art_fixed_text(page_content, page_structure))
                 parts.append("</div>")
                 return "\n".join(parts)
             if self._should_reflow_chinese_page(page_content):
@@ -1268,7 +1308,12 @@ body {{
             if is_title
             else min(source_size, self.config.accent_font_size_pt)
         )
-        background = "background:rgba(22,30,30,.92);" if is_title else ""
+        is_kult_cover = self.config.profile_id == "kult"
+        if is_kult_cover:
+            font_size_pt = source_size
+        background = "background:rgba(22,30,30,.92);" if is_title and not is_kult_cover else ""
+        color = self.config.subtitle_color if is_kult_cover else "#ffffff"
+        text_shadow = "none" if is_kult_cover else "0 1px 3px rgba(0,0,0,.95)"
         return (
             f'<div class="typeset-positioned-block '
             f'{"source-font-display-condensed" if is_title else "source-font-geometric"}" '
@@ -1281,8 +1326,8 @@ body {{
             f'font-size:{_pt_to_px_str(font_size_pt)};line-height:1;'
             f'display:flex;align-items:center;justify-content:center;'
             f'{background}'
-            f'text-align:center;white-space:normal;overflow-wrap:anywhere;line-height:1.2;color:#ffffff;'
-            f'font-weight:400;text-shadow:0 1px 3px rgba(0,0,0,.95)">'
+            f'text-align:center;white-space:normal;overflow-wrap:anywhere;line-height:1.2;color:{color};'
+            f'font-weight:400;text-shadow:{text_shadow}">'
             f"{html.escape(text)}</div>"
         )
 
@@ -1334,6 +1379,8 @@ body {{
     ) -> str:
         """Render translated Chinese like a typeset text page."""
         region_map = {region.id: region.bbox for region in page_structure.text_regions}
+        if self._is_kult_credits_page(page_content, page_structure, region_map):
+            return self._render_kult_credits_page(page_content, page_structure, region_map)
         fixed_parts: list[str] = []
         fixed_obstacles: list[list[float]] = []
         rotated_blocks: list[ContentBlock] = []
@@ -1584,6 +1631,77 @@ body {{
         if bbox[1] < page_structure.height * 0.72:
             return False
         return any(marker in text for marker in ("ISBN", "Publishing", "APU", "delta-green.com"))
+
+    def _is_kult_credits_page(
+        self,
+        page_content: PageContent,
+        page_structure: PageStructure,
+        region_map: dict[str, list[float]],
+    ) -> bool:
+        """Recognize the KULT imprint page from its source geometry, not its page number."""
+        if self.config.profile_id != "kult":
+            return False
+        visible = [
+            block for block in page_content.blocks
+            if block.region_id in region_map and self._display_text_for_block(block)
+        ]
+        title_count = sum(
+            self._get_block_font_size(block) >= 30.0
+            for block in visible
+        )
+        credit_count = sum(
+            0.14 * page_structure.height <= (block.bbox or region_map[block.region_id])[1]
+            <= 0.62 * page_structure.height
+            for block in visible
+        )
+        return title_count == 1 and credit_count >= 12
+
+    def _render_kult_credits_page(
+        self,
+        page_content: PageContent,
+        page_structure: PageStructure,
+        region_map: dict[str, list[float]],
+    ) -> str:
+        """Render KULT's three-column imprint without forcing it through body reflow."""
+        parts: list[str] = []
+        width = page_structure.width
+        for block in page_content.blocks:
+            bbox = block.bbox or region_map.get(block.region_id)
+            text = self._display_text_for_block(block)
+            if bbox is None or not text or block.role in {SemanticRole.HEADER, SemanticRole.FOOTER}:
+                continue
+            x0, y0, x1, _ = bbox
+            source_size = self._get_block_font_size(block)
+            center = (x0 + x1) / 2.0
+            classes = ["typeset-kult-credit-block"]
+            if source_size >= 30.0:
+                left, block_width = width * 0.12, width * 0.76
+                font_size = source_size
+                classes.append("typeset-kult-credit-block--title")
+            elif y0 >= page_structure.height * 0.72:
+                left, block_width = width * 0.12, width * 0.76
+                font_size = min(max(source_size, 7.2), 8.2)
+                classes.append("typeset-kult-credit-block--legal")
+            else:
+                lane_width = width * 0.255
+                if center < width / 3.0:
+                    left = width * 0.07
+                elif center > width * 2.0 / 3.0:
+                    left = width * 0.675
+                else:
+                    left = (width - lane_width) / 2.0
+                block_width = lane_width
+                font_size = min(max(source_size, 8.0), 9.4)
+            parts.append(
+                f'<div class="{" ".join(classes)}" '
+                f'data-block-id="{html.escape(block.id)}" '
+                f'style="left:{_pt_to_px_str(left)};top:{_pt_to_px_str(y0)};'
+                f'width:{_pt_to_px_str(block_width)};'
+                f'font-size:{_pt_to_px_str(font_size)};'
+                f'color:{html.escape(self._block_text_color(block))}">'
+                f'{self._format_text(text)}</div>'
+            )
+        return "\n".join(parts)
 
     def _should_position_light_foreground_block(
         self,
@@ -3475,8 +3593,16 @@ body {{
 
     def _display_text_for_block(self, block: ContentBlock) -> str:
         if block.translatable:
-            return (block.translated_text or "").strip()
-        return (block.translated_text or block.source_text or "").strip()
+            text = (block.translated_text or "").strip()
+        else:
+            text = (block.translated_text or block.source_text or "").strip()
+        return self._normalize_symbol_font_text(block, text)
+
+    def _normalize_symbol_font_text(self, block: ContentBlock, text: str) -> str:
+        """Convert the Wingdings codepoints emitted by PDF text extraction to Unicode."""
+        if not text or not any("wingdings" in (run.font or "").lower() for run in block.runs):
+            return text
+        return text.replace("\uf0a1", "○").replace("\uf04e", "☠")
 
     def _render_heading_block(
         self, block: ContentBlock, text: str, font_size_pt: float
@@ -3571,7 +3697,7 @@ body {{
     def _format_body_text(self, block: ContentBlock, text: str) -> str:
         if self._looks_like_timeline_text(block, text):
             return "<br>".join(
-                html.escape(part.strip())
+                self._escape_emphasis_markup(part.strip())
                 for part in re.split(r"(?=\b\d{2}:\d{2}\s+)", text)
                 if part.strip()
             )
@@ -3586,4 +3712,17 @@ body {{
         """Format text for HTML output, preserving only paragraph breaks."""
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         paragraphs = re.split(r"\n{2,}", normalized)
-        return "<br><br>".join(html.escape(paragraph) for paragraph in paragraphs)
+        return "<br><br>".join(
+            self._escape_emphasis_markup(paragraph)
+            for paragraph in paragraphs
+        )
+
+    @staticmethod
+    def _escape_emphasis_markup(text: str) -> str:
+        escaped = html.escape(text)
+        return (
+            escaped.replace("&lt;strong&gt;", "<strong>")
+            .replace("&lt;/strong&gt;", "</strong>")
+            .replace("&lt;em&gt;", "<em>")
+            .replace("&lt;/em&gt;", "</em>")
+        )

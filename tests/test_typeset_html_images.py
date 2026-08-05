@@ -13,6 +13,7 @@ from core.typeset_models import (
     TextLineBBox,
     TextRegionBBox,
     TextSpanBBox,
+    TypesetConfig,
 )
 from exporters.typeset_html import TypesetHTMLRebuilder
 
@@ -882,6 +883,91 @@ def test_first_art_page_renders_translated_cover_title_and_module_label():
     assert ">新时代</div>" in html
     assert "《绿色三角洲：角色扮演游戏》模组" in html
     assert "font-size:40.000px" in html
+
+
+def test_cover_page_renders_translated_naming_instead_of_dropping_it():
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[
+            TextRegionBBox(id="title", bbox=[120.0, 120.0, 492.0, 180.0], block_ids=["title"]),
+            TextRegionBBox(id="subtitle", bbox=[120.0, 200.0, 492.0, 225.0], block_ids=["subtitle"]),
+        ],
+    )
+    content = PageContent(
+        page_index=0,
+        page_type=PageType.COVER,
+        columns=[],
+        blocks=[
+            ContentBlock("title", "title", SemanticRole.TITLE,
+                         [StyledTextRun("AVGRUNDEN", 42.0, True, False, "#000000")],
+                         "AVGRUNDEN", "深渊", True),
+            ContentBlock("subtitle", "subtitle", SemanticRole.SUBTITLE,
+                         [StyledTextRun("Scenariosamling", 14.0, False, False, "#000000")],
+                         "Scenariosamling", "模组集", True),
+        ],
+    )
+
+    output = TypesetHTMLRebuilder(TypesetConfig(profile_id="kult")).render_text_layer(content, structure)
+
+    assert "深渊" in output
+    assert "模组集" in output
+    assert "font-size:56.000px" in output
+    assert "color:#dc2527" in output
+
+
+def test_wingdings_private_use_symbols_render_as_unicode_symbols():
+    rebuilder = TypesetHTMLRebuilder()
+    block = ContentBlock(
+        id="symbols", region_id="symbols", role=SemanticRole.BODY_COLUMN,
+        runs=[StyledTextRun("\uf0a1\uf04e", 10.0, False, False, "#000", font="Wingdings-Regular")],
+        source_text="\uf0a1\uf04e", translated_text=None, translatable=False,
+    )
+
+    assert rebuilder._display_text_for_block(block) == "○☠"
+
+
+def test_format_text_preserves_only_safe_translation_emphasis_markup():
+    output = TypesetHTMLRebuilder()._format_text("<strong>重点</strong>和<em>斜体</em><script>x</script>")
+
+    assert "<strong>重点</strong>" in output
+    assert "<em>斜体</em>" in output
+    assert "&lt;script&gt;x&lt;/script&gt;" in output
+
+
+def test_kult_imprint_page_uses_three_stable_credit_lanes():
+    structure = PageStructure(
+        page_index=4, width=612.0, height=792.0, background=BackgroundLayer(),
+        images=[], decorations=[],
+        text_regions=[
+            TextRegionBBox(id="title", bbox=[100.0, 80.0, 512.0, 130.0], block_ids=["title"]),
+            *[
+                TextRegionBBox(id=f"c{i}", bbox=[20.0 + (i % 3) * 210.0, 170.0 + (i // 3) * 24.0, 190.0 + (i % 3) * 210.0, 190.0 + (i // 3) * 24.0], block_ids=[f"c{i}"])
+                for i in range(12)
+            ],
+        ],
+    )
+    blocks = [
+        ContentBlock("title", "title", SemanticRole.TITLE,
+                     [StyledTextRun("AVGRUNDEN", 38.0, True, False, "#000")],
+                     "AVGRUNDEN", "深渊", True),
+        *[
+            ContentBlock(f"c{i}", f"c{i}", SemanticRole.BODY_COLUMN,
+                         [StyledTextRun(f"Credit {i}", 9.0, False, False, "#000")],
+                         f"Credit {i}", f"汉化名单{i}", True)
+            for i in range(12)
+        ],
+    ]
+    content = PageContent(page_index=4, page_type=PageType.SINGLE, columns=[], blocks=blocks)
+
+    output = TypesetHTMLRebuilder(TypesetConfig(profile_id="kult")).render_text_layer(content, structure)
+
+    assert output.count('data-block-id="') == 13
+    assert "typeset-line-track-flow" not in output
 
 
 def test_table_block_uses_source_line_slots():

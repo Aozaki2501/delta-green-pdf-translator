@@ -14,6 +14,7 @@ from core.typeset_models import (
     SemanticRole,
     StyledTextRun,
     TextRegionBBox,
+    TypesetConfig,
 )
 from exporters.typeset_html import TypesetHTMLRebuilder
 
@@ -125,3 +126,14 @@ def test_fit_script_reports_overflow_without_silent_font_shrinking():
     assert "typesetElementOverflows" in script
     assert "item.style.fontSize = size + 'px'" not in script
     assert "size - 0.5" not in script
+
+
+def test_fixed_html_can_link_to_companion_reading_view():
+    structure, content = _html_fixture()
+
+    output = TypesetHTMLRebuilder(
+        TypesetConfig(reading_html_href="book_reading.html")
+    ).rebuild_document(structure, content)
+
+    assert 'href="book_reading.html"' in output
+    assert "切换到阅读版" in output

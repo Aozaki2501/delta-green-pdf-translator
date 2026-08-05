@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Project root, used to bound where layout hints may be read from.
 APP_DIR = Path(__file__).resolve().parent.parent
+TRANSLATION_CONTEXT_VERSION = "typeset-translation-v2"
 
 
 def _report_file_name(path: str | None) -> str:
@@ -88,8 +89,8 @@ class TypesetPipeline:
         self.pdf_path = str(pdf_path)
         self.output_dir = Path(output_dir)
         self.translator = translator
-        self.glossary = glossary or {}
         self.config = config or TypesetConfig()
+        self.glossary = self._effective_glossary(glossary)
         self.layout_hints_generator = layout_hints_generator
 
         # Derive file stem from PDF name
@@ -115,6 +116,9 @@ class TypesetPipeline:
         self._progress_path = (
             self.output_dir / f"{self._pdf_stem}_typeset.progress.json"
         )
+        self._translation_context_path = (
+            self.output_dir / f"{self._pdf_stem}_typeset.translation-context.json"
+        )
         self._report_path = (
             self.output_dir / f"{self._pdf_stem}_typeset_report.json"
         )
@@ -125,6 +129,46 @@ class TypesetPipeline:
         self._progress_callback: Callable | None = None
         self._errors: list[str] = []
         self._source_sha256_cache: str | None = None
+
+    def _effective_glossary(self, supplied_glossary: dict | None) -> dict:
+        """Add profile-owned terminology without changing the caller's glossary."""
+        supplied = dict(supplied_glossary or {})
+        if self.config.profile_id != "kult":
+            return supplied
+        from core.glossary import load_glossary
+
+        built_in_path = APP_DIR / "assets" / "glossaries" / "kult_swedish.tsv"
+        built_in = load_glossary(str(built_in_path))
+        return {**built_in, **supplied}
+
+    def _translation_context_signature(self) -> str:
+        payload = {
+            "version": TRANSLATION_CONTEXT_VERSION,
+            "profile_id": self.config.profile_id,
+            "source_language": self.config.source_language,
+            "glossary": sorted(self.glossary.items()),
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _has_current_translation_context(self) -> bool:
+        if not self._translation_context_path.exists():
+            return False
+        try:
+            data = json.loads(self._translation_context_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return data.get("signature") == self._translation_context_signature()
+
+    def _write_translation_context(self) -> None:
+        self._translation_context_path.write_text(
+            json.dumps(
+                {"signature": self._translation_context_signature()},
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -190,6 +234,9 @@ class TypesetPipeline:
         # Phase D: selected HTML rebuilds share the same source translation.
         html_path = None
         if export_typeset_html or export_pdf:
+            self.config.reading_html_href = (
+                self._reading_html_path.name if export_reading_html else None
+            )
             html_path = self.run_phase_d(structure, translated_content)
         reading_html_path = None
         if export_reading_html:
@@ -354,7 +401,10 @@ class TypesetPipeline:
         logger.info("Phase C: 翻译...")
 
         # Load or create progress file
-        progress = TypesetTranslationProgress(str(self._progress_path))
+        progress = TypesetTranslationProgress(
+            str(self._progress_path),
+            context_signature=self._translation_context_signature(),
+        )
 
         # Translation callback wrapper
         def translation_callback(done: int, total: int, unit_id: str, success: bool):
@@ -370,6 +420,7 @@ class TypesetPipeline:
             glossary=self.glossary,
             progress_callback=translation_callback,
             max_workers=self.config.translation_concurrency,
+            preserve_emphasis=self.config.profile_id == "kult",
         )
         self._ensure_no_translation_failed(translated, progress)
 
@@ -377,6 +428,7 @@ class TypesetPipeline:
         save_translated_content(
             translated, str(self._page_content_translated_path)
         )
+        self._write_translation_context()
         self._mark_phase_completed("C")
         return translated
 
@@ -412,6 +464,9 @@ class TypesetPipeline:
         # Save HTML file
         self._html_path.parent.mkdir(parents=True, exist_ok=True)
         self._html_path.write_text(html_content, encoding="utf-8")
+        from exporters.typeset_pdf import TypesetPDFExporter
+
+        TypesetPDFExporter().validate_html_layout(str(self._html_path))
         self._mark_phase_completed("D")
         return str(self._html_path)
 
@@ -452,6 +507,7 @@ class TypesetPipeline:
             structure,
             content,
             page_visuals=page_visuals,
+            fixed_html_href=self._html_path.name if self.config.reading_html_href else None,
         )
         self._reading_html_path.parent.mkdir(parents=True, exist_ok=True)
         self._reading_html_path.write_text(html_content, encoding="utf-8")
@@ -568,7 +624,7 @@ class TypesetPipeline:
         """
         if self._resolve_layout_hints_path() is not None:
             return None
-        if not self._page_content_translated_path.exists():
+        if not self._page_content_translated_path.exists() or not self._has_current_translation_context():
             return None
         try:
             text = self._page_content_translated_path.read_text(encoding="utf-8")
@@ -592,7 +648,10 @@ class TypesetPipeline:
         from core.typeset_translation import TypesetTranslationProgress
 
         try:
-            progress = TypesetTranslationProgress(str(self._progress_path))
+            progress = TypesetTranslationProgress(
+                str(self._progress_path),
+                context_signature=self._translation_context_signature(),
+            )
             progress.mark_phase_completed(phase)
         except Exception:
             pass  # Non-critical
@@ -602,7 +661,10 @@ class TypesetPipeline:
         from core.typeset_translation import TypesetTranslationProgress
 
         try:
-            progress = TypesetTranslationProgress(str(self._progress_path))
+            progress = TypesetTranslationProgress(
+                str(self._progress_path),
+                context_signature=self._translation_context_signature(),
+            )
             return progress.is_phase_completed(phase)
         except Exception:
             return False

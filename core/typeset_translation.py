@@ -51,6 +51,7 @@ def _is_unusable_translation(text: str, source_text: str | None = None) -> bool:
         contains_prompt_leak(text)
         or contains_elision_placeholder(text)
         or contains_japanese_kana(text)
+        or "\u00ad" in text
         or bool(source_text and untranslated_leading_labels(source_text, text))
     )
 
@@ -62,10 +63,11 @@ class TypesetTranslationProgress:
     Supports checkpoint/resume: on restart, already-translated blocks are skipped.
     """
 
-    def __init__(self, progress_file: str):
+    def __init__(self, progress_file: str, context_signature: str = ""):
         if not progress_file:
             raise ValueError("progress_file 不能为空")
         self.progress_file = progress_file
+        self.context_signature = context_signature
         self.translations: dict[str, str] = {}
         self.source_hashes: dict[str, str] = {}
         self.failed_blocks: dict[str, str] = {}
@@ -87,6 +89,8 @@ class TypesetTranslationProgress:
             return
         if data.get("schema") != 2:
             return
+        if self.context_signature and data.get("context_signature") != self.context_signature:
+            return
         self.translations = dict(data.get("translations") or {})
         self.source_hashes = dict(data.get("source_hashes") or {})
         self.failed_blocks = dict(data.get("failed_blocks") or {})
@@ -99,6 +103,7 @@ class TypesetTranslationProgress:
             data = {
                 "schema": 2,
                 "pipeline": "typeset",
+                "context_signature": self.context_signature,
                 "translations": self.translations,
                 "source_hashes": self.source_hashes,
                 "failed_blocks": self.failed_blocks,
@@ -165,6 +170,7 @@ class TypesetTranslationProgress:
         translation: str,
         source_text: str | None = None,
     ):
+        translation = _translation_source_text(translation)
         if cache_key and translation:
             ensure_no_prompt_leak(translation, "缓存译文")
             ensure_no_elision_placeholder(translation, "缓存译文")
@@ -195,6 +201,7 @@ class TypesetTranslationProgress:
     ):
         if not block_id:
             raise ValueError("block_id 不能为空")
+        translation = _translation_source_text(translation)
         if not translation:
             raise ValueError(f"译文为空：{block_id}")
         ensure_no_prompt_leak(translation)
@@ -250,7 +257,12 @@ class TypesetTranslationProgress:
 
 def _source_text_hash(text: str) -> str:
     """SHA-256 hash of source text for translation cache lookup."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(_translation_source_text(text).encode("utf-8")).hexdigest()
+
+
+def _translation_source_text(text: str) -> str:
+    """Remove PDF soft hyphens before translation and cache matching."""
+    return (text or "").replace("\u00ad", "")
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +270,41 @@ def _source_text_hash(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_marked_text(blocks: list[ContentBlock]) -> str:
+def _build_marked_text(
+    blocks: list[ContentBlock],
+    preserve_emphasis: bool = False,
+) -> str:
     """Build translation request text with [BLOCK id] markers."""
     parts = []
     for block in blocks:
-        parts.append(f"[BLOCK {block.id}]\n{block.source_text}\n[/BLOCK {block.id}]")
+        source_text = (
+            _source_text_with_emphasis(block)
+            if preserve_emphasis
+            else _translation_source_text(block.source_text)
+        )
+        parts.append(
+            f"[BLOCK {block.id}]\n{source_text}\n[/BLOCK {block.id}]"
+        )
     return "\n\n".join(parts)
+
+
+def _source_text_with_emphasis(block: ContentBlock) -> str:
+    """Annotate source emphasis only when the extracted runs exactly cover the block."""
+    source = _translation_source_text(block.source_text)
+    runs_text = "".join(_translation_source_text(run.text) for run in block.runs)
+    if not source or runs_text != source:
+        return source
+    parts: list[str] = []
+    for run in block.runs:
+        text = _translation_source_text(run.text)
+        if not text:
+            continue
+        if run.bold:
+            text = f"<strong>{text}</strong>"
+        if run.italic:
+            text = f"<em>{text}</em>"
+        parts.append(text)
+    return "".join(parts)
 
 
 def _parse_marked_translations(
@@ -281,7 +322,7 @@ def _parse_marked_translations(
     parsed = {}
     for match in pattern.finditer(text):
         block_id = match.group(1).strip()
-        translated = match.group(2).strip()
+        translated = _translation_source_text(match.group(2)).strip()
         if block_id in parsed:
             raise ValueError(f"重复的翻译块标记：{block_id}")
         parsed[block_id] = translated
@@ -300,6 +341,7 @@ def _parse_marked_translations(
     if empty:
         raise ValueError("译文为空：" + ", ".join(sorted(empty)[:10]))
     for block_id, translated in parsed.items():
+        _ensure_valid_emphasis_markup(translated, f"译文块 {block_id}")
         ensure_no_prompt_leak(translated, f"译文块 {block_id}")
         ensure_no_elision_placeholder(translated, f"译文块 {block_id}")
         ensure_no_japanese_kana(translated, f"译文块 {block_id}")
@@ -308,6 +350,23 @@ def _parse_marked_translations(
                 source_text_by_id[block_id], translated, f"译文块 {block_id}"
             )
     return parsed
+
+
+def _ensure_valid_emphasis_markup(text: str, context: str) -> None:
+    tags = re.findall(r"<[^>]*>", text)
+    stack: list[str] = []
+    for tag in tags:
+        match = re.fullmatch(r"<(\/)?(strong|em)>", tag)
+        if not match:
+            raise ValueError(f"{context} 包含不允许的 HTML 标记：{tag}")
+        is_closing, name = match.groups()
+        if is_closing:
+            if not stack or stack.pop() != name:
+                raise ValueError(f"{context} 的强调标记未正确闭合")
+        else:
+            stack.append(name)
+    if stack:
+        raise ValueError(f"{context} 的强调标记未正确闭合")
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +421,7 @@ def translate_typeset_content(
     glossary: dict,
     progress_callback: Callable[[int, int, str, bool], None] | None = None,
     max_workers: int = 4,
+    preserve_emphasis: bool = False,
 ) -> PageContentDocument:
     """Translate typeset content blocks, producing a translated PageContentDocument.
 
@@ -423,6 +483,7 @@ def translate_typeset_content(
                 translator,
                 page_index,
                 pending_blocks,
+                preserve_emphasis,
             )
             futures[future] = (page_index, unit_id, pending_blocks)
 
@@ -491,8 +552,9 @@ def _translate_typeset_unit(
     translator,
     page_index: int,
     pending_blocks: list[ContentBlock],
+    preserve_emphasis: bool = False,
 ) -> dict[str, str]:
-    source_text = _build_marked_text(pending_blocks)
+    source_text = _build_marked_text(pending_blocks, preserve_emphasis=preserve_emphasis)
     pending_ids = {block.id for block in pending_blocks}
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):

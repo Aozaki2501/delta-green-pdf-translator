@@ -38,6 +38,29 @@ class TypesetPDFExporter:
     for the Playwright PDF API (divide by 72).
     """
 
+    def validate_html_layout(self, html_path: str) -> list[dict]:
+        """Fail HTML-only output when the browser finds a layout overflow."""
+        if not Path(html_path).exists():
+            raise FileNotFoundError(f"HTML 文件不存在：{html_path}")
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise RuntimeError(
+                "缺少 playwright。请先运行：pip install playwright && playwright install chromium"
+            ) from exc
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(_file_url(html_path), wait_until="networkidle")
+                self._wait_for_render_assets(page)
+                issues = self._fit_and_collect_layout_issues(page)
+                self._raise_for_layout_issues(issues)
+                return issues
+            finally:
+                browser.close()
+
     def export(
         self,
         html_path: str,

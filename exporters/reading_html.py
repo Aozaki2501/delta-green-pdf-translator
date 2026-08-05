@@ -46,12 +46,11 @@ def _role_value(role: SemanticRole | str) -> str:
 def _escaped_text(text: str) -> str:
     """Escape text while preserving paragraphs and explicit line breaks."""
 
-    escaped = html.escape(str(text), quote=True)
     # A blank line starts a new paragraph.  A single line break remains a
     # visible break.  Empty paragraphs are omitted, never invented.
-    paragraphs = re.split(r"\n\s*\n+", escaped)
+    paragraphs = re.split(r"\n\s*\n+", str(text))
     return "".join(
-        f"<p>{paragraph.replace(chr(10), '<br>')}</p>"
+        f"<p>{_escaped_emphasis_markup(paragraph).replace(chr(10), '<br>')}</p>"
         for paragraph in paragraphs
         if paragraph != ""
     ) or "<p></p>"
@@ -60,8 +59,18 @@ def _escaped_text(text: str) -> str:
 def _escaped_inline_text(text: str) -> str:
     """Escape heading text without creating invalid block elements inside it."""
 
-    escaped = html.escape(str(text), quote=True)
+    escaped = _escaped_emphasis_markup(str(text))
     return re.sub(r"\n+", "<br>", escaped)
+
+
+def _escaped_emphasis_markup(text: str) -> str:
+    escaped = html.escape(str(text), quote=True)
+    return (
+        escaped.replace("&lt;strong&gt;", "<strong>")
+        .replace("&lt;/strong&gt;", "</strong>")
+        .replace("&lt;em&gt;", "<em>")
+        .replace("&lt;/em&gt;", "</em>")
+    )
 
 
 def _text_for_block(block: ContentBlock) -> str:
@@ -81,6 +90,7 @@ class ReadingHTMLRenderer:
         structure: PageStructureDocument,
         content: PageContentDocument,
         page_visuals: dict[int, str],
+        fixed_html_href: str | None = None,
     ) -> str:
         """Render ``structure`` and translated ``content`` into HTML.
 
@@ -112,7 +122,7 @@ class ReadingHTMLRenderer:
                 f"<style>{self._css()}</style>",
                 "</head>",
                 '<body class="reading-body">',
-                self._toolbar(),
+                self._toolbar(fixed_html_href),
                 '<main class="reading-document" aria-label="图文阅读内容">',
                 *pages,
                 "</main>",
@@ -132,8 +142,9 @@ class ReadingHTMLRenderer:
         structure: PageStructureDocument,
         content: PageContentDocument,
         page_visuals: dict[int, str],
+        fixed_html_href: str | None = None,
     ) -> str:
-        return self.render(structure, content, page_visuals)
+        return self.render(structure, content, page_visuals, fixed_html_href=fixed_html_href)
 
     @staticmethod
     def _validate_documents(
@@ -325,7 +336,13 @@ class ReadingHTMLRenderer:
         return f'<div class="reading-block role-{role_class}" {attrs}>{element}</div>'
 
     @staticmethod
-    def _toolbar() -> str:
+    def _toolbar(fixed_html_href: str | None = None) -> str:
+        fixed_link = ""
+        if fixed_html_href:
+            fixed_link = (
+                f'<a class="reading-fixed-link" href="{html.escape(fixed_html_href, quote=True)}">'
+                '原版排版</a>'
+            )
         return (
             '<nav class="reading-toolbar" aria-label="阅读工具">'
             '<div class="reading-toolbar-title">图文阅读</div>'
@@ -335,6 +352,7 @@ class ReadingHTMLRenderer:
             '<span class="reading-toolbar-divider" aria-hidden="true"></span>'
             '<button type="button" class="reading-font-button" data-font-step="-1" aria-label="减小字体">A−</button>'
             '<button type="button" class="reading-font-button" data-font-step="1" aria-label="增大字体">A＋</button>'
+            f'{fixed_link}'
             '</div></nav>'
         )
 
@@ -351,6 +369,7 @@ button:focus-visible, dialog:focus-visible { outline: 3px solid #e19a54; outline
 .reading-toolbar-title { font-weight: 700; letter-spacing: .08em; color: var(--reading-accent); white-space: nowrap; }
 .reading-toolbar-controls { display: flex; align-items: center; gap: .45rem; }
 .reading-toolbar button { min-height: 2.25rem; padding: .35rem .7rem; border: 1px solid #9eaaa7; border-radius: .4rem; background: #fffdf9; color: var(--reading-ink); cursor: pointer; }
+.reading-fixed-link { display: inline-flex; align-items: center; min-height: 2.25rem; padding: .35rem .7rem; border: 1px solid var(--reading-accent); border-radius: .4rem; color: var(--reading-accent); text-decoration: none; white-space: nowrap; }
 .reading-toolbar button[aria-pressed="true"] { border-color: var(--reading-accent); background: var(--reading-accent); color: white; }
 .reading-toolbar-divider { width: 1px; height: 1.5rem; margin: 0 .2rem; background: #c7d0cc; }
 .reading-document { width: min(100%, 1180px); margin: 0 auto; padding: 1.5rem 1rem 4rem; }

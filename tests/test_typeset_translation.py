@@ -271,10 +271,42 @@ class TestBlockMarkers:
         assert "Second block" in result
         assert "[/BLOCK b2]" in result
 
+    def test_build_marked_text_removes_pdf_soft_hyphens(self):
+        result = _build_marked_text([_make_block("b1", "Ze\u00adlother")])
+
+        assert "Zelother" in result
+        assert "\u00ad" not in result
+
+    def test_build_marked_text_can_preserve_exact_source_emphasis(self):
+        block = ContentBlock(
+            id="b1", region_id="r1", role=SemanticRole.BODY_COLUMN,
+            runs=[
+                StyledTextRun("普通", 10.0, False, False, "#000"),
+                StyledTextRun("重点", 10.0, True, False, "#000"),
+            ],
+            source_text="普通重点", translated_text=None, translatable=True,
+        )
+
+        result = _build_marked_text([block], preserve_emphasis=True)
+
+        assert "普通<strong>重点</strong>" in result
+
     def test_parse_marked_translations_success(self):
         text = "[BLOCK b1]\n翻译1\n[/BLOCK b1]\n\n[BLOCK b2]\n翻译2\n[/BLOCK b2]"
         result = _parse_marked_translations(text, {"b1", "b2"})
         assert result == {"b1": "翻译1", "b2": "翻译2"}
+
+    def test_parse_marked_translations_removes_soft_hyphens(self):
+        result = _parse_marked_translations("[BLOCK b1]\n千魂\u00ad水蛭\n[/BLOCK b1]", {"b1"})
+
+        assert result == {"b1": "千魂水蛭"}
+
+    def test_parse_marked_translations_accepts_only_balanced_emphasis_tags(self):
+        result = _parse_marked_translations("[BLOCK b1]\n<strong>重点</strong>\n[/BLOCK b1]", {"b1"})
+
+        assert result == {"b1": "<strong>重点</strong>"}
+        with pytest.raises(ValueError, match="不允许的 HTML 标记"):
+            _parse_marked_translations("[BLOCK b1]\n<a>重点</a>\n[/BLOCK b1]", {"b1"})
 
     def test_parse_marked_translations_missing_block(self):
         text = "[BLOCK b1]\n翻译1\n[/BLOCK b1]"
@@ -335,6 +367,9 @@ class TestSourceTextHash:
         h1 = _source_text_hash("hello")
         h2 = _source_text_hash("world")
         assert h1 != h2
+
+    def test_soft_hyphen_does_not_change_translation_cache_key(self):
+        assert _source_text_hash("Ze\u00adlother") == _source_text_hash("Zelother")
 
 
 # ---------------------------------------------------------------------------
