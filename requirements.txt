@@ -1,10 +1,10 @@
 pymupdf==1.27.2.3
 openai==2.36.0
-google-genai>=1.40.0
+google-genai==2.12.1
 python-docx==1.2.0
 streamlit==1.57.0
 pytest==9.0.3
 playwright==1.60.0
 Pillow==12.2.0
-hypothesis>=6.100.0
-pyahocorasick>=2.0.0
+hypothesis==6.158.0
+pyahocorasick==2.3.1

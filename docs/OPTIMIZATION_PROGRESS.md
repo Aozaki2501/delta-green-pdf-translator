@@ -10,10 +10,10 @@
 | 分组 | 条目数 | 已完成 | 未完成 | 说明 |
 | --- | ---: | ---: | ---: | --- |
 | 先处理（P0） | 8 | 8 | 0 | 全部完成 |
-| 随后处理（P1） | 9 | 8 | 1 | B7 未做、B8 按约定跳过 |
+| 随后处理（P1） | 9 | 9 | 0 | 全部完成（B8 按约定跳过） |
 | 性能 | 2 | 2 | 0 | 全部完成 |
 | 排版层（T1–T6） | 6 | 6 | 0 | 全部完成 |
-| 合计 | 25 | 24 | 1 | B7 未做、B8 按约定跳过 |
+| 合计 | 25 | 24 | 1 | B8 按约定跳过 |
 
 核心目标已达成：文档提出的"静默正确性问题"（译文截断不报错、术语冲突不报错、进度损坏不报错）全部改为**显式报错 + 补测试**。排版层的 T1 / T2 也已按同一原则修复。
 
@@ -57,7 +57,7 @@
 | B4 | 报告不外泄本机绝对路径 | ✅ | `core/typeset_pipeline.py::_report_file_name()`，`_typeset_report.json` 的 4 个路径字段只保留文件名 |
 | B5 | `base_url` 校验接入各入口 | ✅ | 见 P0 第 5 条 |
 | B6 | 限制 `layout_hints.json` 读取范围 | ✅ | `core/typeset_pipeline.py::_ensure_path_allowed()`：只允许项目目录或输出目录之内 |
-| B7 | CI / 依赖固定 / LICENSE | ⛔ 未做 | 见下节"仍未完成" |
+| B7 | CI / 依赖固定 / LICENSE | ✅ | 见第五节；LICENSE 你选了 Apache-2.0 |
 | B8 | `app.py` / `theme.py` 拆分 | ⛔ 按约定跳过 | 你在开始时明确排除了前端重构，这条**有意不做** |
 | B9 | 清理 `scratch/integrate-dg-trans/` 与根目录残留脚本 | ✅ | 目录与根目录脚本均已移除，且从未进入 git 跟踪 |
 
@@ -74,11 +74,11 @@
 
 ## 五、仍未完成 / 仍存在的风险
 
-### 1. B7：CI 与依赖固定（未做）
-- 没有 `.github/workflows/ci.yml`，802 条测试目前只能靠本地手跑
-- `requirements.txt` 的固定策略未统一，也没有 lock 文件
-- `google-genai` 仍是硬依赖，未改为可选
-- **LICENSE 有意留空**：选哪个许可证是你的决定，我不代选
+### 1. B7：CI 与依赖固定（已完成 2026-08-05）
+- 新增 `.github/workflows/ci.yml`：push/PR 到 main 时自动安装依赖并跑全量 pytest。
+- `requirements.txt` 全部改为精确版本；新增 `requirements.lock.txt`（完整传递依赖锁定）。
+- 新增 `LICENSE`：你选择了 Apache-2.0（版权人 chenzhiming_nshx）。
+- **未做**：`google-genai` 仍为硬依赖，未改为可选。这是独立的小改造，不在 B7 范围内。
 
 ### 2. KULT 全书真实译文验收（未做）
 KULT 的图片提取、游戏配置、章节与绕图模板、瑞典语术语表均已完成，120 页结构提取完整；
@@ -330,13 +330,21 @@ app.py                        KULT/DG 排版配置切换
 tests/test_typeset_*.py / test_reading_html.py   新增覆盖（含溢出与上下文签名）
 ```
 
+### 2026-08-05 追加（B7 完成，提交见 Git 记录）
+```
+.github/workflows/ci.yml       GitHub Actions：push/PR 自动跑 pytest
+requirements.txt               全部改为精确版本（==）
+requirements.lock.txt          完整传递依赖锁定（新增）
+LICENSE                        Apache-2.0（你选的第二个类型，新增）
+```
+
 ---
 
 ## 八、建议的下一步
 
 按优先级：
 
-1. **B7** 补 CI，让 802 条测试自动跑起来；依赖固定策略统一（含 lock）；LICENSE 等你定。
+1. ~~**B7** CI / 依赖固定 / LICENSE~~ —— ✅ 已完成（2026-08-05）
 2. **KULT 真实译文验收**：120 页结构提取与版面模板已完成，但代表页和全书尚未用真实翻译
    接口跑通验收；下次带接口的运行会自动触发完整重译。
 3. **B8** 前端拆分若要做，独立分支，不与逻辑改动混在一起。

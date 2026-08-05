@@ -1,8 +1,14 @@
+# 本次更新：B7 CI / 依赖固定 / LICENSE 完成（2026-08-05）
+
+1. 新增 `.github/workflows/ci.yml`，push/PR 自动跑全量测试；`requirements.txt` 全部固定精确版本，新增 `requirements.lock.txt` 锁定传递依赖。
+2. LICENSE 你选了 Apache-2.0（第二个选项），已写入官方文本并保留版权人 chenzhiming_nshx。
+3. 本地验证 802 测试通过；`google-genai` 可选化未做，属于独立小改造，不在 B7 范围。
+
 # 本次更新：推送 main 并刷新优化进度（2026-08-05）
 
 1. 已把 KULT 相关未提交改动（独立排版配置、翻译上下文签名、瑞典语术语表、T3 溢出检测、阅读页互链）提交为 `ef31634` 并推送到 main；`.obsidian/` 与 `tmp/` 加入 .gitignore。
 2. 已更新 `docs/OPTIMIZATION_PROGRESS.md`：T3 溢出检测与 B9 残留清理标记完成，测试基线 802 通过。
-3. 仍未完成：B7（CI / 依赖固定 / LICENSE，需你定许可证）、KULT 全书真实译文验收（需下一次带翻译接口的运行）。
+3. 仍未完成：KULT 全书真实译文验收（需下一次带翻译接口的运行）。
 
 # 本次检查：KULT 1-24 页高保真 HTML（2026-07-29）
 
