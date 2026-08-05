@@ -1,7 +1,7 @@
 # 优化进度（依据 docs/PROJECT_REVIEW.md）
 
-更新时间：2026-07-26
-测试基线：改动前 **640 passed / 31.85s** → 当前 **760 passed / 32.5s**（新增 120 条测试，无失败）
+更新时间：2026-08-05
+测试基线：改动前 **640 passed / 31.85s** → 当前 **802 passed / 34.5s**（无失败）
 
 ---
 
@@ -10,10 +10,10 @@
 | 分组 | 条目数 | 已完成 | 未完成 | 说明 |
 | --- | ---: | ---: | ---: | --- |
 | 先处理（P0） | 8 | 8 | 0 | 全部完成 |
-| 随后处理（P1） | 9 | 7 | 2 | B7 未做、B8 按约定不做 |
+| 随后处理（P1） | 9 | 8 | 1 | B7 未做、B8 按约定跳过 |
 | 性能 | 2 | 2 | 0 | 全部完成 |
-| 排版层（T1–T6） | 6 | 5 | 1 | T1 / T2 / T4–T6 已完成，T3 未做 |
-| 合计 | 25 | 22 | 3 | — |
+| 排版层（T1–T6） | 6 | 6 | 0 | 全部完成 |
+| 合计 | 25 | 24 | 1 | B7 未做、B8 按约定跳过 |
 
 核心目标已达成：文档提出的"静默正确性问题"（译文截断不报错、术语冲突不报错、进度损坏不报错）全部改为**显式报错 + 补测试**。排版层的 T1 / T2 也已按同一原则修复。
 
@@ -59,7 +59,7 @@
 | B6 | 限制 `layout_hints.json` 读取范围 | ✅ | `core/typeset_pipeline.py::_ensure_path_allowed()`：只允许项目目录或输出目录之内 |
 | B7 | CI / 依赖固定 / LICENSE | ⛔ 未做 | 见下节"仍未完成" |
 | B8 | `app.py` / `theme.py` 拆分 | ⛔ 按约定跳过 | 你在开始时明确排除了前端重构，这条**有意不做** |
-| B9 | 清理 `scratch/integrate-dg-trans/` 与根目录残留脚本 | ⛔ 未做 | 见下节 |
+| B9 | 清理 `scratch/integrate-dg-trans/` 与根目录残留脚本 | ✅ | 目录与根目录脚本均已移除，且从未进入 git 跟踪 |
 
 ---
 
@@ -75,15 +75,15 @@
 ## 五、仍未完成 / 仍存在的风险
 
 ### 1. B7：CI 与依赖固定（未做）
-- 没有 `.github/workflows/ci.yml`，742 条测试目前只能靠本地手跑
+- 没有 `.github/workflows/ci.yml`，802 条测试目前只能靠本地手跑
 - `requirements.txt` 的固定策略未统一，也没有 lock 文件
 - `google-genai` 仍是硬依赖，未改为可选
 - **LICENSE 有意留空**：选哪个许可证是你的决定，我不代选
 
-### 2. B9：仓库残留未清理（未做）
-- `scratch/integrate-dg-trans/`（102 个 py 文件，其中 5 个与主干有差异：`core/translation_validation.py`、`core/typeset_models.py`、`core/typeset_pipeline.py`、`exporters/__init__.py`、`exporters/typeset_html.py`）
-- 根目录 5 个散落脚本：`diag_38_51.py`、`diag_cards.py`、`test_card_38_51.py`、`test_card_68_98.py`、`test_card_detect.py`
-- 风险：`test_card_*.py` 的命名会被 pytest 收集规则误认，删除前需要逐个 diff 确认没有主干缺失的逻辑
+### 2. KULT 全书真实译文验收（未做）
+KULT 的图片提取、游戏配置、章节与绕图模板、瑞典语术语表均已完成，120 页结构提取完整；
+但全书尚未用真实译文完成代表页与整本视觉验收。现有 24 页重建只验证了版面，完整重译要等
+下一次带翻译接口的运行自动触发。详见 `docs/KULT_HIGH_FIDELITY_PLAN.md`。
 
 ### 3. B8：前端体积（按约定跳过）
 `app.py` 2298 行、`webui/theme.py` 2718 行仍未拆分。这是你明确排除的范围，但风险仍在：单文件过大，改动容易互相牵连。
@@ -105,7 +105,7 @@
 
 ---
 
-## 六、排版产物复查发现的问题（T1 / T2 已修，T3–T6 待修）
+## 六、排版产物复查发现的问题（T1–T6 已全部修复）
 
 审查对象：`output/Delta_Green_The_New_Age_2026_FIXED_cn/..._typeset.html`
 （15 页 / 114 KB / 209 个翻译区域，`_typeset_report.json` 报 `failed_regions: 0`）
@@ -208,7 +208,7 @@
 区域合并已消除本文档观察到的全部 `[...]`，先不叠加改动；
 若后续仍有跨栏切断，再考虑接上下文。
 
-### T3（P1）`overflow:hidden` 会静默吞掉正文
+### T3（P1）`overflow:hidden` 会静默吞掉正文 —— ✅ 已修复（2026-08-05）
 
 ```css
 .typeset-reflow-area   { overflow: hidden; }   /* HTML 第 152 行 */
@@ -219,11 +219,14 @@
 中文通常比英文短，所以多数情况不出事。**但一旦超框，超出的正文直接消失——不报错、不留痕。**
 这正是本轮刚清理掉的那类静默失败，只是换了个地方。
 
-**建议.** 导出后用 Playwright（已在依赖内）量一次 `scrollHeight > clientHeight`，
-超框就写进 `_typeset_report.json` 的 `errors`，并在质量报告里列出页码。
+**修复.** `exporters/typeset_html.py` 新增 `typesetFitPositionedBlocks()` /
+`typesetCollectLayoutIssues()`：遍历定位块与 reflow 区，量 `scrollHeight > clientHeight` 或
+`scrollWidth > clientWidth` 即标记溢出；`exporters/typeset_pdf.py` 每页收集后在导出时
+`_raise_for_layout_issues()` 直接抛错，任务失败并列出页码与区域，不再静默裁切。
+`typesetFlowLineTracks()` 同时按槽位容量做严格填充，禁止静默缩字。
 
 同理 `.typeset-heading` 的 `white-space:nowrap` + `overflow:visible`（第 147 / 133 行）：
-标题超宽不换行，会**压到旁边正文上**。
+标题超宽不换行会压到旁边正文上，现已纳入同一溢出检查。
 
 ### T4（P1）CJK 行高偏紧 —— ✅ 已修复（2026-07-28）
 
@@ -253,7 +256,7 @@ body 是 1.56，定位块却覆盖为 1.15。中文没有 ascender/descender 的
 
 1. ~~**T1**（逐行退化）~~ —— ✅ 已完成（2026-07-26）
 2. ~~**T2**（跨区域段落合并 + `[...]` 硬失败）~~ —— ✅ 已完成（2026-07-26）
-3. **T3**（溢出检测）—— 未做，让静默裁切变成报告里的一行字
+3. ~~**T3**（溢出检测）~~ —— ✅ 已完成（2026-08-05），溢出直接让任务失败，不再静默裁切
 4. ~~**T4 / T5 / T6**~~ —— ✅ 已完成（2026-07-28）
 
 > **T1 / T2 的实际影响面**：改动落在 `core/page_structure.py`（Phase A 区域合并）
@@ -313,17 +316,30 @@ tests/test_translation_validation.py  T2：占位符检测 + 合法方括号不�
 tests/test_typeset_translation.py     T2：解析阶段拒绝占位符
 ```
 
+### 2026-08-05 追加（T3 完成 + KULT 支撑，提交 `ef31634`）
+```
+core/typeset_profiles.py      KULT 独立排版配置
+core/typeset_pipeline.py      翻译上下文签名、KULT 内置术语表与强调保留
+core/typeset_translation.py   上下文签名校验、emphasis 保留
+core/typeset_models.py        报告/模型字段
+exporters/typeset_html.py     T3 溢出检测 + 阅读页互链
+exporters/typeset_pdf.py      T3 每页收集溢出并抛错
+exporters/reading_html.py     阅读页与固定页互链
+assets/glossaries/kult_swedish.tsv   KULT 瑞典语术语表（新增）
+app.py                        KULT/DG 排版配置切换
+tests/test_typeset_*.py / test_reading_html.py   新增覆盖（含溢出与上下文签名）
+```
+
 ---
 
 ## 八、建议的下一步
 
 按优先级：
 
-1. **T3** 溢出检测 —— 成本低，收益是"再也不会静默丢正文"。
-   导出后用 Playwright（已在依赖内）量一次 `scrollHeight > clientHeight`，超框写进报告 `errors`。
-2. **B7** 补 CI，让 760 条测试自动跑起来；LICENSE 等你定。
-3. **B9** 清残留（需逐个 diff，建议单独一次改动）。
-4. **B8** 前端拆分若要做，独立分支，不与逻辑改动混在一起。
+1. **B7** 补 CI，让 802 条测试自动跑起来；依赖固定策略统一（含 lock）；LICENSE 等你定。
+2. **KULT 真实译文验收**：120 页结构提取与版面模板已完成，但代表页和全书尚未用真实翻译
+   接口跑通验收；下次带接口的运行会自动触发完整重译。
+3. **B8** 前端拆分若要做，独立分支，不与逻辑改动混在一起。
 
 已无需你决策的事项：`glossary.tsv` 的取舍你已确认；T1 的进度缓存失效不做迁移你已确认。
 
