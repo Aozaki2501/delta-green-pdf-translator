@@ -9,6 +9,8 @@ Uses Playwright headless Chromium for PDF generation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 from pathlib import Path
 
 from core.utils import ensure_output_parent
@@ -29,6 +31,92 @@ def _file_url(path: str) -> str:
     return Path(path).resolve().as_uri()
 
 
+def write_layout_report(issues: list[dict], output_path: str) -> None:
+    """Write the complete browser layout findings as deterministic JSON."""
+    ensure_output_parent(output_path)
+    normalized = TypesetPDFExporter._normalize_layout_issues(issues)
+    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def write_layout_repair_manifest(
+    issues: list[dict],
+    output_path: str,
+    *,
+    profile_id: str = "delta_green",
+) -> None:
+    """Write measured target constraints for reviewed, block-level retries.
+
+    The manifest deliberately contains browser measurements instead of a
+    guessed character budget.  Callers may pass its ``targets`` mapping to
+    ``TypesetPipeline.repair_overflow_translations`` after reviewing the
+    affected blocks.
+    """
+    normalized = TypesetPDFExporter._normalize_layout_issues(issues)
+    targets: dict[str, dict] = {}
+    unresolved: list[dict] = []
+    for issue in normalized:
+        block_ids = issue.get("block_ids") or []
+        if not isinstance(block_ids, list) or not block_ids:
+            unresolved.append({
+                "page": issue.get("page", ""),
+                "target": issue.get("target") or issue.get("id", ""),
+                "kind": issue.get("kind", ""),
+            })
+            continue
+        capacity = {
+            "bbox": issue.get("bbox") or {},
+            "client_width": issue.get("client_width"),
+            "client_height": issue.get("client_height"),
+            "scroll_width": issue.get("scroll_width"),
+            "scroll_height": issue.get("scroll_height"),
+            "overflow_x": issue.get("overflow_x", 0),
+            "overflow_y": issue.get("overflow_y", 0),
+            "page_boundary_overflow": issue.get("page_boundary_overflow") or {},
+        }
+        template_payload = {
+            "profile_id": profile_id,
+            "kind": issue.get("kind", ""),
+            "target": issue.get("target") or issue.get("id", ""),
+            "bbox": capacity["bbox"],
+        }
+        template_signature = hashlib.sha256(
+            json.dumps(
+                template_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        constraint_prompt = (
+            "完整保留原文信息、规则术语和数字；在已测得的目标模板中自然改写，"
+            f"目标类型为 {issue.get('kind', 'layout target')}，"
+            f"可用尺寸为 {capacity['client_width']}x{capacity['client_height']}px，"
+            f"当前垂直溢出为 {capacity['overflow_y']}px。"
+            "不要输出解释，不要删去规则条件。"
+        )
+        for block_id in block_ids:
+            targets[str(block_id)] = {
+                "capacity": capacity,
+                "template_signature": template_signature,
+                "constraint_prompt": constraint_prompt,
+                "page": issue.get("page", ""),
+                "target_id": issue.get("target") or issue.get("id", ""),
+                "kind": issue.get("kind", ""),
+            }
+    manifest = {
+        "schema_version": 1,
+        "profile_id": profile_id,
+        "targets": targets,
+        "unresolved": unresolved,
+    }
+    ensure_output_parent(output_path)
+    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+
+
 class TypesetPDFExporter:
     """
     Typeset PDF exporter.
@@ -38,7 +126,14 @@ class TypesetPDFExporter:
     for the Playwright PDF API (divide by 72).
     """
 
-    def validate_html_layout(self, html_path: str) -> list[dict]:
+    def validate_html_layout(
+        self,
+        html_path: str,
+        *,
+        report_path: str | None = None,
+        repair_manifest_path: str | None = None,
+        profile_id: str = "delta_green",
+    ) -> list[dict]:
         """Fail HTML-only output when the browser finds a layout overflow."""
         if not Path(html_path).exists():
             raise FileNotFoundError(f"HTML 文件不存在：{html_path}")
@@ -56,6 +151,14 @@ class TypesetPDFExporter:
                 page.goto(_file_url(html_path), wait_until="networkidle")
                 self._wait_for_render_assets(page)
                 issues = self._fit_and_collect_layout_issues(page)
+                if report_path:
+                    write_layout_report(issues, report_path)
+                if repair_manifest_path:
+                    write_layout_repair_manifest(
+                        issues,
+                        repair_manifest_path,
+                        profile_id=profile_id,
+                    )
                 self._raise_for_layout_issues(issues)
                 return issues
             finally:
@@ -223,23 +326,159 @@ class TypesetPDFExporter:
             "window.typesetFitPositionedBlocks ? window.typesetFitPositionedBlocks() : undefined"
         )
         issues = page.evaluate(
-            "window.typesetCollectLayoutIssues ? window.typesetCollectLayoutIssues() : []"
+            """() => {
+                const collected = window.typesetCollectLayoutIssues
+                    ? window.typesetCollectLayoutIssues()
+                    : [];
+                if (!Array.isArray(collected)) return [];
+                const elements = Array.from(document.querySelectorAll(
+                    '[data-fit="text"], [data-fit="reflow"], [data-fit="table"], .typeset-line-track-flow'
+                )).map((el) => {
+                    const page = el.closest('.typeset-page');
+                    const pageRect = page ? page.getBoundingClientRect() : null;
+                    const rect = el.getBoundingClientRect();
+                    const kind = typeof el.className === 'string' && el.className
+                        ? el.className
+                        : el.tagName;
+                    const id = el.dataset.regionId || el.dataset.flowBlocks ||
+                        el.dataset.tableBlock || el.dataset.column || '';
+                    const blockId = el.dataset.blockId || '';
+                    const target = blockId || id;
+                    const blockIds = Array.from(el.querySelectorAll('[data-block-id]'))
+                        .map((child) => child.dataset.blockId || '')
+                        .filter(Boolean);
+                    if (blockId && !blockIds.includes(blockId)) blockIds.unshift(blockId);
+                    const boundary = pageRect ? {
+                        left: Math.max(0, pageRect.left - rect.left),
+                        top: Math.max(0, pageRect.top - rect.top),
+                        right: Math.max(0, rect.right - pageRect.right),
+                        bottom: Math.max(0, rect.bottom - pageRect.bottom),
+                    } : {left: 0, top: 0, right: 0, bottom: 0};
+                    return {
+                        page: page ? page.dataset.page || '' : '',
+                        kind,
+                        id,
+                        target,
+                        target_id: target,
+                        block_ids: blockIds,
+                        block_id: blockId,
+                        region_id: el.dataset.regionId || '',
+                        flow_blocks: el.dataset.flowBlocks || '',
+                        table_block: el.dataset.tableBlock || '',
+                        column: el.dataset.column || '',
+                        bbox: {
+                            x: pageRect ? rect.left - pageRect.left : rect.left,
+                            y: pageRect ? rect.top - pageRect.top : rect.top,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        page_boundary_overflow: boundary,
+                        client_width: el.clientWidth,
+                        client_height: el.clientHeight,
+                        scroll_width: el.scrollWidth,
+                        scroll_height: el.scrollHeight,
+                        overflow_x: Math.max(0, el.scrollWidth - el.clientWidth),
+                        overflow_y: Math.max(0, el.scrollHeight - el.clientHeight),
+                    };
+                });
+                const remaining = [...elements];
+                return collected.map((issue) => {
+                    const candidateIndexes = remaining
+                        .map((element, index) => ({element, index}))
+                        .filter(({element}) =>
+                            String(element.page) === String(issue.page || '') &&
+                            element.kind === (issue.kind || '') &&
+                            element.id === (issue.id || '')
+                        );
+                    const overflowing = candidateIndexes.find(({element}) =>
+                        element.overflow_x > 0 || element.overflow_y > 0 ||
+                        Object.values(element.page_boundary_overflow || {}).some((value) => value > 4)
+                    );
+                    const matchIndex = overflowing
+                        ? overflowing.index
+                        : (candidateIndexes[0] ? candidateIndexes[0].index : -1);
+                    const match = matchIndex >= 0 ? remaining.splice(matchIndex, 1)[0] : null;
+                    return match ? {...issue, ...match} : issue;
+                });
+            }"""
         )
-        return issues if isinstance(issues, list) else []
+        return self._normalize_layout_issues(issues if isinstance(issues, list) else [])
+
+    @staticmethod
+    def _normalize_layout_issues(issues: list[dict]) -> list[dict]:
+        """Sort browser findings so reports and errors are reproducible."""
+        normalized = [dict(issue) for issue in issues if isinstance(issue, dict)]
+
+        def sort_key(issue: dict) -> tuple:
+            page = str(issue.get("page") or "")
+            page_key = (0, int(page)) if page.isdigit() else (1, page)
+            return page_key + tuple(str(issue.get(key) or "") for key in (
+                "target", "block_id", "region_id", "id", "kind",
+            ))
+
+        return sorted(
+            normalized,
+            key=sort_key,
+        )
 
     def _raise_for_layout_issues(self, issues: list[dict]) -> None:
         if not issues:
             return
-        preview: list[str] = []
-        for issue in issues[:5]:
+        details: list[str] = []
+        for issue in self._normalize_layout_issues(issues):
             page = issue.get("page") or "?"
             kind = issue.get("kind") or "unknown"
             item_id = issue.get("id") or ""
-            preview.append(f"page {page} {kind} {item_id}".strip())
+            target = issue.get("target") or item_id
+            identifiers = [f"page={page}", f"kind={kind}"]
+            if target:
+                identifiers.append(f"target={target}")
+            if item_id and item_id != target:
+                identifiers.append(f"id={item_id}")
+            for field, label in (
+                ("block_id", "block"),
+                ("region_id", "region"),
+                ("flow_blocks", "blocks"),
+                ("table_block", "table"),
+                ("column", "column"),
+            ):
+                value = issue.get(field)
+                if value and value != target and value != item_id:
+                    identifiers.append(f"{label}={value}")
+            block_ids = issue.get("block_ids") or []
+            if isinstance(block_ids, list) and block_ids:
+                preview = ",".join(str(value) for value in block_ids[:3])
+                suffix = f"...(+{len(block_ids) - 3})" if len(block_ids) > 3 else ""
+                identifiers.append(f"block_ids={preview}{suffix}")
+            dimensions = (
+                "client_width", "client_height", "scroll_width", "scroll_height",
+            )
+            if all(value is not None for value in (issue.get(field) for field in dimensions)):
+                identifiers.append(
+                    "client="
+                    f"{issue['client_width']}x{issue['client_height']} "
+                    "scroll="
+                    f"{issue['scroll_width']}x{issue['scroll_height']}"
+                )
+            if issue.get("overflow_x") is not None or issue.get("overflow_y") is not None:
+                identifiers.append(
+                    f"overflow={issue.get('overflow_x', 0)}x{issue.get('overflow_y', 0)}"
+                )
+            boundary = issue.get("page_boundary_overflow") or {}
+            if any(float(boundary.get(side, 0) or 0) > 4 for side in ("left", "top", "right", "bottom")):
+                identifiers.append(
+                    "page-boundary="
+                    + ",".join(
+                        f"{side}:{float(boundary.get(side, 0) or 0):.1f}"
+                        for side in ("left", "top", "right", "bottom")
+                        if float(boundary.get(side, 0) or 0) > 4
+                    )
+                )
+            details.append(" ".join(identifiers))
         raise RuntimeError(
             "typeset layout overflow: "
             f"{len(issues)} issue(s); "
-            + "; ".join(preview)
+            + "; ".join(details)
         )
 
     @staticmethod

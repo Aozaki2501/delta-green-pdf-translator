@@ -20,7 +20,7 @@ from core.typeset_models import (
     TextRegionBBox,
     TypesetConfig,
 )
-from core.typeset_pipeline import TypesetPipeline
+from core.typeset_pipeline import TypesetPipeline, _is_image_overlay_text_block
 
 
 def _content_doc():
@@ -139,7 +139,7 @@ def test_fixed_html_output_runs_browser_layout_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(
         TypesetPDFExporter,
         "validate_html_layout",
-        lambda _self, path: calls.append(path),
+        lambda _self, path, **_kwargs: calls.append(path),
     )
 
     result = pipeline.run_phase_d(_structure_doc(), content)
@@ -180,6 +180,52 @@ def test_translated_content_cache_requires_matching_translation_context(tmp_path
     assert pipeline._load_existing_translated_content() is not None
 
 
+def test_overflow_repair_reuses_existing_translation_without_full_phase_c(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    existing = _content_doc()
+    existing.pages[0].blocks[:] = [
+        replace(block, translated_text=f"{block.source_text}-cn")
+        for block in existing.pages[0].blocks
+    ]
+    (tmp_path / "page_content_translated.json").write_text(
+        existing.to_json(), encoding="utf-8"
+    )
+    pipeline._write_translation_context()
+    monkeypatch.setattr(pipeline, "_matches_current_source", lambda *_args: True)
+    calls = []
+
+    def fake_repair(content, **kwargs):
+        calls.append((content, kwargs["target_metadata_by_block"]))
+        blocks = list(content.pages[0].blocks)
+        blocks[0] = replace(blocks[0], translated_text="short-cn")
+        return replace(content, pages=[replace(content.pages[0], blocks=blocks)])
+
+    monkeypatch.setattr(
+        "core.typeset_translation.translate_overflow_targets", fake_repair
+    )
+
+    repaired = pipeline.repair_overflow_translations({
+        "b1": {
+            "capacity": "90px",
+            "template_signature": "template-a",
+            "constraint_prompt": "完整表达且必须放入已测得的区域容量。",
+        }
+    })
+
+    assert len(calls) == 1
+    assert calls[0][0].pages[0].blocks[1].translated_text == "B-cn"
+    assert repaired.pages[0].blocks[0].translated_text == "short-cn"
+    saved = PageContentDocument.from_json(
+        (tmp_path / "page_content_translated.json").read_text(encoding="utf-8")
+    )
+    assert saved.pages[0].blocks[1].translated_text == "B-cn"
+
+
 def test_pipeline_uses_layout_hints_from_output_dir(tmp_path):
     (tmp_path / "layout_hints.json").write_text(
         json.dumps({
@@ -207,6 +253,27 @@ def test_pipeline_uses_layout_hints_from_output_dir(tmp_path):
     assert [block.id for block in hinted.pages[0].blocks] == ["b2", "b1"]
     assert hinted.pages[0].blocks[0].translatable is False
     assert (tmp_path / "page_content_hinted.json").exists()
+
+
+def test_tiny_text_over_foreground_image_is_not_translatable():
+    page = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[ImageElement("overlay", [500.0, 50.0, 612.0, 700.0], "overlay.png", 100, 100)],
+        decorations=[],
+        text_regions=[],
+    )
+    block = _content_doc().pages[0].blocks[0]
+    block = replace(
+        block,
+        source_text="X",
+        bbox=[590.0, 120.0, 604.0, 138.0],
+        role=SemanticRole.BODY_COLUMN,
+    )
+
+    assert _is_image_overlay_text_block(block, page) is True
 
 
 def test_pipeline_without_layout_hints_keeps_content(tmp_path):

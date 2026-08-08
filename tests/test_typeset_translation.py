@@ -14,6 +14,7 @@ import os
 import tempfile
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -23,6 +24,7 @@ from core.typeset_translation import (
     _parse_marked_translations,
     _source_text_hash,
     _translate_typeset_unit,
+    translate_overflow_targets,
     translate_typeset_content,
     save_translated_content,
 )
@@ -128,6 +130,18 @@ class MissingMarkerOnceTranslator(MockTranslator):
         if self.call_count == 0:
             self.call_count += 1
             return "translated text without block markers"
+        return super().translate_chunk(text, page_num=page_num, prev_context=prev_context, cache=cache)
+
+
+class TargetRecordingTranslator(MockTranslator):
+    def __init__(self):
+        super().__init__()
+        self.contexts = []
+        self.caches = []
+
+    def translate_chunk(self, text: str, page_num=None, prev_context="", cache=None):
+        self.contexts.append(prev_context)
+        self.caches.append(cache)
         return super().translate_chunk(text, page_num=page_num, prev_context=prev_context, cache=cache)
 
 
@@ -248,6 +262,11 @@ class TestTypesetTranslationProgress:
         progress = TypesetTranslationProgress(progress_file)
         with pytest.raises(ValueError):
             progress.mark_completed("block_1", "")
+
+    def test_damaged_placeholder_cannot_be_marked_completed(self, tmp_path):
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+        with pytest.raises(ValueError, match=r"\[damaged\]损坏占位符"):
+            progress.mark_completed("block_1", "[damaged]")
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +545,81 @@ class TestTranslateTypesetContent:
         assert translator.max_active > 1
         assert elapsed < 0.28
         assert all(block.translated_text for block in result.pages[0].blocks)
+
+
+class TestTranslateOverflowTargets:
+
+    @staticmethod
+    def _target(capacity="90px", template_signature="template-a"):
+        return {
+            "capacity": capacity,
+            "template_signature": template_signature,
+            "constraint_prompt": "译文必须在这个已测得容量内完整表达，不得省略。",
+        }
+
+    def test_retranslates_only_selected_block_and_preserves_other_text(self, tmp_path):
+        content = _make_content_doc([[
+            _make_block("b1", "First paragraph"),
+            _make_block("b2", "Second paragraph"),
+        ]])
+        content.pages[0].blocks[:] = [
+            replace(block, translated_text=f"旧译文{index}")
+            for index, block in enumerate(content.pages[0].blocks, start=1)
+        ]
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+        progress.mark_completed("b1", "旧译文一", "First paragraph")
+        progress.mark_completed("b2", "旧译文二", "Second paragraph")
+        translator = TargetRecordingTranslator()
+
+        repaired = translate_overflow_targets(
+            content, translator, progress, {}, {"b1": self._target()}
+        )
+
+        assert repaired.pages[0].blocks[0].translated_text == "翻译：First paragraph"
+        assert repaired.pages[0].blocks[1].translated_text == "旧译文2"
+        assert translator.call_count == 1
+        assert "Layout constraint" in translator.contexts[0]
+        assert translator.caches == [progress]
+
+    def test_target_cache_rejects_previous_capacity_or_template(self, tmp_path):
+        content = _make_content_doc([[_make_block("b1", "Paragraph")]])
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+        first = TargetRecordingTranslator()
+        translate_overflow_targets(content, first, progress, {}, {"b1": self._target()})
+
+        same_target = TargetRecordingTranslator()
+        cached = translate_overflow_targets(
+            content, same_target, progress, {}, {"b1": self._target()}
+        )
+        changed_target = TargetRecordingTranslator()
+        changed = translate_overflow_targets(
+            content,
+            changed_target,
+            progress,
+            {},
+            {"b1": self._target(capacity="60px", template_signature="template-b")},
+        )
+
+        assert cached.pages[0].blocks[0].translated_text == "翻译：Paragraph"
+        assert same_target.call_count == 0
+        assert changed.pages[0].blocks[0].translated_text == "翻译：Paragraph"
+        assert changed_target.call_count == 1
+        data = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+        assert len(data["targeted_translation_cache"]) == 2
+        assert len(data["targeted_translation_contexts"]) == 2
+
+    def test_target_requires_explicit_capacity_template_and_instruction(self, tmp_path):
+        content = _make_content_doc([[_make_block("b1", "Paragraph")]])
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+
+        with pytest.raises(ValueError, match="capacity"):
+            translate_overflow_targets(
+                content,
+                MockTranslator(),
+                progress,
+                {},
+                {"b1": {"template_signature": "t", "constraint_prompt": "short"}},
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -19,13 +19,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from core.constants import TRANSLATION_FAILURE_PREFIX
 from core.translation_validation import (
+    contains_damaged_placeholder,
     contains_elision_placeholder,
     contains_japanese_kana,
     contains_prompt_leak,
+    ensure_no_damaged_placeholder,
     ensure_no_elision_placeholder,
     ensure_no_japanese_kana,
     ensure_no_prompt_leak,
@@ -49,6 +51,7 @@ def _is_unusable_translation(text: str, source_text: str | None = None) -> bool:
     """Stored translations from an older run may predate current validation."""
     return (
         contains_prompt_leak(text)
+        or contains_damaged_placeholder(text)
         or contains_elision_placeholder(text)
         or contains_japanese_kana(text)
         or "\u00ad" in text
@@ -72,6 +75,11 @@ class TypesetTranslationProgress:
         self.source_hashes: dict[str, str] = {}
         self.failed_blocks: dict[str, str] = {}
         self.translation_cache: dict[str, str] = {}
+        # Targeted overflow repairs must never reuse a normal translation merely
+        # because the source text is the same.  These entries are keyed by the
+        # caller-supplied layout target signature as well as the source text.
+        self.targeted_translation_cache: dict[str, str] = {}
+        self.targeted_translation_contexts: dict[str, str] = {}
         self.completed_phases: list[str] = []
         self.last_translated_page: int = -1
         self._lock = threading.RLock()
@@ -95,6 +103,12 @@ class TypesetTranslationProgress:
         self.source_hashes = dict(data.get("source_hashes") or {})
         self.failed_blocks = dict(data.get("failed_blocks") or {})
         self.translation_cache = dict(data.get("translation_cache") or {})
+        self.targeted_translation_cache = dict(
+            data.get("targeted_translation_cache") or {}
+        )
+        self.targeted_translation_contexts = dict(
+            data.get("targeted_translation_contexts") or {}
+        )
         self.completed_phases = list(data.get("completed_phases") or [])
         self.last_translated_page = int(data.get("last_translated_page", -1))
 
@@ -108,6 +122,8 @@ class TypesetTranslationProgress:
                 "source_hashes": self.source_hashes,
                 "failed_blocks": self.failed_blocks,
                 "translation_cache": self.translation_cache,
+                "targeted_translation_cache": self.targeted_translation_cache,
+                "targeted_translation_contexts": self.targeted_translation_contexts,
                 "completed_phases": self.completed_phases,
                 "last_translated_page": self.last_translated_page,
             }
@@ -173,6 +189,7 @@ class TypesetTranslationProgress:
         translation = _translation_source_text(translation)
         if cache_key and translation:
             ensure_no_prompt_leak(translation, "缓存译文")
+            ensure_no_damaged_placeholder(translation, "缓存译文")
             ensure_no_elision_placeholder(translation, "缓存译文")
             ensure_no_japanese_kana(translation, "缓存译文")
             if source_text is not None:
@@ -191,6 +208,52 @@ class TypesetTranslationProgress:
             if removed is not None:
                 self.save()
 
+    def get_targeted_translation(
+        self,
+        block_id: str,
+        source_text: str,
+        target_signature: str,
+    ) -> str:
+        """Return a cached overflow repair only for the exact layout target."""
+        cache_key = _targeted_translation_cache_key(
+            block_id, source_text, target_signature
+        )
+        with self._lock:
+            if self.targeted_translation_contexts.get(cache_key) != target_signature:
+                return ""
+            translation = self.targeted_translation_cache.get(cache_key, "")
+        if _is_unusable_translation(translation, source_text):
+            return ""
+        return translation
+
+    def mark_targeted_translation(
+        self,
+        block_id: str,
+        source_text: str,
+        target_signature: str,
+        translation: str,
+    ) -> None:
+        """Persist a repair result under its exact layout target signature."""
+        if not block_id:
+            raise ValueError("block_id 不能为空")
+        if not target_signature:
+            raise ValueError("目标签名不能为空")
+        translation = _translation_source_text(translation)
+        if not translation:
+            raise ValueError(f"译文为空：{block_id}")
+        ensure_no_prompt_leak(translation)
+        ensure_no_damaged_placeholder(translation)
+        ensure_no_elision_placeholder(translation)
+        ensure_no_japanese_kana(translation)
+        ensure_no_untranslated_leading_labels(source_text, translation)
+        cache_key = _targeted_translation_cache_key(
+            block_id, source_text, target_signature
+        )
+        with self._lock:
+            self.targeted_translation_cache[cache_key] = translation
+            self.targeted_translation_contexts[cache_key] = target_signature
+            self.save()
+
     # -- Mutation methods --
 
     def mark_completed(
@@ -205,6 +268,7 @@ class TypesetTranslationProgress:
         if not translation:
             raise ValueError(f"译文为空：{block_id}")
         ensure_no_prompt_leak(translation)
+        ensure_no_damaged_placeholder(translation)
         ensure_no_elision_placeholder(translation)
         ensure_no_japanese_kana(translation)
         if source_text is not None:
@@ -258,6 +322,48 @@ class TypesetTranslationProgress:
 def _source_text_hash(text: str) -> str:
     """SHA-256 hash of source text for translation cache lookup."""
     return hashlib.sha256(_translation_source_text(text).encode("utf-8")).hexdigest()
+
+
+def _overflow_target_signature(target_metadata: Mapping[str, object]) -> str:
+    """Create a deterministic signature for a caller-defined layout target."""
+    _validate_overflow_target_metadata(target_metadata)
+    encoded = json.dumps(
+        dict(target_metadata), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _targeted_translation_cache_key(
+    block_id: str,
+    source_text: str,
+    target_signature: str,
+) -> str:
+    payload = {
+        "block_id": block_id,
+        "source_hash": _source_text_hash(source_text),
+        "target_signature": target_signature,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _validate_overflow_target_metadata(target_metadata: Mapping[str, object]) -> None:
+    """Require explicit constraints instead of inventing a text-length budget."""
+    if not isinstance(target_metadata, Mapping):
+        raise ValueError("溢出目标元数据必须是映射")
+    required = ("capacity", "template_signature", "constraint_prompt")
+    missing = [key for key in required if not str(target_metadata.get(key, "")).strip()]
+    if missing:
+        raise ValueError("溢出目标元数据缺少：" + "、".join(missing))
+
+
+def _overflow_constraint_context(target_metadata: Mapping[str, object]) -> str:
+    """Supply the caller's layout instruction as non-translated model context."""
+    _validate_overflow_target_metadata(target_metadata)
+    return (
+        "[Layout constraint for this block - DO NOT translate]\n"
+        + str(target_metadata["constraint_prompt"]).strip()
+    )
 
 
 def _translation_source_text(text: str) -> str:
@@ -343,6 +449,7 @@ def _parse_marked_translations(
     for block_id, translated in parsed.items():
         _ensure_valid_emphasis_markup(translated, f"译文块 {block_id}")
         ensure_no_prompt_leak(translated, f"译文块 {block_id}")
+        ensure_no_damaged_placeholder(translated, f"译文块 {block_id}")
         ensure_no_elision_placeholder(translated, f"译文块 {block_id}")
         ensure_no_japanese_kana(translated, f"译文块 {block_id}")
         if source_text_by_id is not None:
@@ -553,6 +660,8 @@ def _translate_typeset_unit(
     page_index: int,
     pending_blocks: list[ContentBlock],
     preserve_emphasis: bool = False,
+    constraint_context: str = "",
+    cache=None,
 ) -> dict[str, str]:
     source_text = _build_marked_text(pending_blocks, preserve_emphasis=preserve_emphasis)
     pending_ids = {block.id for block in pending_blocks}
@@ -562,8 +671,8 @@ def _translate_typeset_unit(
             translator,
             source_text,
             page_num=page_index,
-            prev_context="",
-            cache=None,
+            prev_context=constraint_context,
+            cache=cache,
         )
         if translation and translation.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
             last_error = RuntimeError(translation)
@@ -582,6 +691,86 @@ def _translate_typeset_unit(
     if last_error is not None:
         raise last_error
     raise RuntimeError(f"{TRANSLATION_FAILURE_PREFIX} empty translation]")
+
+
+def translate_overflow_targets(
+    content: PageContentDocument,
+    translator,
+    progress: TypesetTranslationProgress,
+    glossary: dict,
+    target_metadata_by_block: Mapping[str, Mapping[str, object]],
+    progress_callback: Callable[[int, int, str, bool], None] | None = None,
+    preserve_emphasis: bool = False,
+) -> PageContentDocument:
+    """Retranslate only caller-selected overflowing blocks.
+
+    Every selected block needs explicit ``capacity``, ``template_signature``,
+    and ``constraint_prompt`` metadata.  The metadata is signed and stored with
+    the target cache, so changing a target cannot reuse an earlier long form.
+    Unselected blocks are returned exactly as supplied.
+    """
+    if not target_metadata_by_block:
+        raise ValueError("至少指定一个溢出目标")
+    if glossary:
+        translator.set_glossary(glossary)
+
+    blocks_by_id = {
+        block.id: (page.page_index, block)
+        for page in content.pages
+        for block in page.blocks
+    }
+    unknown = sorted(set(target_metadata_by_block) - set(blocks_by_id))
+    if unknown:
+        raise ValueError("溢出目标不存在：" + "、".join(unknown[:10]))
+
+    replacements: dict[str, str] = {}
+    selected = [
+        (page_index, block, target_metadata_by_block[block.id])
+        for page_index, block in blocks_by_id.values()
+        if block.id in target_metadata_by_block
+    ]
+    invalid = [block.id for _, block, _ in selected if not block.translatable or not block.source_text.strip()]
+    if invalid:
+        raise ValueError("溢出目标不可翻译：" + "、".join(sorted(invalid)[:10]))
+
+    total = len(selected)
+    for done, (page_index, block, metadata) in enumerate(selected, start=1):
+        target_signature = _overflow_target_signature(metadata)
+        cached = progress.get_targeted_translation(
+            block.id, block.source_text, target_signature
+        )
+        if cached:
+            progress.mark_completed(block.id, cached, block.source_text)
+            replacements[block.id] = cached
+            if progress_callback:
+                progress_callback(done, total, f"{block.id} (target cached)", True)
+            continue
+
+        try:
+            parsed = _translate_typeset_unit(
+                translator,
+                page_index,
+                [block],
+                preserve_emphasis=preserve_emphasis,
+                constraint_context=_overflow_constraint_context(metadata),
+                cache=progress,
+            )
+            translation = parsed[block.id]
+            progress.mark_targeted_translation(
+                block.id, block.source_text, target_signature, translation
+            )
+            progress.mark_completed(block.id, translation, block.source_text)
+            replacements[block.id] = translation
+        except Exception as exc:
+            message = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+            progress.mark_failed(block.id, message)
+            if progress_callback:
+                progress_callback(done, total, block.id, False)
+            raise RuntimeError(f"溢出区域翻译失败：{block.id}") from exc
+        if progress_callback:
+            progress_callback(done, total, block.id, True)
+
+    return _replace_translations(content, replacements)
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -638,6 +827,26 @@ def _build_translated_document(
         pages=translated_pages,
         source_sha256=content.source_sha256,
     )
+
+
+def _replace_translations(
+    content: PageContentDocument,
+    replacements: Mapping[str, str],
+) -> PageContentDocument:
+    """Return a copy with only the requested block translations changed."""
+    translated_pages = []
+    for page in content.pages:
+        translated_pages.append(
+            replace(
+                page,
+                blocks=[
+                    replace(block, translated_text=replacements[block.id])
+                    if block.id in replacements else block
+                    for block in page.blocks
+                ],
+            )
+        )
+    return replace(content, pages=translated_pages)
 
 
 # ---------------------------------------------------------------------------

@@ -310,19 +310,33 @@ function typesetFitPagesToViewport() {
 function typesetElementOverflows(el) {
   return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
 }
+function typesetPageBoundaryOverflow(el) {
+  const page = el.closest('.typeset-page');
+  if (!page) return {left: 0, top: 0, right: 0, bottom: 0};
+  const pageRect = page.getBoundingClientRect();
+  const rect = el.getBoundingClientRect();
+  return {
+    left: Math.max(0, pageRect.left - rect.left),
+    top: Math.max(0, pageRect.top - rect.top),
+    right: Math.max(0, rect.right - pageRect.right),
+    bottom: Math.max(0, rect.bottom - pageRect.bottom),
+  };
+}
 function typesetCollectLayoutIssues() {
   const issues = [];
-  const checked = document.querySelectorAll('[data-fit="text"], [data-fit="reflow"], .typeset-line-track-flow');
+  const checked = document.querySelectorAll('[data-fit="text"], [data-fit="reflow"], [data-fit="table"], .typeset-line-track-flow');
   for (const el of checked) {
+    const boundary = typesetPageBoundaryOverflow(el);
     const overflow = el.dataset.overflow === 'true' || (
       !el.classList.contains('typeset-line-track-flow') && typesetElementOverflows(el)
-    );
+    ) || Object.values(boundary).some((value) => value > 4);
     if (!overflow) continue;
     const page = el.closest('.typeset-page');
     issues.push({
       page: page ? page.dataset.page : '',
       kind: el.className || el.tagName,
-      id: el.dataset.regionId || el.dataset.flowBlocks || el.dataset.tableBlock || el.dataset.column || ''
+      id: el.dataset.regionId || el.dataset.flowBlocks || el.dataset.tableBlock || el.dataset.column || '',
+      target: el.dataset.blockId || el.dataset.regionId || el.dataset.flowBlocks || el.dataset.tableBlock || el.dataset.column || '',
     });
   }
   return issues;
@@ -764,6 +778,14 @@ body {{
     margin-bottom: 0.25em;
     text-indent: 0;
 }}
+.typeset-rotated-flow.typeset-rotated-compact {{
+    font-size: {_pt_to_px(8.25):.3f}px;
+    line-height: 1.15;
+}}
+.typeset-rotated-flow.typeset-rotated-compact .typeset-reflow-body {{
+    line-height: 1.15;
+    margin-bottom: 0.08em;
+}}
 .typeset-timeline-intro {{
     position: absolute;
     overflow: hidden;
@@ -837,6 +859,17 @@ body {{
     border-bottom: 1px solid rgba(34, 38, 40, 0.25);
     vertical-align: top;
     overflow-wrap: anywhere;
+}}
+.typeset-structured-table.typeset-table-compact {{
+    font-size: {_pt_to_px(7.5):.3f}px;
+    line-height: 1.05;
+}}
+.typeset-structured-table.typeset-table-compact th {{
+    padding: {_pt_to_px(1.4):.3f}px {_pt_to_px(2.0):.3f}px;
+    line-height: 1.0;
+}}
+.typeset-structured-table.typeset-table-compact td {{
+    padding: {_pt_to_px(1.0):.3f}px {_pt_to_px(2.0):.3f}px;
 }}
 .typeset-structured-table tbody tr:nth-child(even):not(.typeset-table-note) td {{
     background: rgba(183, 188, 190, 0.48);
@@ -1390,7 +1423,30 @@ body {{
         ]
         template = getattr(self, "_current_template", None)
         is_full_width_hero = bool(template and template.id == "full_width_hero")
-        if self._is_timeline_page(source_page_blocks):
+        table_groups: list[list[ContentBlock]] = []
+        current_table_group: list[ContentBlock] = []
+        for block in source_page_blocks:
+            if block.role == SemanticRole.TABLE:
+                current_table_group.append(block)
+                continue
+            if current_table_group:
+                table_groups.append(current_table_group)
+                current_table_group = []
+        if current_table_group:
+            table_groups.append(current_table_group)
+        likely_events_groups = self._likely_events_table_groups(source_page_blocks, region_map)
+        table_groups.extend(likely_events_groups)
+        likely_events_keys = {
+            tuple(block.id for block in group)
+            for group in likely_events_groups
+        }
+        table_block_ids = {
+            block.id
+            for group in table_groups
+            for block in group
+        }
+
+        if not table_block_ids and self._is_timeline_page(source_page_blocks):
             timeline_blocks: list[ContentBlock] = []
             for block in source_page_blocks:
                 bbox = block.bbox or region_map.get(block.region_id)
@@ -1406,17 +1462,6 @@ body {{
                 self._render_timeline_page(timeline_blocks, region_map, page_structure),
                 *fixed_parts,
             ])
-        table_groups: list[list[ContentBlock]] = []
-        current_table_group: list[ContentBlock] = []
-        for block in source_page_blocks:
-            if block.role == SemanticRole.TABLE:
-                current_table_group.append(block)
-                continue
-            if current_table_group:
-                table_groups.append(current_table_group)
-                current_table_group = []
-        if current_table_group:
-            table_groups.append(current_table_group)
         table_blocks = [block for group in table_groups for block in group]
         if self._is_dense_line_grid_page(page_structure) and not table_blocks:
             parts = []
@@ -1435,12 +1480,18 @@ body {{
                 )
             return "\n".join(parts)
         page_blocks = self._dedupe_content_blocks(
-            [block for block in source_page_blocks if block.role != SemanticRole.TABLE],
+            [block for block in source_page_blocks if block.id not in table_block_ids],
             region_map,
         ) + table_blocks
         for table_group in table_groups:
             table_bbox = _union_block_bboxes(table_group, region_map)
-            fixed_parts.append(self._render_structured_table(table_group, page_structure))
+            fixed_parts.append(
+                self._render_structured_table(
+                    table_group,
+                    page_structure,
+                    compact=tuple(block.id for block in table_group) in likely_events_keys,
+                )
+            )
             fixed_obstacles.append(table_bbox)
         rotated_flow_count = sum(
             1
@@ -1457,6 +1508,8 @@ body {{
         for block in page_blocks:
             bbox = block.bbox or region_map.get(block.region_id)
             if bbox is None:
+                continue
+            if block.id in table_block_ids:
                 continue
             if self._is_running_header(block):
                 fixed_parts.append(self._render_running_header(block, page_structure, bbox))
@@ -1486,9 +1539,10 @@ body {{
                 fixed_obstacles.append(bbox)
                 continue
             if self._should_position_light_foreground_block(block, bbox, page_structure):
-                fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
-                fixed_obstacles.append(bbox)
-                continue
+                if not self._is_same_region_reflow_block(block, page_blocks, region_map):
+                    fixed_parts.append(self._render_source_positioned_block(block, page_structure, bbox))
+                    fixed_obstacles.append(bbox)
+                    continue
             if abs(self._region_angle(block.region_id, page_structure)) >= 1.0:
                 if tilted_card_count >= 3 and self._is_tilted_card_block(block, page_structure):
                     rotated_blocks.append(block)
@@ -1518,6 +1572,21 @@ body {{
                 block.order,
             ),
         )
+        flow_items = self._build_reflow_items(content_blocks)
+        if not flow_items:
+            return "\n".join(fixed_parts)
+        content_blocks = [block for block, _ in flow_items]
+        text_by_id = {block.id: text for block, text in flow_items}
+        same_region_parts, content_blocks, same_region_bboxes = self._render_same_region_flows(
+            content_blocks,
+            text_by_id,
+            region_map,
+            page_structure,
+        )
+        fixed_parts.extend(same_region_parts)
+        fixed_obstacles.extend(same_region_bboxes)
+        if not content_blocks:
+            return "\n".join(fixed_parts)
         if self._is_stacked_card_page(content_blocks, region_map, page_structure):
             return "\n".join([
                 *[
@@ -1542,11 +1611,6 @@ body {{
                 ],
                 *fixed_parts,
             ])
-        flow_items = self._build_reflow_items(content_blocks)
-        if not flow_items:
-            return "\n".join(fixed_parts)
-        content_blocks = [block for block, _ in flow_items]
-        text_by_id = {block.id: text for block, text in flow_items}
 
         source_region_html = self._render_source_region_flows(
             page_content,
@@ -1818,6 +1882,80 @@ body {{
             return ""
         return "\n".join([*column_parts, *parts])
 
+    def _is_same_region_reflow_block(
+        self,
+        block: ContentBlock,
+        page_blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> bool:
+        group = [
+            item
+            for item in page_blocks
+            if item.region_id == block.region_id and item.role == SemanticRole.BODY_COLUMN
+        ]
+        return self._is_same_region_reflow_group(group, region_map)
+
+    def _is_same_region_reflow_group(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> bool:
+        if len(blocks) < 3 or any(block.role != SemanticRole.BODY_COLUMN for block in blocks):
+            return False
+        boxes = [block.bbox or region_map[block.region_id] for block in blocks]
+        return max(box[3] for box in boxes) - min(box[1] for box in boxes) >= 24.0
+
+    def _render_same_region_flows(
+        self,
+        content_blocks: list[ContentBlock],
+        text_by_id: dict[str, str],
+        region_map: dict[str, list[float]],
+        page_structure: PageStructure,
+    ) -> tuple[list[str], list[ContentBlock], list[list[float]]]:
+        """Keep fragmented text inside one source region in one natural flow."""
+        groups: dict[str, list[ContentBlock]] = {}
+        for block in content_blocks:
+            if block.id in text_by_id:
+                groups.setdefault(block.region_id, []).append(block)
+
+        consumed: set[str] = set()
+        parts: list[str] = []
+        bboxes: list[list[float]] = []
+        for group in groups.values():
+            if not self._is_same_region_reflow_group(group, region_map):
+                continue
+            ordered = sorted(
+                group,
+                key=lambda block: (
+                    (block.bbox or region_map[block.region_id])[1],
+                    (block.bbox or region_map[block.region_id])[0],
+                    block.order,
+                ),
+            )
+            flow_bbox = _union_block_bboxes(ordered, region_map)
+            flow_text = " ".join(text_by_id[block.id] for block in ordered).strip()
+            inner = self._render_reflow_block(ordered[0], flow_text)
+            if not inner:
+                continue
+            x0, y0, x1, y1 = self._expanded_column_bbox(flow_bbox)
+            parts.append(
+                '<div class="typeset-region-flow typeset-same-region-flow" '
+                f'data-region-id="{html.escape(ordered[0].region_id)}" '
+                f'data-fit="reflow" '
+                f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
+                f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)};'
+                f'color:{html.escape(self._group_text_color(ordered))}">'
+                f"{inner}</div>"
+            )
+            bboxes.append([x0, y0, x1, y1])
+            consumed.update(block.id for block in ordered)
+
+        return (
+            parts,
+            [block for block in content_blocks if block.id not in consumed],
+            bboxes,
+        )
+
     def _split_column_at_obstacles(
         self,
         column_bbox: list[float],
@@ -1928,12 +2066,19 @@ body {{
                 self._render_rotated_reflow_block(block, text, index == 0)
                 for index, (block, text) in enumerate(self._build_reflow_items(ordered))
             )
+            text_color = self._group_text_color(ordered)
+            flow_class = "typeset-rotated-flow"
+            if (
+                text_color.lower() == "#ffffff"
+                or self._overlaps_foreground_image([x0, y0, x1, y1], page_structure)
+            ):
+                flow_class += " typeset-rotated-compact"
             rendered.append(
-                f'<div class="typeset-rotated-flow" '
+                f'<div class="{flow_class}" '
                 f'data-fit="reflow" '
                 f'style="left:{_px(left)};top:{_px(top)};'
                 f'width:{_px(width)};height:{_px(height)};'
-                f'color:{html.escape(self._group_text_color(ordered))};'
+                f'color:{html.escape(text_color)};'
                 f'transform-origin:0 0;transform:rotate({self._reflow_group_angle(ordered, angle):.3f}deg)">'
                 f"{inner}</div>"
             )
@@ -2020,6 +2165,105 @@ body {{
             len(self._timeline_date_lines(block.source_text or block.translated_text or ""))
             for block in blocks
         ) >= 5
+
+    def _likely_events_table_groups(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> list[list[ContentBlock]]:
+        """Find the four-column Likely Events tables from their source geometry."""
+        by_region: dict[str, list[ContentBlock]] = {}
+        for block in blocks:
+            if block.region_id in region_map:
+                by_region.setdefault(block.region_id, []).append(block)
+        region_groups = sorted(
+            by_region.values(),
+            key=lambda group: min((block.bbox or region_map[block.region_id])[1] for block in group),
+        )
+
+        tables: list[list[ContentBlock]] = []
+        index = 0
+        while index < len(region_groups):
+            header = self._table_data_blocks(region_groups[index])
+            if not self._is_likely_events_table_header(header, region_map):
+                index += 1
+                continue
+            header_centers = self._table_group_centers(header, region_map)
+            rows = [header]
+            cursor = index + 1
+            while cursor < len(region_groups):
+                row = self._table_data_blocks(region_groups[cursor])
+                if self._is_likely_events_table_header(row, region_map):
+                    break
+                if not self._matches_likely_events_table_row(row, header_centers, region_map):
+                    break
+                rows.append(row)
+                cursor += 1
+            if len(rows) >= 2:
+                tables.append([block for row in rows for block in row])
+                index = cursor
+            else:
+                index += 1
+        return tables
+
+    def _table_data_blocks(self, blocks: list[ContentBlock]) -> list[ContentBlock]:
+        """Exclude titles that share a PDF text region with a table row.
+
+        Page numbers at the bottom of the source page may be classified as
+        footers even though they are the second column of the last table rows;
+        keeping them here lets the structured-table mapper place them back in
+        the page column.
+        """
+        return [
+            block
+            for block in blocks
+            if block.role != SemanticRole.TITLE
+        ]
+
+    def _is_likely_events_table_header(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> bool:
+        if len(blocks) != 4:
+            return False
+        labels = [
+            _normalized_text(block.source_text).lower()
+            for block in sorted(blocks, key=lambda block: (block.bbox or region_map[block.region_id])[0])
+        ]
+        return labels == ["reaction", "page", "likeliestdate", "location"]
+
+    def _table_group_centers(
+        self,
+        blocks: list[ContentBlock],
+        region_map: dict[str, list[float]],
+    ) -> list[float]:
+        return [
+            ((block.bbox or region_map[block.region_id])[0] + (block.bbox or region_map[block.region_id])[2]) / 2
+            for block in sorted(blocks, key=lambda block: (block.bbox or region_map[block.region_id])[0])
+        ]
+
+    def _matches_likely_events_table_row(
+        self,
+        blocks: list[ContentBlock],
+        header_centers: list[float],
+        region_map: dict[str, list[float]],
+    ) -> bool:
+        if len(blocks) < 4 or len(header_centers) != 4:
+            return False
+        centers = self._table_group_centers(blocks, region_map)
+        if any(right - left < 4.0 for left, right in zip(centers, centers[1:])):
+            return False
+        assignments = [
+            min(range(len(header_centers)), key=lambda column: abs(center - header_centers[column]))
+            for center in centers
+        ]
+        if set(assignments) != set(range(len(header_centers))):
+            return False
+        return all(
+            abs(center - header_centers[column]) <= 100.0
+            for center, column in zip(centers, assignments)
+        )
 
     def _looks_like_timeline_event(self, block: ContentBlock) -> bool:
         return bool(self._timeline_date_lines(block.source_text or block.translated_text or ""))
@@ -2351,6 +2595,8 @@ body {{
         self,
         blocks: list[ContentBlock],
         page_structure: PageStructure,
+        *,
+        compact: bool = False,
     ) -> str:
         """Rebuild PDF-native table cells as one accessible HTML table."""
         region_map = {region.id: region.bbox for region in page_structure.text_regions}
@@ -2478,8 +2724,11 @@ body {{
             f"transform-origin:0 0;transform:rotate({angle:.3f}deg);"
             if abs(angle) >= 1.0 else ""
         )
+        table_class = "typeset-structured-table"
+        if compact:
+            table_class += " typeset-table-compact"
         return (
-            '<div class="typeset-structured-table" data-fit="table" '
+            f'<div class="{table_class}" data-fit="table" '
             f'style="left:{_pt_to_px_str(table_left - 2.0)};'
             f'top:{_pt_to_px_str(max(0.0, table_blocks_bbox[1] - 6.0))};'
             f'width:{_pt_to_px_str(table_right - table_left + 4.0)};{transform}">'
@@ -3592,6 +3841,8 @@ body {{
         return sizes[len(sizes) // 2]
 
     def _display_text_for_block(self, block: ContentBlock) -> str:
+        if block.layout_mode == "image_overlay_text":
+            return ""
         if block.translatable:
             text = (block.translated_text or "").strip()
         else:

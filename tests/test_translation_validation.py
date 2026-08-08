@@ -1,9 +1,11 @@
 import pytest
 
 from core.translation_validation import (
+    contains_damaged_placeholder,
     contains_elision_placeholder,
     contains_japanese_kana,
     contains_prompt_leak,
+    ensure_no_damaged_placeholder,
     ensure_no_elision_placeholder,
     ensure_no_japanese_kana,
     ensure_no_prompt_leak,
@@ -53,6 +55,20 @@ def test_detects_elision_placeholder_from_split_sentence():
     assert contains_elision_placeholder(text) is True
     with pytest.raises(ValueError, match="省略占位符"):
         ensure_no_elision_placeholder(text)
+
+
+@pytest.mark.parametrize("text", ["[damaged]", "[ DAMAGED ]", "原文[damaged]无法辨认"])
+def test_detects_damaged_placeholder_in_source_or_translation(text):
+    assert contains_damaged_placeholder(text) is True
+    with pytest.raises(ValueError, match=r"\[damaged\]损坏占位符"):
+        ensure_no_damaged_placeholder(text, "原文")
+
+
+def test_allows_normal_discussion_of_damage_without_placeholder():
+    text = "纸张受损，最后两个字无法辨认。"
+
+    assert contains_damaged_placeholder(text) is False
+    ensure_no_damaged_placeholder(text)
 
 
 @pytest.mark.parametrize("text", [

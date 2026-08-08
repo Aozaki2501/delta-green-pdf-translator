@@ -16,6 +16,7 @@ Dependencies:
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -49,6 +50,62 @@ def _report_file_name(path: str | None) -> str:
     if not path:
         return ""
     return Path(str(path)).name
+
+
+def _is_image_overlay_text_block(block, page_structure) -> bool:
+    """Identify tiny PDF text spans that are part of a foreground image.
+
+    This is intentionally narrow: only one- or two-character body spans that
+    materially overlap a non-background image are ignored. Normal prose and
+    decorative drop caps remain translatable.
+    """
+    if getattr(block, "layout_mode", "") == "image_overlay_text":
+        return True
+    if getattr(getattr(block, "role", None), "value", "") != "body_column":
+        return False
+    text = (getattr(block, "source_text", "") or "").strip()
+    bbox = getattr(block, "bbox", None)
+    if not text or len(text) > 2 or not bbox or len(bbox) != 4:
+        return False
+    block_area = _bbox_area(bbox)
+    page_area = max(1.0, float(page_structure.width) * float(page_structure.height))
+    if block_area <= 0:
+        return False
+    for image in getattr(page_structure, "images", []):
+        image_bbox = getattr(image, "bbox", None)
+        if not image_bbox or len(image_bbox) != 4:
+            continue
+        image_area = _bbox_area(image_bbox)
+        if image_area <= page_area * 0.02 or image_area >= page_area * 0.9:
+            continue
+        overlap = _bbox_intersection_area(bbox, image_bbox)
+        if overlap / block_area >= 0.35:
+            return True
+    return False
+
+
+def _bbox_area(bbox: list[float]) -> float:
+    if len(bbox) != 4:
+        return 0.0
+    return max(0.0, float(bbox[2]) - float(bbox[0])) * max(
+        0.0, float(bbox[3]) - float(bbox[1])
+    )
+
+
+def _bbox_intersection_area(first: list[float], second: list[float]) -> float:
+    if len(first) != 4 or len(second) != 4:
+        return 0.0
+    width = max(
+        0.0,
+        min(float(first[2]), float(second[2]))
+        - max(float(first[0]), float(second[0])),
+    )
+    height = max(
+        0.0,
+        min(float(first[3]), float(second[3]))
+        - max(float(first[1]), float(second[1])),
+    )
+    return width * height
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +178,12 @@ class TypesetPipeline:
         )
         self._report_path = (
             self.output_dir / f"{self._pdf_stem}_typeset_report.json"
+        )
+        self._layout_report_path = (
+            self.output_dir / f"{self._pdf_stem}_typeset_layout_issues.json"
+        )
+        self._layout_repair_path = (
+            self.output_dir / f"{self._pdf_stem}_typeset_layout_repair_targets.json"
         )
 
         # Pipeline state
@@ -314,6 +377,7 @@ class TypesetPipeline:
         # Check for existing page_content.json with valid schema
         existing = self._load_existing_content()
         if existing is not None:
+            existing = self._normalize_image_overlay_blocks(existing, structure)
             logger.info("Phase B: 复用已有 page_content.json")
             return existing
 
@@ -326,6 +390,8 @@ class TypesetPipeline:
             accent_heading_colors=self.config.accent_heading_colors,
         ) as analyzer:
             content = analyzer.analyze_document(structure)
+
+        content = self._normalize_image_overlay_blocks(content, structure)
 
         # Save to file
         self._page_content_path.write_text(
@@ -432,6 +498,52 @@ class TypesetPipeline:
         self._mark_phase_completed("C")
         return translated
 
+    def repair_overflow_translations(
+        self,
+        target_metadata_by_block: dict[str, dict],
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> PageContentDocument:
+        """Retranslate selected overflow blocks without rerunning phases A–C.
+
+        ``target_metadata_by_block`` maps a selected block ID to explicit
+        ``capacity``, ``template_signature``, and ``constraint_prompt`` values.
+        The existing translated document is the source of all unselected text.
+        """
+        from core.typeset_translation import (
+            TypesetTranslationProgress,
+            save_translated_content,
+            translate_overflow_targets,
+        )
+
+        existing = self._load_existing_translated_content(allow_layout_hints=True)
+        if existing is None:
+            raise RuntimeError("没有可复用的完整图文重绘译文，不能只修复溢出区域")
+
+        progress = TypesetTranslationProgress(
+            str(self._progress_path),
+            context_signature=self._translation_context_signature(),
+        )
+
+        def repair_callback(done: int, total: int, _unit_id: str, success: bool):
+            if progress_callback:
+                progress_callback("translation", done, total)
+            if not success:
+                self._errors.append(f"溢出区域翻译失败：{_unit_id}")
+
+        repaired = translate_overflow_targets(
+            content=existing,
+            translator=self.translator,
+            progress=progress,
+            glossary=self.glossary,
+            target_metadata_by_block=target_metadata_by_block,
+            progress_callback=repair_callback,
+            preserve_emphasis=self.config.profile_id == "kult",
+        )
+        save_translated_content(repaired, str(self._page_content_translated_path))
+        self._write_translation_context()
+        self._mark_phase_completed("C")
+        return repaired
+
     def run_phase_d(
         self,
         structure: PageStructureDocument,
@@ -466,7 +578,12 @@ class TypesetPipeline:
         self._html_path.write_text(html_content, encoding="utf-8")
         from exporters.typeset_pdf import TypesetPDFExporter
 
-        TypesetPDFExporter().validate_html_layout(str(self._html_path))
+        TypesetPDFExporter().validate_html_layout(
+            str(self._html_path),
+            report_path=str(self._layout_report_path),
+            repair_manifest_path=str(self._layout_repair_path),
+            profile_id=self.config.profile_id,
+        )
         self._mark_phase_completed("D")
         return str(self._html_path)
 
@@ -617,12 +734,59 @@ class TypesetPipeline:
             logger.warning(f"page_content.json 加载失败：{exc}")
             return None
 
-    def _load_existing_translated_content(self) -> PageContentDocument | None:
+    def _normalize_image_overlay_blocks(
+        self,
+        content: PageContentDocument,
+        structure: PageStructureDocument,
+    ) -> PageContentDocument:
+        """Exclude tiny text extracted from a foreground image overlay.
+
+        A PDF may expose a checkbox letter or a form fragment as a text span
+        even though the visible source is an image.  Such spans must stay in
+        the authoritative visual layer, not become translated blocks.
+        """
+        structure_by_page = {page.page_index: page for page in structure.pages}
+        changed = False
+        pages = []
+        for page in content.pages:
+            page_structure = structure_by_page.get(page.page_index)
+            if page_structure is None:
+                pages.append(page)
+                continue
+            blocks = []
+            for block in page.blocks:
+                if not _is_image_overlay_text_block(block, page_structure):
+                    blocks.append(block)
+                    continue
+                changed = True
+                blocks.append(
+                    replace(
+                        block,
+                        translated_text=None,
+                        translatable=False,
+                        layout_mode="image_overlay_text",
+                    )
+                )
+            pages.append(replace(page, blocks=blocks))
+        if not changed:
+            return content
+        normalized = replace(content, pages=pages)
+        self._page_content_path.write_text(normalized.to_json(), encoding="utf-8")
+        if self._page_content_translated_path.exists():
+            self._page_content_translated_path.write_text(
+                normalized.to_json(), encoding="utf-8"
+            )
+        return normalized
+
+    def _load_existing_translated_content(
+        self,
+        allow_layout_hints: bool = False,
+    ) -> PageContentDocument | None:
         """Load existing page_content_translated.json if valid.
 
         Only reuses if all translatable blocks have translations.
         """
-        if self._resolve_layout_hints_path() is not None:
+        if not allow_layout_hints and self._resolve_layout_hints_path() is not None:
             return None
         if not self._page_content_translated_path.exists() or not self._has_current_translation_context():
             return None
@@ -633,12 +797,24 @@ class TypesetPipeline:
                 return None
             if not self._matches_current_source(doc.source_pdf, doc.source_sha256):
                 return None
+            structure = self._load_existing_structure()
+            if structure is not None:
+                doc = self._normalize_image_overlay_blocks(doc, structure)
             # Check if all translatable blocks have translations
+            from core.translation_validation import contains_damaged_placeholder
+
             for page in doc.pages:
                 for block in page.blocks:
                     if block.translatable and not block.translated_text:
                         # Incomplete translation, need to re-run
                         return None
+                    if block.translatable and contains_damaged_placeholder(
+                        block.translated_text or ""
+                    ):
+                        raise RuntimeError(
+                            f"第 {page.page_index + 1} 页内容块 {block.id} 含 [damaged] 源文损坏占位符；"
+                            "已保留现有译文，需修复该源块后定向重译，不能整本重翻。"
+                        )
             return doc
         except (json.JSONDecodeError, ValueError, KeyError):
             return None
@@ -910,6 +1086,12 @@ class TypesetPipeline:
                 getattr(stats, "translation_cache_hits", 0) or 0
             ),
             cost_usd=getattr(stats, "cost_usd", None),
+            layout_report_path=str(self._layout_report_path)
+            if self._layout_report_path.exists()
+            else None,
+            layout_repair_path=str(self._layout_repair_path)
+            if self._layout_repair_path.exists()
+            else None,
         )
 
     def _write_report(self, result: TypesetResult) -> None:
@@ -924,6 +1106,8 @@ class TypesetPipeline:
             "pdf_output": _report_file_name(result.pdf_path),
             "html_output": _report_file_name(result.html_path),
             "reading_html_output": _report_file_name(result.reading_html_path),
+            "layout_report": _report_file_name(result.layout_report_path),
+            "layout_repair": _report_file_name(result.layout_repair_path),
             "errors": result.export_errors,
             "usage": {
                 "input_tokens": result.input_tokens,

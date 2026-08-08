@@ -106,6 +106,7 @@ def ensure_no_japanese_kana(text: str, label: str = "译文") -> None:
 _ELISION_PLACEHOLDER = re.compile(
     r"[\[\(（【]\s*(?:\.{2,}|。{2,}|…+|省略[^\]\)）】]*)\s*[\]\)）】]"
 )
+_DAMAGED_PLACEHOLDER = re.compile(r"\[\s*damaged\s*\]", re.IGNORECASE)
 
 # These are the only all-caps labels the translator is explicitly told to keep
 # in English. Other labels introduce prose and must be translated rather than
@@ -126,6 +127,17 @@ def ensure_no_elision_placeholder(text: str, label: str = "译文") -> None:
     """Raise when translated text elides content it failed to reconstruct."""
     if contains_elision_placeholder(text):
         raise ValueError(f"{label}包含省略占位符，原文可能被切断")
+
+
+def contains_damaged_placeholder(text: str) -> bool:
+    """Return True when extraction or translation uses the ``[damaged]`` marker."""
+    return bool(_DAMAGED_PLACEHOLDER.search(str(text or "")))
+
+
+def ensure_no_damaged_placeholder(text: str, label: str = "译文") -> None:
+    """Reject unresolved ``[damaged]`` text instead of accepting it as content."""
+    if contains_damaged_placeholder(text):
+        raise ValueError(f"{label}包含[damaged]损坏占位符，不能视为完成翻译")
 
 
 def untranslated_leading_labels(source: str, translation: str) -> tuple[str, ...]:

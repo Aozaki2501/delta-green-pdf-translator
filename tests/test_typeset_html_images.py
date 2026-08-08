@@ -754,6 +754,121 @@ def test_mixed_light_source_colors_prefer_readable_light_text():
     assert rebuilder._block_text_color(block) == "#ffffff"
 
 
+def test_likely_events_table_routes_before_timeline_detection():
+    rebuilder = TypesetHTMLRebuilder()
+    regions = []
+    blocks = []
+    labels = ["Reaction", "Page", "Likeliest Date", "Location"]
+    x_positions = [50.0, 180.0, 250.0, 360.0]
+    for row in range(6):
+        y0 = 100.0 + row * 28.0
+        region_id = f"p0001_r{row + 1:04d}"
+        row_blocks = []
+        for column, x0 in enumerate(x_positions):
+            source = labels[column] if row == 0 else (
+                f"Event {row}" if column == 0 else "12 JUN 2022" if column == 2 else f"Value {row}"
+            )
+            translated = "反应" if row == 0 and column == 0 else "2022年6月12日" if column == 2 else f"内容{row}{column}"
+            block = ContentBlock(
+                id=f"{region_id}_b{column + 1:04d}",
+                region_id=region_id,
+                role=SemanticRole.BODY_COLUMN,
+                runs=[StyledTextRun(source, 9.0, False, False, "#000000")],
+                source_text=source,
+                translated_text=translated,
+                translatable=True,
+                bbox=[x0, y0, x0 + 70.0, y0 + 14.0],
+            )
+            row_blocks.append(block)
+            blocks.append(block)
+        regions.append(TextRegionBBox(region_id, [50.0, y0, 450.0, y0 + 14.0], [block.id for block in row_blocks]))
+    structure = PageStructure(0, 612.0, 792.0, BackgroundLayer(), [], [], regions)
+    content = PageContent(0, PageType.SINGLE, [], blocks)
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert "typeset-structured-table" in html
+    assert "typeset-timeline-flow" not in html
+    assert 'data-block-id="p0001_r0001_b0001"' not in html
+
+
+def test_fragmented_foreground_region_uses_one_natural_flow():
+    rebuilder = TypesetHTMLRebuilder()
+    region_id = "p0001_r0001"
+    blocks = [
+        ContentBlock(
+            id=f"{region_id}_b{index:04d}",
+            region_id=region_id,
+            role=SemanticRole.BODY_COLUMN,
+            runs=[StyledTextRun(f"Card body {index}", 9.0, False, False, "#ffffff")],
+            source_text=f"Card body {index}",
+            translated_text=f"卡片正文{index}",
+            translatable=True,
+            bbox=[330.0, 220.0 + index * 16.0, 550.0, 234.0 + index * 16.0],
+        )
+        for index in range(3)
+    ]
+    structure = PageStructure(
+        0, 612.0, 792.0, BackgroundLayer(),
+        [ImageElement("p0001_img0001", [314.0, 210.0, 570.0, 300.0], "card.png", 512, 180)],
+        [],
+        [TextRegionBBox(region_id, [330.0, 220.0, 550.0, 270.0], [block.id for block in blocks])],
+    )
+    content = PageContent(0, PageType.SINGLE, [], blocks)
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert html.count("typeset-same-region-flow") == 1
+    assert "typeset-positioned-block" not in html
+    assert "color:#ffffff" in html
+
+
+def test_fragmented_card_region_bypasses_centered_fixed_blocks():
+    rebuilder = TypesetHTMLRebuilder()
+    card_region = "p0001_r0001"
+    card_blocks = [
+        ContentBlock(
+            id=f"{card_region}_b{index:04d}",
+            region_id=card_region,
+            role=SemanticRole.BODY_COLUMN,
+            runs=[StyledTextRun(f"Stat line {index}", 9.0, False, False, "#000000")],
+            source_text=f"Stat line {index}",
+            translated_text=f"属性文字{index}",
+            translatable=True,
+            bbox=[80.0, 330.0 + index * 18.0, 300.0, 344.0 + index * 18.0],
+        )
+        for index in range(3)
+    ]
+    other_blocks = [
+        ContentBlock(
+            id=f"p0001_r{index + 2:04d}_b0001",
+            region_id=f"p0001_r{index + 2:04d}",
+            role=SemanticRole.BODY_COLUMN,
+            runs=[StyledTextRun("Body", 9.0, False, False, "#000000")],
+            source_text="Body",
+            translated_text=f"其他正文{index}",
+            translatable=True,
+            bbox=[80.0, 80.0 + index * 60.0, 300.0, 120.0 + index * 60.0],
+        )
+        for index in range(4)
+    ]
+    blocks = [*card_blocks, *other_blocks]
+    regions = [
+        TextRegionBBox(card_region, [80.0, 330.0, 300.0, 390.0], [block.id for block in card_blocks]),
+        *[
+            TextRegionBBox(block.region_id, block.bbox, [block.id])
+            for block in other_blocks
+        ],
+    ]
+    structure = PageStructure(0, 612.0, 792.0, BackgroundLayer(), [], [], regions)
+    content = PageContent(0, PageType.SINGLE, [], blocks)
+
+    html = rebuilder.render_text_layer(content, structure)
+
+    assert "typeset-same-region-flow" in html
+    assert f'data-region-id="{card_region}" data-fit="text"' not in html
+
+
 def test_rebuild_splits_full_page_images_under_decorations():
     rebuilder = TypesetHTMLRebuilder()
     structure = PageStructure(

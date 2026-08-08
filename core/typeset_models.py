@@ -396,6 +396,8 @@ class TypesetResult:
     failed_calls: int = 0
     translation_cache_hits: int = 0
     cost_usd: float | None = None
+    layout_report_path: str | None = None
+    layout_repair_path: str | None = None
 
 
 # ===========================================================================

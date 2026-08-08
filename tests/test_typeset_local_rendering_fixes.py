@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from core.typeset_models import (
@@ -14,7 +16,7 @@ from core.typeset_models import (
     TextRegionBBox,
 )
 from exporters.typeset_html import TypesetHTMLRebuilder
-from exporters.typeset_pdf import TypesetPDFExporter
+from exporters.typeset_pdf import TypesetPDFExporter, write_layout_report
 
 
 def test_long_translated_body_over_image_is_upright_without_mask():
@@ -268,6 +270,50 @@ def test_pdf_exporter_raises_on_layout_issues():
         exporter._raise_for_layout_issues([
             {"page": "2", "kind": "typeset-positioned-block", "id": "p0002_r0001"}
         ])
+
+
+def test_pdf_exporter_reports_every_layout_issue_with_overflow_dimensions():
+    exporter = TypesetPDFExporter()
+    issues = [
+        {
+            "page": "15",
+            "kind": "typeset-positioned-block",
+            "id": "p0015_r0001",
+            "target": "p0015_r0001_b0001",
+            "block_id": "p0015_r0001_b0001",
+            "region_id": "p0015_r0001",
+            "client_width": 14,
+            "client_height": 10,
+            "scroll_width": 40,
+            "scroll_height": 20,
+            "overflow_x": 26,
+            "overflow_y": 10,
+        },
+        {"page": "2", "kind": "typeset-region-flow", "id": "p0002_r0002"},
+    ]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        exporter._raise_for_layout_issues(issues)
+
+    message = str(exc_info.value)
+    assert "2 issue(s)" in message
+    assert "page=15" in message
+    assert "target=p0015_r0001_b0001" in message
+    assert "client=14x10 scroll=40x20" in message
+    assert "overflow=26x10" in message
+    assert "page=2" in message
+
+
+def test_write_layout_report_is_sorted_and_preserves_measurements(tmp_path):
+    report_path = tmp_path / "layout.json"
+    write_layout_report([
+        {"page": "15", "target": "late", "overflow_x": 26, "overflow_y": 0},
+        {"page": "2", "target": "early", "overflow_x": 0, "overflow_y": 10},
+    ], str(report_path))
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert [issue["target"] for issue in report] == ["early", "late"]
+    assert report[1]["overflow_x"] == 26
 
 
 def test_art_page_renders_translated_running_headers_and_page_number():

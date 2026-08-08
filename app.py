@@ -1624,14 +1624,32 @@ if launch_pressed:
                 layout_hints_generator=layout_hints_generator,
             )
 
-            result = pipeline.run(
-                start_page=start_page,
-                end_page=end_page,
-                progress_callback=update_typeset_progress,
-                export_pdf=export_pdf,
-                export_typeset_html=export_typeset_html,
-                export_reading_html=export_reading_html,
-            )
+            try:
+                result = pipeline.run(
+                    start_page=start_page,
+                    end_page=end_page,
+                    progress_callback=update_typeset_progress,
+                    export_pdf=export_pdf,
+                    export_typeset_html=export_typeset_html,
+                    export_reading_html=export_reading_html,
+                )
+            except RuntimeError as exc:
+                failed_outputs = []
+                for candidate in (
+                    getattr(pipeline, "_html_path", None),
+                    getattr(pipeline, "_reading_html_path", None),
+                    getattr(pipeline, "_layout_report_path", None),
+                    getattr(pipeline, "_layout_repair_path", None),
+                ):
+                    if candidate is not None and Path(candidate).is_file():
+                        failed_outputs.append(str(candidate))
+                st.error(f"高保真排版未完成：{exc}")
+                if failed_outputs:
+                    st.info("已保留当前 HTML、完整布局报告和定向修复清单，可以修复后继续，不需要重新翻译整本。")
+                    render_downloads(failed_outputs)
+                render_status_flow(active_index=5, failed=True, office_mode=office_mode)
+                extractor.close()
+                st.stop()
 
             # Collect generated files
             if result.pdf_path:
@@ -1656,6 +1674,10 @@ if launch_pressed:
                 generated_files.append(result.page_structure_path)
             if result.page_content_path:
                 generated_files.append(result.page_content_path)
+            if result.layout_report_path:
+                generated_files.append(result.layout_report_path)
+            if result.layout_repair_path:
+                generated_files.append(result.layout_repair_path)
             hints_path = document_output_dir / "layout_hints.json"
             hinted_path = document_output_dir / "page_content_hinted.json"
             if hints_path.exists():
