@@ -465,9 +465,42 @@ def test_short_red_body_block_renders_as_accent_section_heading():
 
     html = rebuilder._render_reflow_block(block)
 
-    assert 'class="typeset-reflow-subtitle font-role-body source-font-default"' in html
+    assert 'class="typeset-reflow-subtitle font-role-section source-font-default"' in html
     assert "color:#ed1d24" in html
     assert ">大门</h2>" in html
+
+
+def test_long_red_body_block_stays_body_text():
+    rebuilder = TypesetHTMLRebuilder()
+    block = ContentBlock(
+        id="p0026_r0001_b0003",
+        region_id="p0026_r0001",
+        role=SemanticRole.BODY_COLUMN,
+        font_role=FontRole.BODY,
+        runs=[
+            StyledTextRun(
+                "The Gate. Agents who investigate find the doors locked and the "
+                "guards unusually cooperative, which only deepens their unease.",
+                10.9,
+                False,
+                False,
+                "#ed1d24",
+            )
+        ],
+        source_text=(
+            "The Gate. Agents who investigate find the doors locked and the "
+            "guards unusually cooperative, which only deepens their unease."
+        ),
+        translated_text=(
+            "大门。展开调查的特工发现门都锁着，而守卫异常配合，这只会加深他们的不安。"
+        ),
+        translatable=True,
+    )
+
+    html = rebuilder._render_reflow_block(block)
+
+    assert 'class="typeset-reflow-body font-role-body source-font-default"' in html
+    assert "<h2" not in html
 
 
 def test_short_black_body_block_remains_body_text():

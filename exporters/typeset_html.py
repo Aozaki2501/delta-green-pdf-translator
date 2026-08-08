@@ -1933,8 +1933,20 @@ body {{
                 ),
             )
             flow_bbox = _union_block_bboxes(ordered, region_map)
-            flow_text = " ".join(text_by_id[block.id] for block in ordered).strip()
-            inner = self._render_reflow_block(ordered[0], flow_text)
+            heading_blocks = [block for block in ordered if self._block_is_short_heading(block)]
+            body_blocks = [block for block in ordered if block not in heading_blocks]
+            inner_parts = [
+                part
+                for block in heading_blocks
+                if (part := self._render_reflow_block(block, text_by_id[block.id]))
+            ]
+            if body_blocks:
+                flow_text = " ".join(text_by_id[block.id] for block in body_blocks).strip()
+                if flow_text:
+                    part = self._render_reflow_block(body_blocks[0], flow_text)
+                    if part:
+                        inner_parts.append(part)
+            inner = "\n".join(inner_parts)
             if not inner:
                 continue
             x0, y0, x1, y1 = self._expanded_column_bbox(flow_bbox)
@@ -3148,7 +3160,6 @@ body {{
         text = (text if text is not None else self._display_text_for_block(block)).strip()
         if not text:
             return ""
-        role_class = f"{self._font_role_class(block)} {self._source_font_class(block)}"
         color = self._block_text_color(block)
         block_attrs = (
             f' data-block-id="{html.escape(block.id)}"'
@@ -3158,9 +3169,10 @@ body {{
             escaped = self._format_text(text)
             size_px = _pt_to_px(self.config.accent_font_size_pt)
             return (
-                f'<h2 class="typeset-reflow-subtitle {role_class}"{block_attrs} '
+                f'<h2 class="typeset-reflow-subtitle {self._heading_role_class(block)}"{block_attrs} '
                 f'style="font-size:{_px(size_px)};color:{html.escape(color)}">{escaped}</h2>'
             )
+        role_class = f"{self._font_role_class(block)} {self._source_font_class(block)}"
         if block.font_role == FontRole.DISPLAY or block.role == SemanticRole.TITLE:
             escaped = self._format_text(text)
             return (
@@ -3203,6 +3215,28 @@ body {{
 
     def _font_role_class(self, block: ContentBlock) -> str:
         return f"font-role-{block.font_role.value.replace('_', '-')}"
+
+    def _heading_role_class(self, block: ContentBlock) -> str:
+        """Force a heading font class so accent labels keep the heading font
+        stack instead of inheriting the body font class of BODY-role blocks."""
+        if block.font_role in {FontRole.DISPLAY, FontRole.SECTION, FontRole.SUBSECTION}:
+            return f"{self._font_role_class(block)} {self._source_font_class(block)}"
+        return f"font-role-section {self._source_font_class(block)}"
+
+    def _block_is_short_heading(self, block: ContentBlock) -> bool:
+        """True for a block that should render as its own heading instead of
+        being merged into the surrounding same-region body flow."""
+        if block.role in (SemanticRole.TITLE, SemanticRole.SUBTITLE):
+            return True
+        if block.font_role in (
+            FontRole.DISPLAY,
+            FontRole.SECTION,
+            FontRole.SUBSECTION,
+            FontRole.CALLOUT,
+        ):
+            return True
+        source = _normalized_text(block.source_text or block.translated_text or "")
+        return bool(source) and len(source) <= 48 and self._block_is_accent_heading(block)
 
     def _source_font_class(self, block: ContentBlock) -> str:
         if self._block_renders_as_heading(block):
@@ -3874,7 +3908,6 @@ body {{
     ) -> str:
         font_size_px = _pt_to_px(font_size_pt)
         escaped_text = self._format_text(text)
-        role_class = self._font_role_class(block)
         is_accent_heading = self._block_is_accent_heading(block)
         extra_class = (
             "typeset-source-subtitle" if is_accent_heading
@@ -3882,6 +3915,7 @@ body {{
             else "typeset-reflow-callout" if block.font_role == FontRole.CALLOUT
             else "typeset-reflow-subsection"
         )
+        role_class = self._heading_role_class(block) if is_accent_heading else self._font_role_class(block)
         tag = "h2" if is_accent_heading else "h3"
         return (
             f'<{tag} class="typeset-heading {extra_class} {role_class} '
