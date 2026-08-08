@@ -45,17 +45,21 @@ def write_layout_repair_manifest(
     output_path: str,
     *,
     profile_id: str = "delta_green",
+    repair_attempt: int = 0,
 ) -> None:
-    """Write measured target constraints for reviewed, block-level retries.
+    """Write measured target constraints for reviewed, shared-container retries.
 
     The manifest deliberately contains browser measurements instead of a
-    guessed character budget.  Callers may pass its ``targets`` mapping to
+    guessed character budget.  Callers pass its ``groups`` mapping to
     ``TypesetPipeline.repair_overflow_translations`` after reviewing the
     affected blocks.
     """
+    if not isinstance(repair_attempt, int) or repair_attempt < 0:
+        raise ValueError("repair_attempt 必须是非负整数")
     normalized = TypesetPDFExporter._normalize_layout_issues(issues)
-    targets: dict[str, dict] = {}
+    groups: dict[str, dict] = {}
     unresolved: list[dict] = []
+    owners: dict[str, str] = {}
     for issue in normalized:
         block_ids = issue.get("block_ids") or []
         if not isinstance(block_ids, list) or not block_ids:
@@ -63,6 +67,16 @@ def write_layout_repair_manifest(
                 "page": issue.get("page", ""),
                 "target": issue.get("target") or issue.get("id", ""),
                 "kind": issue.get("kind", ""),
+            })
+            continue
+        block_ids = [str(block_id) for block_id in block_ids]
+        overlapping = sorted(block_id for block_id in block_ids if block_id in owners)
+        if overlapping:
+            unresolved.append({
+                "page": issue.get("page", ""),
+                "target": issue.get("target") or issue.get("id", ""),
+                "kind": issue.get("kind", ""),
+                "reason": "overlapping_blocks:" + ",".join(overlapping),
             })
             continue
         capacity = {
@@ -90,25 +104,38 @@ def write_layout_repair_manifest(
             ).encode("utf-8")
         ).hexdigest()
         constraint_prompt = (
-            "完整保留原文信息、规则术语和数字；在已测得的目标模板中自然改写，"
+            "把这一组全部 BLOCK 视为同一个连续容器，完整保留原文信息、规则术语和数字；"
+            "所有 BLOCK 的译文合计必须在已测得的目标模板中自然改写，"
             f"目标类型为 {issue.get('kind', 'layout target')}，"
             f"可用尺寸为 {capacity['client_width']}x{capacity['client_height']}px，"
             f"当前垂直溢出为 {capacity['overflow_y']}px。"
-            "不要输出解释，不要删去规则条件。"
+            "保留每个 BLOCK 标记，不要输出解释，不要删去规则条件。"
         )
+        group_payload = {
+            "page": issue.get("page", ""),
+            "kind": issue.get("kind", ""),
+            "target": issue.get("target") or issue.get("id", ""),
+            "block_ids": block_ids,
+        }
+        group_id = "group_" + hashlib.sha256(
+            json.dumps(group_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        groups[group_id] = {
+            "block_ids": block_ids,
+            "capacity": capacity,
+            "template_signature": template_signature,
+            "constraint_prompt": constraint_prompt,
+            "page": issue.get("page", ""),
+            "target_id": issue.get("target") or issue.get("id", ""),
+            "kind": issue.get("kind", ""),
+        }
         for block_id in block_ids:
-            targets[str(block_id)] = {
-                "capacity": capacity,
-                "template_signature": template_signature,
-                "constraint_prompt": constraint_prompt,
-                "page": issue.get("page", ""),
-                "target_id": issue.get("target") or issue.get("id", ""),
-                "kind": issue.get("kind", ""),
-            }
+            owners[block_id] = group_id
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "profile_id": profile_id,
-        "targets": targets,
+        "repair_attempt": repair_attempt,
+        "groups": groups,
         "unresolved": unresolved,
     }
     ensure_output_parent(output_path)
@@ -133,6 +160,7 @@ class TypesetPDFExporter:
         report_path: str | None = None,
         repair_manifest_path: str | None = None,
         profile_id: str = "delta_green",
+        repair_attempt: int = 0,
     ) -> list[dict]:
         """Fail HTML-only output when the browser finds a layout overflow."""
         if not Path(html_path).exists():
@@ -158,6 +186,7 @@ class TypesetPDFExporter:
                         issues,
                         repair_manifest_path,
                         profile_id=profile_id,
+                        repair_attempt=repair_attempt,
                     )
                 self._raise_for_layout_issues(issues)
                 return issues

@@ -97,8 +97,12 @@ def test_repair_manifest_uses_measured_capacity_and_block_ids(tmp_path):
 
     data = json.loads(output.read_text(encoding="utf-8"))
 
-    assert set(data["targets"]) == {"b1", "b2"}
-    assert data["targets"]["b1"]["capacity"]["overflow_y"] == 50
-    assert data["targets"]["b1"]["target_id"] == "card-1"
-    assert data["targets"]["b1"]["template_signature"]
-    assert "300x400px" in data["targets"]["b1"]["constraint_prompt"]
+    assert data["schema_version"] == 2
+    assert len(data["groups"]) == 1
+    group = next(iter(data["groups"].values()))
+    assert group["block_ids"] == ["b1", "b2"]
+    assert group["capacity"]["overflow_y"] == 50
+    assert group["target_id"] == "card-1"
+    assert group["template_signature"]
+    assert "300x400px" in group["constraint_prompt"]
+    assert data["repair_attempt"] == 0

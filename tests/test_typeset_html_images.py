@@ -283,7 +283,7 @@ def test_overwide_source_column_keeps_blocks_separate():
     assert "width:293.333px" in html
 
 
-def test_chinese_text_uses_source_line_tracks_when_available():
+def test_chinese_text_with_foreground_images_uses_natural_column_flow():
     rebuilder = TypesetHTMLRebuilder()
     structure = PageStructure(
         page_index=0,
@@ -354,9 +354,9 @@ def test_chinese_text_uses_source_line_tracks_when_available():
 
     html = rebuilder.render_text_layer(content, structure)
 
-    assert 'class="typeset-line-track-flow"' in html
-    assert 'class="typeset-line-slot"' in html
-    assert "left:96.000px;top:130.667px" in html
+    assert 'class="typeset-region-flow"' in html
+    assert 'class="typeset-line-track-flow"' not in html
+    assert "左栏正文会按原始行宽排布" in html
 
 
 def test_chinese_text_uses_natural_column_flow_without_foreground_images():
@@ -447,6 +447,46 @@ def test_source_region_flow_titles_have_spacing():
     assert ".typeset-region-flow.typeset-list-flow" in css
     assert ".typeset-region-flow.typeset-compact-flow" in css
     assert "font-size: 12.000px" in css
+    assert ".typeset-region-flow {\n    position: absolute;\n    overflow: visible;" in css
+
+
+def test_short_red_body_block_renders_as_accent_section_heading():
+    rebuilder = TypesetHTMLRebuilder()
+    block = ContentBlock(
+        id="p0026_r0001_b0001",
+        region_id="p0026_r0001",
+        role=SemanticRole.BODY_COLUMN,
+        font_role=FontRole.BODY,
+        runs=[StyledTextRun("The Gate", 10.9, False, False, "#ed1d24")],
+        source_text="The Gate",
+        translated_text="大门",
+        translatable=True,
+    )
+
+    html = rebuilder._render_reflow_block(block)
+
+    assert 'class="typeset-reflow-subtitle font-role-body source-font-default"' in html
+    assert "color:#ed1d24" in html
+    assert ">大门</h2>" in html
+
+
+def test_short_black_body_block_remains_body_text():
+    rebuilder = TypesetHTMLRebuilder()
+    block = ContentBlock(
+        id="p0026_r0001_b0002",
+        region_id="p0026_r0001",
+        role=SemanticRole.BODY_COLUMN,
+        font_role=FontRole.BODY,
+        runs=[StyledTextRun("Black section", 10.9, False, False, "#000000")],
+        source_text="Black section",
+        translated_text="黑色正文",
+        translatable=True,
+    )
+
+    html = rebuilder._render_reflow_block(block)
+
+    assert 'class="typeset-reflow-body font-role-body source-font-default"' in html
+    assert "<h2" not in html
 
 
 def test_fixed_source_text_renders_span_geometry():

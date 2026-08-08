@@ -990,15 +990,27 @@ else:
         unsafe_allow_html=True,
     )
 auto_launch_translation = bool(st.session_state.pop("auto_launch_translation", False))
+typeset_repair_request = st.session_state.pop("typeset_repair_request", None)
+typeset_repair_launch = isinstance(typeset_repair_request, dict)
 if office_mode:
-    launch_pressed = st.button("执行翻译任务", type="primary", use_container_width=True) or auto_launch_translation
+    launch_pressed = (
+        st.button("执行翻译任务", type="primary", use_container_width=True)
+        or auto_launch_translation
+        or typeset_repair_launch
+    )
 else:
     st.markdown('<div class="launch-action-separator" aria-hidden="true"></div>', unsafe_allow_html=True)
     action_spacer, action_button = st.columns([3, 1])
     with action_button:
-        launch_pressed = st.button("开始翻译任务", type="primary", use_container_width=True) or auto_launch_translation
+        launch_pressed = (
+            st.button("开始翻译任务", type="primary", use_container_width=True)
+            or auto_launch_translation
+            or typeset_repair_launch
+        )
 if auto_launch_translation:
     st.info("已从质量检查选择问题页，开始重翻。")
+if typeset_repair_launch:
+    st.info("正在按上次布局检查结果定向修复溢出文字。")
 
 if pdf_file and show_extraction_preview:
     preview_path = save_uploaded_pdf_for_preview(pdf_file)
@@ -1047,6 +1059,8 @@ if launch_pressed:
         st.error("✗ 请至少选择一种输出格式")
     elif source_type == "pdf" and _typeset_formats_selected(formats) and not _typeset_formats_are_exclusive(formats):
         st.error("✗ 图文重绘请单独运行，避免和普通输出重复调用接口。")
+    elif typeset_repair_launch and (source_type != "pdf" or not _typeset_formats_selected(formats)):
+        st.error("✗ 定向布局修复只能用于同一份 PDF 的高保真排版任务。")
     elif source_type != "pdf" and _typeset_formats_selected(formats):
         st.error("✗ 图文重绘仅支持 PDF 文件。")
     elif (
@@ -1449,6 +1463,19 @@ if launch_pressed:
                         "将使用系统默认 serif 字体。"
                     )
 
+            typeset_repair_identity = {
+                "source_sha256": source_digest,
+                "profile_id": typeset_config.profile_id,
+                "font_family": typeset_config.font_family,
+                "layout_hints_path": layout_hints_path or "",
+                "start_page": start_page,
+                "end_page": end_page,
+            }
+            if typeset_repair_launch and typeset_repair_request != typeset_repair_identity:
+                st.error("✗ 源 PDF、页码范围或排版配置已经变化，不能使用旧的布局修复清单。")
+                extractor.close()
+                st.stop()
+
             export_pdf = "typeset_pdf" in formats
             export_typeset_html = "typeset_html" in formats
             export_reading_html = "typeset_reading_html" in formats or export_typeset_html
@@ -1625,31 +1652,49 @@ if launch_pressed:
             )
 
             try:
-                result = pipeline.run(
-                    start_page=start_page,
-                    end_page=end_page,
-                    progress_callback=update_typeset_progress,
-                    export_pdf=export_pdf,
-                    export_typeset_html=export_typeset_html,
-                    export_reading_html=export_reading_html,
-                )
+                if typeset_repair_launch:
+                    result = pipeline.repair_layout_overflows(
+                        start_page=start_page,
+                        end_page=end_page,
+                        progress_callback=update_typeset_progress,
+                        export_pdf=export_pdf,
+                        export_typeset_html=export_typeset_html,
+                        export_reading_html=export_reading_html,
+                    )
+                else:
+                    result = pipeline.run(
+                        start_page=start_page,
+                        end_page=end_page,
+                        progress_callback=update_typeset_progress,
+                        export_pdf=export_pdf,
+                        export_typeset_html=export_typeset_html,
+                        export_reading_html=export_reading_html,
+                    )
             except RuntimeError as exc:
-                failed_outputs = []
-                for candidate in (
-                    getattr(pipeline, "_html_path", None),
-                    getattr(pipeline, "_reading_html_path", None),
-                    getattr(pipeline, "_layout_report_path", None),
-                    getattr(pipeline, "_layout_repair_path", None),
-                ):
-                    if candidate is not None and Path(candidate).is_file():
-                        failed_outputs.append(str(candidate))
-                st.error(f"高保真排版未完成：{exc}")
-                if failed_outputs:
-                    st.info("已保留当前 HTML、完整布局报告和定向修复清单，可以修复后继续，不需要重新翻译整本。")
-                    render_downloads(failed_outputs)
-                render_status_flow(active_index=5, failed=True, office_mode=office_mode)
-                extractor.close()
-                st.stop()
+                failure_banner = st.empty()
+                failure_banner.error(f"高保真排版未完成：{exc}")
+                repair_manifest = getattr(pipeline, "_layout_repair_path", None)
+                if repair_manifest is not None and Path(repair_manifest).is_file():
+                    repair_message = st.empty()
+                    repair_message.info("已保留现有译文。点击下方按钮，只修复检测到溢出的文字块。")
+                    repair_action = st.empty()
+                    def queue_typeset_repair():
+                        st.session_state["typeset_repair_request"] = typeset_repair_identity
+
+                    repair_action.button(
+                        "修复溢出文字并重新检查",
+                        type="primary",
+                        use_container_width=True,
+                        key=f"typeset_repair_{source_digest}",
+                        on_click=queue_typeset_repair,
+                    )
+                    render_status_flow(active_index=5, failed=True, office_mode=office_mode)
+                    extractor.close()
+                    st.stop()
+                else:
+                    render_status_flow(active_index=5, failed=True, office_mode=office_mode)
+                    extractor.close()
+                    st.stop()
 
             # Collect generated files
             if result.pdf_path:

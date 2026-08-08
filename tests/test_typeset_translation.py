@@ -24,6 +24,7 @@ from core.typeset_translation import (
     _parse_marked_translations,
     _source_text_hash,
     _translate_typeset_unit,
+    translate_overflow_groups,
     translate_overflow_targets,
     translate_typeset_content,
     save_translated_content,
@@ -138,8 +139,10 @@ class TargetRecordingTranslator(MockTranslator):
         super().__init__()
         self.contexts = []
         self.caches = []
+        self.inputs = []
 
     def translate_chunk(self, text: str, page_num=None, prev_context="", cache=None):
+        self.inputs.append(text)
         self.contexts.append(prev_context)
         self.caches.append(cache)
         return super().translate_chunk(text, page_num=page_num, prev_context=prev_context, cache=cache)
@@ -579,7 +582,56 @@ class TestTranslateOverflowTargets:
         assert repaired.pages[0].blocks[1].translated_text == "旧译文2"
         assert translator.call_count == 1
         assert "Layout constraint" in translator.contexts[0]
-        assert translator.caches == [progress]
+        assert translator.caches == [None]
+
+    def test_retranslates_shared_target_once_and_preserves_block_boundaries(self, tmp_path):
+        content = _make_content_doc([[
+            _make_block("b1", "First paragraph"),
+            _make_block("b2", "Second paragraph"),
+            _make_block("b3", "Unselected paragraph"),
+        ]])
+        content.pages[0].blocks[:] = [
+            replace(block, translated_text=f"旧译文{index}")
+            for index, block in enumerate(content.pages[0].blocks, start=1)
+        ]
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+        translator = TargetRecordingTranslator()
+        group = {
+            "block_ids": ["b1", "b2"],
+            **self._target(capacity={"client_width": 120, "client_height": 40}),
+        }
+
+        repaired = translate_overflow_groups(
+            content, translator, progress, {}, {"shared-left": group}
+        )
+
+        assert translator.call_count == 1
+        assert "[BLOCK b1]" in translator.inputs[0]
+        assert "[BLOCK b2]" in translator.inputs[0]
+        assert repaired.pages[0].blocks[0].translated_text == "翻译：First paragraph"
+        assert repaired.pages[0].blocks[1].translated_text == "翻译：Second paragraph"
+        assert repaired.pages[0].blocks[2].translated_text == "旧译文3"
+
+        cached = TargetRecordingTranslator()
+        translate_overflow_groups(content, cached, progress, {}, {"shared-left": group})
+        assert cached.call_count == 0
+
+    def test_rejects_overlapping_shared_targets(self, tmp_path):
+        content = _make_content_doc([[
+            _make_block("b1", "First paragraph"),
+            _make_block("b2", "Second paragraph"),
+        ]])
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+        group = {"block_ids": ["b1", "b2"], **self._target()}
+
+        with pytest.raises(ValueError, match="重复包含"):
+            translate_overflow_groups(
+                content,
+                TargetRecordingTranslator(),
+                progress,
+                {},
+                {"first": group, "second": {"block_ids": ["b2"], **self._target()}},
+            )
 
     def test_target_cache_rejects_previous_capacity_or_template(self, tmp_path):
         content = _make_content_doc([[_make_block("b1", "Paragraph")]])

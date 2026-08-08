@@ -192,6 +192,7 @@ class TypesetPipeline:
         self._progress_callback: Callable | None = None
         self._errors: list[str] = []
         self._source_sha256_cache: str | None = None
+        self._layout_repair_attempt: int = 0
 
     def _effective_glossary(self, supplied_glossary: dict | None) -> dict:
         """Add profile-owned terminology without changing the caller's glossary."""
@@ -271,6 +272,7 @@ class TypesetPipeline:
         self._end_page = end_page
         self._progress_callback = progress_callback
         self._errors = []
+        self._layout_repair_attempt = 0
 
         if not (export_pdf or export_typeset_html or export_reading_html):
             raise ValueError("至少选择一种图文重绘输出格式")
@@ -500,19 +502,19 @@ class TypesetPipeline:
 
     def repair_overflow_translations(
         self,
-        target_metadata_by_block: dict[str, dict],
+        target_groups: dict[str, dict],
         progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> PageContentDocument:
-        """Retranslate selected overflow blocks without rerunning phases A–C.
+        """Retranslate selected shared targets without rerunning phases A–C.
 
-        ``target_metadata_by_block`` maps a selected block ID to explicit
-        ``capacity``, ``template_signature``, and ``constraint_prompt`` values.
-        The existing translated document is the source of all unselected text.
+        Each group maps all blocks that share one measured container to explicit
+        capacity, template signature, and constraint values.  The existing
+        translated document is the source of all unselected text.
         """
         from core.typeset_translation import (
             TypesetTranslationProgress,
             save_translated_content,
-            translate_overflow_targets,
+            translate_overflow_groups,
         )
 
         existing = self._load_existing_translated_content(allow_layout_hints=True)
@@ -530,12 +532,12 @@ class TypesetPipeline:
             if not success:
                 self._errors.append(f"溢出区域翻译失败：{_unit_id}")
 
-        repaired = translate_overflow_targets(
+        repaired = translate_overflow_groups(
             content=existing,
             translator=self.translator,
             progress=progress,
             glossary=self.glossary,
-            target_metadata_by_block=target_metadata_by_block,
+            target_groups=target_groups,
             progress_callback=repair_callback,
             preserve_emphasis=self.config.profile_id == "kult",
         )
@@ -543,6 +545,135 @@ class TypesetPipeline:
         self._write_translation_context()
         self._mark_phase_completed("C")
         return repaired
+
+    def repair_layout_overflows(
+        self,
+        *,
+        start_page: int = 0,
+        end_page: int | None = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+        export_pdf: bool = False,
+        export_typeset_html: bool = True,
+        export_reading_html: bool = False,
+        max_rounds: int = 2,
+    ) -> TypesetResult:
+        """Repair the current layout manifest without retranslating the book.
+
+        The browser-generated manifest is the only authority for the selected
+        blocks and their measured capacity.  A new browser check always runs
+        after the selected translations are replaced.
+        """
+        if not (export_pdf or export_typeset_html or export_reading_html):
+            raise ValueError("至少选择一种图文重绘输出格式")
+        if not isinstance(max_rounds, int) or max_rounds < 1:
+            raise ValueError("max_rounds 必须是正整数")
+
+        self._start_page = start_page
+        self._end_page = end_page
+        self._progress_callback = progress_callback
+        self._errors = []
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        groups, prior_attempt = self._load_layout_repair_groups()
+        total_phases = 4 if export_pdf else 3
+        self._report_progress("pipeline", 0, total_phases)
+
+        structure = self.run_phase_a()
+        self._report_progress("pipeline", 1, total_phases)
+
+        repaired_content: PageContentDocument | None = None
+        html_path = None
+        for round_index in range(max_rounds):
+            if round_index:
+                groups, prior_attempt = self._load_layout_repair_groups()
+            self._layout_repair_attempt = prior_attempt + 1
+            repaired_content = self.repair_overflow_translations(
+                groups,
+                progress_callback=progress_callback,
+            )
+            self._report_progress("pipeline", 2, total_phases)
+            if not (export_typeset_html or export_pdf):
+                break
+            self.config.reading_html_href = (
+                self._reading_html_path.name if export_reading_html else None
+            )
+            try:
+                html_path = self.run_phase_d(structure, repaired_content)
+                break
+            except RuntimeError as exc:
+                if not str(exc).startswith("typeset layout overflow:"):
+                    raise
+                if round_index + 1 >= max_rounds:
+                    raise RuntimeError(
+                        f"{exc}；已完成 {max_rounds} 轮定向修复，仍有布局问题"
+                    ) from exc
+        if repaired_content is None:
+            raise RuntimeError("定向布局修复没有产生译文")
+
+        reading_html_path = None
+        if export_reading_html:
+            reading_html_path = self.run_phase_reading_d(structure, repaired_content)
+        self._report_progress(
+            "pipeline",
+            3 if export_pdf else total_phases,
+            total_phases,
+        )
+
+        pdf_path = self.run_phase_e(html_path) if export_pdf and html_path else None
+        if export_pdf:
+            self._report_progress("pipeline", total_phases, total_phases)
+
+        result = self._build_result(
+            structure,
+            repaired_content,
+            html_path,
+            pdf_path,
+            reading_html_path=reading_html_path,
+        )
+        self._write_report(result)
+        return result
+
+    def _load_layout_repair_groups(self) -> tuple[dict[str, dict], int]:
+        """Read one current, compatible browser repair manifest strictly."""
+        if not self._layout_repair_path.is_file():
+            raise RuntimeError("没有可用的布局修复清单，请先完成一次布局检查")
+        try:
+            manifest = json.loads(self._layout_repair_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("布局修复清单无法读取，不能执行定向修复") from exc
+
+        if manifest.get("schema_version") != 2:
+            raise RuntimeError("布局修复清单版本不兼容，请重新执行布局检查")
+        if manifest.get("profile_id") != self.config.profile_id:
+            raise RuntimeError("布局修复清单的排版配置不匹配，请重新执行布局检查")
+        unresolved = manifest.get("unresolved")
+        if not isinstance(unresolved, list):
+            raise RuntimeError("布局修复清单格式无效，不能执行定向修复")
+        if unresolved:
+            raise RuntimeError("存在无法定位到文字块的布局问题，不能自动修复")
+        groups = manifest.get("groups")
+        if not isinstance(groups, dict) or not groups:
+            raise RuntimeError("布局修复清单没有可重译的文字块")
+
+        repair_attempt = manifest.get("repair_attempt", 0)
+        if not isinstance(repair_attempt, int) or repair_attempt < 0:
+            raise RuntimeError("布局修复清单的重试次数无效")
+        normalized: dict[str, dict] = {}
+        for group_id, metadata in groups.items():
+            if not isinstance(group_id, str) or not isinstance(metadata, dict):
+                raise RuntimeError("布局修复清单包含无效目标")
+            prompt = str(metadata.get("constraint_prompt", "")).strip()
+            if repair_attempt:
+                prompt += (
+                    f"这是第 {repair_attempt + 1} 轮实测反馈修复；上一版仍未装入容器。"
+                    "必须比上一版更紧凑，但不得删减事实、规则条件或数字。"
+                )
+            normalized[group_id] = {
+                **metadata,
+                "constraint_prompt": prompt,
+                "repair_attempt": repair_attempt + 1,
+            }
+        return normalized, repair_attempt
 
     def run_phase_d(
         self,
@@ -583,6 +714,7 @@ class TypesetPipeline:
             report_path=str(self._layout_report_path),
             repair_manifest_path=str(self._layout_repair_path),
             profile_id=self.config.profile_id,
+            repair_attempt=self._layout_repair_attempt,
         )
         self._mark_phase_completed("D")
         return str(self._html_path)

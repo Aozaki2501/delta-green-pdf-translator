@@ -254,6 +254,63 @@ class TypesetTranslationProgress:
             self.targeted_translation_contexts[cache_key] = target_signature
             self.save()
 
+    def get_targeted_group_translations(
+        self,
+        blocks: list[ContentBlock],
+        target_signature: str,
+    ) -> dict[str, str]:
+        """Return a cached repair only when the whole shared target matches."""
+        cache_key = _targeted_group_cache_key(blocks, target_signature)
+        with self._lock:
+            if self.targeted_translation_contexts.get(cache_key) != target_signature:
+                return {}
+            raw = self.targeted_translation_cache.get(cache_key, "")
+        try:
+            translations = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        expected_ids = [block.id for block in blocks]
+        if not isinstance(translations, dict) or set(translations) != set(expected_ids):
+            return {}
+        normalized = {block_id: str(translations[block_id]) for block_id in expected_ids}
+        if any(
+            _is_unusable_translation(normalized[block.id], block.source_text)
+            for block in blocks
+        ):
+            return {}
+        return normalized
+
+    def mark_targeted_group_translations(
+        self,
+        blocks: list[ContentBlock],
+        target_signature: str,
+        translations: Mapping[str, str],
+    ) -> None:
+        """Persist one atomic shared-target translation result."""
+        expected_ids = [block.id for block in blocks]
+        if set(translations) != set(expected_ids):
+            raise ValueError("成组溢出译文的块 ID 不完整")
+        normalized = {
+            block.id: _translation_source_text(str(translations[block.id]))
+            for block in blocks
+        }
+        for block in blocks:
+            translation = normalized[block.id]
+            if not translation:
+                raise ValueError(f"译文为空：{block.id}")
+            ensure_no_prompt_leak(translation)
+            ensure_no_damaged_placeholder(translation)
+            ensure_no_elision_placeholder(translation)
+            ensure_no_japanese_kana(translation)
+            ensure_no_untranslated_leading_labels(block.source_text, translation)
+        cache_key = _targeted_group_cache_key(blocks, target_signature)
+        with self._lock:
+            self.targeted_translation_cache[cache_key] = json.dumps(
+                normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            self.targeted_translation_contexts[cache_key] = target_signature
+            self.save()
+
     # -- Mutation methods --
 
     def mark_completed(
@@ -347,6 +404,19 @@ def _targeted_translation_cache_key(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _targeted_group_cache_key(
+    blocks: list[ContentBlock],
+    target_signature: str,
+) -> str:
+    payload = {
+        "block_ids": [block.id for block in blocks],
+        "source_hashes": [_source_text_hash(block.source_text) for block in blocks],
+        "target_signature": target_signature,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _validate_overflow_target_metadata(target_metadata: Mapping[str, object]) -> None:
     """Require explicit constraints instead of inventing a text-length budget."""
     if not isinstance(target_metadata, Mapping):
@@ -355,6 +425,18 @@ def _validate_overflow_target_metadata(target_metadata: Mapping[str, object]) ->
     missing = [key for key in required if not str(target_metadata.get(key, "")).strip()]
     if missing:
         raise ValueError("溢出目标元数据缺少：" + "、".join(missing))
+
+
+def _validate_overflow_group_metadata(group_metadata: Mapping[str, object]) -> list[str]:
+    _validate_overflow_target_metadata(group_metadata)
+    block_ids = group_metadata.get("block_ids")
+    if not isinstance(block_ids, list) or not block_ids or not all(
+        isinstance(block_id, str) and block_id for block_id in block_ids
+    ):
+        raise ValueError("溢出目标组必须包含非空 block_ids")
+    if len(set(block_ids)) != len(block_ids):
+        raise ValueError("溢出目标组包含重复 block_id")
+    return list(block_ids)
 
 
 def _overflow_constraint_context(target_metadata: Mapping[str, object]) -> str:
@@ -693,6 +775,93 @@ def _translate_typeset_unit(
     raise RuntimeError(f"{TRANSLATION_FAILURE_PREFIX} empty translation]")
 
 
+def translate_overflow_groups(
+    content: PageContentDocument,
+    translator,
+    progress: TypesetTranslationProgress,
+    glossary: dict,
+    target_groups: Mapping[str, Mapping[str, object]],
+    progress_callback: Callable[[int, int, str, bool], None] | None = None,
+    preserve_emphasis: bool = False,
+) -> PageContentDocument:
+    """Retranslate one shared layout target at a time.
+
+    A group owns one measured container.  Its blocks must therefore be
+    translated together: passing the full marked group to the model prevents
+    every child from incorrectly consuming the container's full capacity.
+    """
+    if not target_groups:
+        raise ValueError("至少指定一个溢出目标组")
+    if glossary:
+        translator.set_glossary(glossary)
+
+    blocks_by_id = {
+        block.id: (page.page_index, block)
+        for page in content.pages
+        for block in page.blocks
+    }
+    replacements: dict[str, str] = {}
+    assigned_block_ids: set[str] = set()
+    selected_groups: list[tuple[str, int, list[ContentBlock], Mapping[str, object]]] = []
+    for group_id, metadata in target_groups.items():
+        if not isinstance(group_id, str) or not group_id:
+            raise ValueError("溢出目标组 ID 无效")
+        block_ids = _validate_overflow_group_metadata(metadata)
+        unknown = sorted(set(block_ids) - set(blocks_by_id))
+        if unknown:
+            raise ValueError("溢出目标不存在：" + "、".join(unknown[:10]))
+        overlap = sorted(assigned_block_ids.intersection(block_ids))
+        if overlap:
+            raise ValueError("溢出目标组重复包含文字块：" + "、".join(overlap[:10]))
+        assigned_block_ids.update(block_ids)
+        selected = [blocks_by_id[block_id] for block_id in block_ids]
+        page_indexes = {page_index for page_index, _ in selected}
+        if len(page_indexes) != 1:
+            raise ValueError(f"溢出目标组跨页：{group_id}")
+        blocks = [block for _, block in selected]
+        invalid = [block.id for block in blocks if not block.translatable or not block.source_text.strip()]
+        if invalid:
+            raise ValueError("溢出目标不可翻译：" + "、".join(invalid[:10]))
+        selected_groups.append((group_id, page_indexes.pop(), blocks, metadata))
+
+    total = len(selected_groups)
+    for done, (group_id, page_index, blocks, metadata) in enumerate(selected_groups, start=1):
+        target_signature = _overflow_target_signature(metadata)
+        cached = progress.get_targeted_group_translations(blocks, target_signature)
+        if cached:
+            for block in blocks:
+                progress.mark_completed(block.id, cached[block.id], block.source_text)
+                replacements[block.id] = cached[block.id]
+            if progress_callback:
+                progress_callback(done, total, f"{group_id} (target cached)", True)
+            continue
+
+        try:
+            parsed = _translate_typeset_unit(
+                translator,
+                page_index,
+                blocks,
+                preserve_emphasis=preserve_emphasis,
+                constraint_context=_overflow_constraint_context(metadata),
+                cache=None,
+            )
+            progress.mark_targeted_group_translations(blocks, target_signature, parsed)
+            for block in blocks:
+                progress.mark_completed(block.id, parsed[block.id], block.source_text)
+                replacements[block.id] = parsed[block.id]
+        except Exception as exc:
+            message = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
+            for block in blocks:
+                progress.mark_failed(block.id, message)
+            if progress_callback:
+                progress_callback(done, total, group_id, False)
+            raise RuntimeError(f"溢出区域翻译失败：{group_id}") from exc
+        if progress_callback:
+            progress_callback(done, total, group_id, True)
+
+    return _replace_translations(content, replacements)
+
+
 def translate_overflow_targets(
     content: PageContentDocument,
     translator,
@@ -702,75 +871,20 @@ def translate_overflow_targets(
     progress_callback: Callable[[int, int, str, bool], None] | None = None,
     preserve_emphasis: bool = False,
 ) -> PageContentDocument:
-    """Retranslate only caller-selected overflowing blocks.
-
-    Every selected block needs explicit ``capacity``, ``template_signature``,
-    and ``constraint_prompt`` metadata.  The metadata is signed and stored with
-    the target cache, so changing a target cannot reuse an earlier long form.
-    Unselected blocks are returned exactly as supplied.
-    """
-    if not target_metadata_by_block:
-        raise ValueError("至少指定一个溢出目标")
-    if glossary:
-        translator.set_glossary(glossary)
-
-    blocks_by_id = {
-        block.id: (page.page_index, block)
-        for page in content.pages
-        for block in page.blocks
+    """Backward-compatible one-block wrapper for legacy callers."""
+    groups = {
+        f"legacy:{block_id}": {**dict(metadata), "block_ids": [block_id]}
+        for block_id, metadata in target_metadata_by_block.items()
     }
-    unknown = sorted(set(target_metadata_by_block) - set(blocks_by_id))
-    if unknown:
-        raise ValueError("溢出目标不存在：" + "、".join(unknown[:10]))
-
-    replacements: dict[str, str] = {}
-    selected = [
-        (page_index, block, target_metadata_by_block[block.id])
-        for page_index, block in blocks_by_id.values()
-        if block.id in target_metadata_by_block
-    ]
-    invalid = [block.id for _, block, _ in selected if not block.translatable or not block.source_text.strip()]
-    if invalid:
-        raise ValueError("溢出目标不可翻译：" + "、".join(sorted(invalid)[:10]))
-
-    total = len(selected)
-    for done, (page_index, block, metadata) in enumerate(selected, start=1):
-        target_signature = _overflow_target_signature(metadata)
-        cached = progress.get_targeted_translation(
-            block.id, block.source_text, target_signature
-        )
-        if cached:
-            progress.mark_completed(block.id, cached, block.source_text)
-            replacements[block.id] = cached
-            if progress_callback:
-                progress_callback(done, total, f"{block.id} (target cached)", True)
-            continue
-
-        try:
-            parsed = _translate_typeset_unit(
-                translator,
-                page_index,
-                [block],
-                preserve_emphasis=preserve_emphasis,
-                constraint_context=_overflow_constraint_context(metadata),
-                cache=progress,
-            )
-            translation = parsed[block.id]
-            progress.mark_targeted_translation(
-                block.id, block.source_text, target_signature, translation
-            )
-            progress.mark_completed(block.id, translation, block.source_text)
-            replacements[block.id] = translation
-        except Exception as exc:
-            message = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
-            progress.mark_failed(block.id, message)
-            if progress_callback:
-                progress_callback(done, total, block.id, False)
-            raise RuntimeError(f"溢出区域翻译失败：{block.id}") from exc
-        if progress_callback:
-            progress_callback(done, total, block.id, True)
-
-    return _replace_translations(content, replacements)
+    return translate_overflow_groups(
+        content,
+        translator,
+        progress,
+        glossary,
+        groups,
+        progress_callback=progress_callback,
+        preserve_emphasis=preserve_emphasis,
+    )
 
 # ---------------------------------------------------------------------------
 # Internal helpers

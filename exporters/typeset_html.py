@@ -579,7 +579,7 @@ body {{
 }}
 .typeset-reflow-area {{
     position: absolute;
-    overflow: hidden;
+    overflow: visible;
     color: {self.config.body_color};
     font-size: {body_font_px:.3f}px;
 }}
@@ -590,7 +590,7 @@ body {{
 }}
 .typeset-reflow-column {{
     flex: 1;
-    overflow: hidden;
+    overflow: visible;
 }}
 .typeset-reflow-title {{
     font-family: {heading_font_stack};
@@ -715,7 +715,7 @@ body {{
 }}
 .typeset-region-flow {{
     position: absolute;
-    overflow: hidden;
+    overflow: visible;
     color: {self.config.body_color};
     font-size: {body_font_px:.3f}px;
     line-height: {line_height};
@@ -761,7 +761,7 @@ body {{
 }}
 .typeset-rotated-flow {{
     position: absolute;
-    overflow: hidden;
+    overflow: visible;
     font-size: {body_font_px:.3f}px;
     line-height: 1.35;
 }}
@@ -788,7 +788,7 @@ body {{
 }}
 .typeset-timeline-intro {{
     position: absolute;
-    overflow: hidden;
+    overflow: visible;
     font-size: {body_font_px:.3f}px;
     line-height: 1.35;
     color: {self.config.body_color};
@@ -798,7 +798,7 @@ body {{
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    overflow: hidden;
+    overflow: visible;
     font-size: {_pt_to_px(8.8):.3f}px;
     line-height: 1.28;
     color: {self.config.body_color};
@@ -2099,15 +2099,6 @@ body {{
         page_structure: PageStructure,
         collision_bbox: list[float] | None = None,
     ) -> str:
-        template = getattr(self, "_current_template", None)
-        line_flow = self._render_source_column_line_flow(side, blocks, text_by_id, region_map)
-        if (
-            line_flow
-            and (template is None or template.use_line_tracks)
-            and self._column_needs_line_tracks(collision_bbox or bbox, page_structure)
-        ):
-            return line_flow
-
         x0, y0, x1, y1 = self._expanded_column_bbox(bbox)
         left = _pt_to_px(x0)
         top = _pt_to_px(y0)
@@ -3163,10 +3154,7 @@ body {{
             f' data-block-id="{html.escape(block.id)}"'
             f' data-region-id="{html.escape(block.region_id)}"'
         )
-        if (
-            block.font_role in {FontRole.DISPLAY, FontRole.SECTION}
-            and self._block_is_accent_heading(block)
-        ):
+        if self._renders_as_accent_heading(block):
             escaped = self._format_text(text)
             size_px = _pt_to_px(self.config.accent_font_size_pt)
             return (
@@ -3759,12 +3747,22 @@ body {{
             self.config.subtitle_color.lower(),
             "#eb4f24",
             "#ed1c24",
+            "#ed1d24",
             "#dc2527",
         }
         return any(
             run.text.strip() and run.color.lower() in accent_colors
             for run in block.runs
         )
+
+    def _renders_as_accent_heading(self, block: ContentBlock) -> bool:
+        """Recognize short red DG section labels even when extraction marks them BODY."""
+        if block.font_role in {FontRole.DISPLAY, FontRole.SECTION}:
+            return self._block_is_accent_heading(block)
+        if block.font_role not in {FontRole.BODY, FontRole.META}:
+            return False
+        source = _normalized_text(block.source_text or block.translated_text or "")
+        return bool(source) and len(source) <= 48 and self._block_is_accent_heading(block)
 
     def _group_text_color(self, blocks: list[ContentBlock]) -> str:
         colors = [self._source_text_color(block) for block in blocks]
@@ -3796,10 +3794,7 @@ body {{
 
         block_font_size_pt = self._target_font_size_pt(block)
 
-        if (
-            block.font_role in {FontRole.DISPLAY, FontRole.SECTION}
-            and self._block_is_accent_heading(block)
-        ):
+        if self._renders_as_accent_heading(block):
             return self._render_subtitle_block(block, text, block_font_size_pt)
         if block.font_role == FontRole.DISPLAY or block.role == SemanticRole.TITLE:
             return self._render_heading_block(block, text, block_font_size_pt)
@@ -3810,10 +3805,7 @@ body {{
         return self._render_body_block(block, text, block_font_size_pt)
 
     def _target_font_size_pt(self, block: ContentBlock) -> float:
-        if (
-            block.font_role in {FontRole.DISPLAY, FontRole.SECTION}
-            and self._block_is_accent_heading(block)
-        ):
+        if self._renders_as_accent_heading(block):
             return self.config.accent_font_size_pt
         if block.font_role == FontRole.DISPLAY or block.role == SemanticRole.TITLE:
             return min(self.config.display_font_size_pt, self._get_block_font_size(block))

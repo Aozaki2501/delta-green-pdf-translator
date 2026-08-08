@@ -200,17 +200,18 @@ def test_overflow_repair_reuses_existing_translation_without_full_phase_c(tmp_pa
     calls = []
 
     def fake_repair(content, **kwargs):
-        calls.append((content, kwargs["target_metadata_by_block"]))
+        calls.append((content, kwargs["target_groups"]))
         blocks = list(content.pages[0].blocks)
         blocks[0] = replace(blocks[0], translated_text="short-cn")
         return replace(content, pages=[replace(content.pages[0], blocks=blocks)])
 
     monkeypatch.setattr(
-        "core.typeset_translation.translate_overflow_targets", fake_repair
+        "core.typeset_translation.translate_overflow_groups", fake_repair
     )
 
     repaired = pipeline.repair_overflow_translations({
-        "b1": {
+        "shared": {
+            "block_ids": ["b1"],
             "capacity": "90px",
             "template_signature": "template-a",
             "constraint_prompt": "完整表达且必须放入已测得的区域容量。",
@@ -224,6 +225,133 @@ def test_overflow_repair_reuses_existing_translation_without_full_phase_c(tmp_pa
         (tmp_path / "page_content_translated.json").read_text(encoding="utf-8")
     )
     assert saved.pages[0].blocks[1].translated_text == "B-cn"
+
+
+def test_pipeline_repairs_manifest_targets_and_rechecks_layout(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    (tmp_path / "book_typeset_layout_repair_targets.json").write_text(
+        json.dumps({
+            "schema_version": 2,
+            "profile_id": "delta_green",
+            "repair_attempt": 2,
+            "groups": {
+                "shared": {
+                    "block_ids": ["b1"],
+                    "capacity": {"client_width": 100, "client_height": 20},
+                    "template_signature": "template-a",
+                    "constraint_prompt": "在已测得容量内完整表达。",
+                }
+            },
+            "unresolved": [],
+        }),
+        encoding="utf-8",
+    )
+    translated = _content_doc()
+    translated.pages[0].blocks[:] = [
+        replace(block, translated_text=f"{block.source_text}-cn")
+        for block in translated.pages[0].blocks
+    ]
+    calls = {}
+
+    monkeypatch.setattr(pipeline, "run_phase_a", lambda: _structure_doc())
+
+    def fake_repair(targets, **kwargs):
+        calls["targets"] = targets
+        calls["progress_callback"] = kwargs["progress_callback"]
+        return translated
+
+    monkeypatch.setattr(pipeline, "repair_overflow_translations", fake_repair)
+    monkeypatch.setattr(pipeline, "run_phase_d", lambda structure, content: "out.html")
+    monkeypatch.setattr(pipeline, "_write_report", lambda result: calls.setdefault("result", result))
+
+    result = pipeline.repair_layout_overflows()
+
+    assert calls["targets"]["shared"]["repair_attempt"] == 3
+    assert result.html_path == "out.html"
+    assert calls["result"] is result
+
+
+def test_pipeline_retries_only_remaining_groups_after_browser_feedback(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    manifest_path = tmp_path / "book_typeset_layout_repair_targets.json"
+
+    def write_manifest(attempt, group_id, block_id):
+        manifest_path.write_text(json.dumps({
+            "schema_version": 2,
+            "profile_id": "delta_green",
+            "repair_attempt": attempt,
+            "groups": {
+                group_id: {
+                    "block_ids": [block_id],
+                    "capacity": {"client_width": 100, "client_height": 20},
+                    "template_signature": f"template-{group_id}",
+                    "constraint_prompt": "在已测得容量内完整表达。",
+                }
+            },
+            "unresolved": [],
+        }), encoding="utf-8")
+
+    write_manifest(0, "first", "b1")
+    translated = _content_doc()
+    translated.pages[0].blocks[:] = [
+        replace(block, translated_text=f"{block.source_text}-cn")
+        for block in translated.pages[0].blocks
+    ]
+    calls = []
+    monkeypatch.setattr(pipeline, "run_phase_a", lambda: _structure_doc())
+
+    def fake_repair(groups, **_kwargs):
+        calls.append(groups)
+        return translated
+
+    def fake_phase_d(_structure, _content):
+        if len(calls) == 1:
+            write_manifest(1, "second", "b2")
+            raise RuntimeError("typeset layout overflow: 1 issue(s)")
+        return "out.html"
+
+    monkeypatch.setattr(pipeline, "repair_overflow_translations", fake_repair)
+    monkeypatch.setattr(pipeline, "run_phase_d", fake_phase_d)
+    monkeypatch.setattr(pipeline, "_write_report", lambda _result: None)
+
+    result = pipeline.repair_layout_overflows(max_rounds=2)
+
+    assert result.html_path == "out.html"
+    assert list(calls[0]) == ["first"]
+    assert list(calls[1]) == ["second"]
+    assert calls[0]["first"]["repair_attempt"] == 1
+    assert calls[1]["second"]["repair_attempt"] == 2
+
+
+def test_pipeline_rejects_manifest_with_unresolved_targets(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    (tmp_path / "book_typeset_layout_repair_targets.json").write_text(
+        json.dumps({
+            "schema_version": 2,
+            "profile_id": "delta_green",
+            "groups": {},
+            "unresolved": [{"page": "3", "target": "unknown"}],
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="无法定位"):
+        pipeline.repair_layout_overflows()
 
 
 def test_pipeline_uses_layout_hints_from_output_dir(tmp_path):
