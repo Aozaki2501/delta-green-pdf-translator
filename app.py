@@ -675,6 +675,15 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
+    st.markdown(
+        """
+<div class="sidebar-mode-heading">
+    <span class="sidebar-kicker">DISPLAY SETTINGS</span>
+    <strong>界面外观</strong>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.toggle("办公界面", value=False, key="office_mode")
 
 # === MAIN ===
@@ -993,8 +1002,9 @@ auto_launch_translation = bool(st.session_state.pop("auto_launch_translation", F
 typeset_repair_request = st.session_state.pop("typeset_repair_request", None)
 typeset_repair_launch = isinstance(typeset_repair_request, dict)
 if office_mode:
+    launch_button_slot = st.empty()
     launch_pressed = (
-        st.button("执行翻译任务", type="primary", use_container_width=True)
+        launch_button_slot.button("执行翻译任务", type="primary", use_container_width=True)
         or auto_launch_translation
         or typeset_repair_launch
     )
@@ -1002,8 +1012,9 @@ else:
     st.markdown('<div class="launch-action-separator" aria-hidden="true"></div>', unsafe_allow_html=True)
     action_spacer, action_button = st.columns([3, 1])
     with action_button:
+        launch_button_slot = st.empty()
         launch_pressed = (
-            st.button("开始翻译任务", type="primary", use_container_width=True)
+            launch_button_slot.button("开始翻译任务", type="primary", use_container_width=True)
             or auto_launch_translation
             or typeset_repair_launch
         )
@@ -1072,6 +1083,7 @@ if launch_pressed:
     ):
         st.error("✗ 自动生成 layout hints 需要填写审稿 API Key")
     elif source_type in ("markdown", "docx"):
+        launch_button_slot.empty()
         # ============================================================
         # MARKDOWN / DOCX TRANSLATION FLOW
         # ============================================================
@@ -1282,6 +1294,7 @@ if launch_pressed:
                 "outputs": [],
             })
     else:
+        launch_button_slot.empty()
         run_started_at = time.time()
         source_digest = uploaded_file_digest(pdf_file)
         dossier_id = make_dossier_id(

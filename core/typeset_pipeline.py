@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from core.constants import PROMPT_VERSION, TRANSLATION_TEMPERATURE
 from core.typeset_models import (
     PAGE_CONTENT_SCHEMA_VERSION,
     PAGE_STRUCTURE_SCHEMA_VERSION,
@@ -33,12 +34,14 @@ from core.typeset_models import (
     TypesetConfig,
     TypesetResult,
 )
+from core.utils import atomic_output_path
 
 logger = logging.getLogger(__name__)
 
 # Project root, used to bound where layout hints may be read from.
 APP_DIR = Path(__file__).resolve().parent.parent
-TRANSLATION_CONTEXT_VERSION = "typeset-translation-v2"
+TRANSLATION_CONTEXT_VERSION = "typeset-translation-v5"
+SEMANTIC_CONTEXT_VERSION = "typeset-semantic-v3"
 
 
 def _report_file_name(path: str | None) -> str:
@@ -176,6 +179,7 @@ class TypesetPipeline:
         self._translation_context_path = (
             self.output_dir / f"{self._pdf_stem}_typeset.translation-context.json"
         )
+        self._semantic_context_path = self.output_dir / "page_content.context.json"
         self._report_path = (
             self.output_dir / f"{self._pdf_stem}_typeset_report.json"
         )
@@ -185,6 +189,12 @@ class TypesetPipeline:
         self._layout_repair_path = (
             self.output_dir / f"{self._pdf_stem}_typeset_layout_repair_targets.json"
         )
+        self._quality_report_path = (
+            self.output_dir / f"{self._pdf_stem}_typeset_quality.md"
+        )
+        self._quality_report_json_path = (
+            self.output_dir / f"{self._pdf_stem}_typeset_quality.json"
+        )
 
         # Pipeline state
         self._start_page: int = 0
@@ -192,6 +202,7 @@ class TypesetPipeline:
         self._progress_callback: Callable | None = None
         self._errors: list[str] = []
         self._source_sha256_cache: str | None = None
+        self._source_page_count_cache: int | None = None
         self._layout_repair_attempt: int = 0
 
     def _effective_glossary(self, supplied_glossary: dict | None) -> dict:
@@ -206,14 +217,62 @@ class TypesetPipeline:
         return {**built_in, **supplied}
 
     def _translation_context_signature(self) -> str:
+        translator_class = type(self.translator)
         payload = {
             "version": TRANSLATION_CONTEXT_VERSION,
+            "source": self._source_context_identity(),
+            "prompt_version": PROMPT_VERSION,
+            "temperature": TRANSLATION_TEMPERATURE,
             "profile_id": self.config.profile_id,
             "source_language": self.config.source_language,
+            "preserve_emphasis": True,
             "glossary": sorted(self.glossary.items()),
+            "semantic_context": self._semantic_context_signature(),
+            "translator": {
+                "class": f"{translator_class.__module__}.{translator_class.__qualname__}",
+                "model": str(getattr(self.translator, "model", "") or ""),
+                "base_url": str(getattr(self.translator, "base_url", "") or ""),
+                "system_prompt": str(
+                    getattr(self.translator, "system_prompt", "") or ""
+                ),
+            },
         }
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _semantic_context_signature(self) -> str:
+        payload = {
+            "version": SEMANTIC_CONTEXT_VERSION,
+            "source": self._source_context_identity(),
+            "profile_id": self.config.profile_id,
+            "source_language": self.config.source_language,
+            "accent_heading_colors": list(self.config.accent_heading_colors),
+            "body_font_size_pt": self.config.body_font_size_pt,
+            "display_font_size_pt": self.config.display_font_size_pt,
+            "section_font_size_pt": self.config.section_font_size_pt,
+            "subsection_font_size_pt": self.config.subsection_font_size_pt,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _source_context_identity(self) -> dict:
+        source = Path(self.pdf_path)
+        return {
+            "file_name": source.name,
+            "sha256": self._current_source_sha256() if source.is_file() else "",
+            "start_page": int(self._start_page),
+            "end_page": None if self._end_page is None else int(self._end_page),
+        }
 
     def _has_current_translation_context(self) -> bool:
         if not self._translation_context_path.exists():
@@ -225,14 +284,38 @@ class TypesetPipeline:
         return data.get("signature") == self._translation_context_signature()
 
     def _write_translation_context(self) -> None:
-        self._translation_context_path.write_text(
-            json.dumps(
-                {"signature": self._translation_context_signature()},
-                ensure_ascii=False,
-                indent=2,
-            ) + "\n",
-            encoding="utf-8",
+        self._write_context_file(
+            self._translation_context_path,
+            {"signature": self._translation_context_signature()},
         )
+
+    def _has_current_semantic_context(self) -> bool:
+        if not self._semantic_context_path.exists():
+            return False
+        try:
+            data = json.loads(self._semantic_context_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return data.get("signature") == self._semantic_context_signature()
+
+    def _write_semantic_context(self) -> None:
+        self._write_context_file(
+            self._semantic_context_path,
+            {"signature": self._semantic_context_signature()},
+        )
+
+    @staticmethod
+    def _write_context_file(path: Path, payload: dict) -> None:
+        TypesetPipeline._write_text_file(
+            path,
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+        )
+
+    @staticmethod
+    def _write_text_file(path: Path, text: str) -> None:
+        with atomic_output_path(path) as candidate:
+            candidate.write_text(text, encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Public API
@@ -356,10 +439,8 @@ class TypesetPipeline:
             )
 
         # Save to file
-        self._page_structure_path.write_text(
-            structure.to_json(), encoding="utf-8"
-        )
-        self._ensure_page_visuals(structure)
+        self._write_text_file(self._page_structure_path, structure.to_json())
+        self._ensure_page_visuals(structure, force_rebuild=True)
         self._mark_phase_completed("A")
         return structure
 
@@ -379,7 +460,12 @@ class TypesetPipeline:
         # Check for existing page_content.json with valid schema
         existing = self._load_existing_content()
         if existing is not None:
-            existing = self._normalize_image_overlay_blocks(existing, structure)
+            normalized = self._normalize_image_overlay_blocks(existing, structure)
+            if normalized is not existing:
+                self._write_text_file(
+                    self._page_content_path, normalized.to_json()
+                )
+            existing = normalized
             logger.info("Phase B: 复用已有 page_content.json")
             return existing
 
@@ -396,9 +482,8 @@ class TypesetPipeline:
         content = self._normalize_image_overlay_blocks(content, structure)
 
         # Save to file
-        self._page_content_path.write_text(
-            content.to_json(), encoding="utf-8"
-        )
+        self._write_text_file(self._page_content_path, content.to_json())
+        self._write_semantic_context()
         self._mark_phase_completed("B")
         return content
 
@@ -436,9 +521,7 @@ class TypesetPipeline:
         logger.info(f"应用 layout hints：{hints_path}")
         hints = LayoutHints.from_file(hints_path)
         hinted = apply_hints_to_content(content, hints, structure)
-        self._page_content_hinted_path.write_text(
-            hinted.to_json(), encoding="utf-8"
-        )
+        self._write_text_file(self._page_content_hinted_path, hinted.to_json())
         return hinted
 
     def run_phase_c(self, content: PageContentDocument) -> PageContentDocument:
@@ -464,6 +547,7 @@ class TypesetPipeline:
         existing = self._load_existing_translated_content()
         if existing is not None:
             logger.info("Phase C: 复用已有 page_content_translated.json")
+            self._write_typeset_quality_report(existing)
             return existing
 
         logger.info("Phase C: 翻译...")
@@ -488,7 +572,7 @@ class TypesetPipeline:
             glossary=self.glossary,
             progress_callback=translation_callback,
             max_workers=self.config.translation_concurrency,
-            preserve_emphasis=self.config.profile_id == "kult",
+            preserve_emphasis=True,
         )
         self._ensure_no_translation_failed(translated, progress)
 
@@ -497,6 +581,7 @@ class TypesetPipeline:
             translated, str(self._page_content_translated_path)
         )
         self._write_translation_context()
+        self._write_typeset_quality_report(translated)
         self._mark_phase_completed("C")
         return translated
 
@@ -539,12 +624,29 @@ class TypesetPipeline:
             glossary=self.glossary,
             target_groups=target_groups,
             progress_callback=repair_callback,
-            preserve_emphasis=self.config.profile_id == "kult",
+            preserve_emphasis=True,
         )
         save_translated_content(repaired, str(self._page_content_translated_path))
         self._write_translation_context()
+        self._write_typeset_quality_report(repaired)
         self._mark_phase_completed("C")
         return repaired
+
+    def _write_typeset_quality_report(
+        self,
+        content: PageContentDocument,
+    ) -> None:
+        from core.typeset_quality import (
+            build_typeset_quality_report,
+            write_typeset_quality_report,
+        )
+
+        report = build_typeset_quality_report(content, self.glossary)
+        write_typeset_quality_report(
+            report,
+            self._quality_report_path,
+            self._quality_report_json_path,
+        )
 
     def repair_layout_overflows(
         self,
@@ -704,18 +806,27 @@ class TypesetPipeline:
             page_visuals=page_visuals,
         )
 
-        # Save HTML file
-        self._html_path.parent.mkdir(parents=True, exist_ok=True)
-        self._html_path.write_text(html_content, encoding="utf-8")
+        # Validate a same-directory candidate so a failed rebuild cannot replace
+        # the last known-good artifact and relative assets resolve identically.
         from exporters.typeset_pdf import TypesetPDFExporter
 
-        TypesetPDFExporter().validate_html_layout(
-            str(self._html_path),
-            report_path=str(self._layout_report_path),
-            repair_manifest_path=str(self._layout_repair_path),
-            profile_id=self.config.profile_id,
-            repair_attempt=self._layout_repair_attempt,
-        )
+        from core.typeset_visibility import expected_render_blocks
+
+        expected_blocks = expected_render_blocks(content, structure)
+        with atomic_output_path(self._html_path) as candidate_path:
+            candidate_path.write_text(html_content, encoding="utf-8")
+            TypesetPDFExporter().validate_html_layout(
+                str(candidate_path),
+                report_path=str(self._layout_report_path),
+                repair_manifest_path=str(self._layout_repair_path),
+                profile_id=self.config.profile_id,
+                repair_attempt=self._layout_repair_attempt,
+                expected_blocks=expected_blocks,
+                required_font_families=(
+                    self.config.font_family,
+                    self.config.heading_font_family,
+                ),
+            )
         self._mark_phase_completed("D")
         return str(self._html_path)
 
@@ -758,21 +869,21 @@ class TypesetPipeline:
             page_visuals=page_visuals,
             fixed_html_href=self._html_path.name if self.config.reading_html_href else None,
         )
-        self._reading_html_path.parent.mkdir(parents=True, exist_ok=True)
-        self._reading_html_path.write_text(html_content, encoding="utf-8")
+        with atomic_output_path(self._reading_html_path) as candidate_path:
+            candidate_path.write_text(html_content, encoding="utf-8")
         return str(self._reading_html_path)
 
-    def run_phase_e(self, html_path: str) -> str | None:
+    def run_phase_e(self, html_path: str) -> str:
         """Phase E: PDF export.
 
-        Renders the HTML to PDF using Playwright. If Playwright is not
-        available or export fails, records the error and returns None.
+        Renders the validated HTML to a candidate PDF and publishes it only
+        after the resulting file contains at least one page.
 
         Args:
             html_path: Path to the typeset HTML file.
 
         Returns:
-            Path to the generated PDF file, or None if export failed.
+            Path to the generated PDF file.
         """
         from exporters.typeset_pdf import TypesetPDFExporter
 
@@ -784,33 +895,16 @@ class TypesetPipeline:
         exporter = TypesetPDFExporter()
         pdf_output = str(self._pdf_output_path)
 
-        try:
-            result = exporter.export_with_fallback(
-                html_path=html_path,
-                pdf_output=pdf_output,
-                page_width_pt=page_width_pt,
-                page_height_pt=page_height_pt,
-            )
-            if result.errors:
-                self._errors.extend(result.errors)
-            if result.failed_pages:
-                for page_num in result.failed_pages:
-                    self._errors.append(f"PDF 导出第 {page_num} 页失败")
-            if result.errors or result.failed_pages or result.success_pages <= 0:
-                return None
-            self._mark_phase_completed("E")
-            return pdf_output
-        except RuntimeError as exc:
-            # Playwright not installed or other critical error
-            error_msg = f"PDF 导出失败：{exc}"
-            self._errors.append(error_msg)
-            logger.error(error_msg)
-            return None
-        except (FileNotFoundError, ValueError) as exc:
-            error_msg = f"PDF 导出失败：{exc}"
-            self._errors.append(error_msg)
-            logger.error(error_msg)
-            return None
+        result = exporter.export_with_fallback(
+            html_path=html_path,
+            pdf_output=pdf_output,
+            page_width_pt=page_width_pt,
+            page_height_pt=page_height_pt,
+        )
+        if result.errors or result.failed_pages or result.success_pages <= 0:
+            raise RuntimeError("PDF 导出未产生完整成品")
+        self._mark_phase_completed("E")
+        return pdf_output
 
     # ------------------------------------------------------------------
     # Checkpoint / Resume helpers
@@ -834,6 +928,11 @@ class TypesetPipeline:
                     "page_structure.json 来源 PDF 不匹配，将重新提取"
                 )
                 return None
+            if not self._document_matches_requested_pages(doc):
+                logger.warning(
+                    "page_structure.json 页码范围不匹配，将重新提取"
+                )
+                return None
             if _has_browser_incompatible_images(doc, self.output_dir):
                 logger.warning(
                     "page_structure.json 包含浏览器不支持的图片格式，将重新提取"
@@ -846,7 +945,10 @@ class TypesetPipeline:
 
     def _load_existing_content(self) -> PageContentDocument | None:
         """Load existing page_content.json if valid."""
-        if not self._page_content_path.exists():
+        if (
+            not self._page_content_path.exists()
+            or not self._has_current_semantic_context()
+        ):
             return None
         try:
             text = self._page_content_path.read_text(encoding="utf-8")
@@ -859,6 +961,11 @@ class TypesetPipeline:
             if not self._matches_current_source(doc.source_pdf, doc.source_sha256):
                 logger.warning(
                     "page_content.json 来源 PDF 不匹配，将重新分析"
+                )
+                return None
+            if not self._document_matches_requested_pages(doc):
+                logger.warning(
+                    "page_content.json 页码范围不匹配，将重新分析"
                 )
                 return None
             return doc
@@ -878,6 +985,8 @@ class TypesetPipeline:
         the authoritative visual layer, not become translated blocks.
         """
         structure_by_page = {page.page_index: page for page in structure.pages}
+        from core.typeset_visibility import occluded_duplicate_block_ids
+
         changed = False
         pages = []
         for page in content.pages:
@@ -885,9 +994,13 @@ class TypesetPipeline:
             if page_structure is None:
                 pages.append(page)
                 continue
+            hidden_ids = occluded_duplicate_block_ids(page, page_structure)
             blocks = []
             for block in page.blocks:
-                if not _is_image_overlay_text_block(block, page_structure):
+                is_image_overlay = _is_image_overlay_text_block(
+                    block, page_structure
+                )
+                if block.id not in hidden_ids and not is_image_overlay:
                     blocks.append(block)
                     continue
                 changed = True
@@ -896,19 +1009,17 @@ class TypesetPipeline:
                         block,
                         translated_text=None,
                         translatable=False,
-                        layout_mode="image_overlay_text",
+                        layout_mode=(
+                            "hidden_source_text"
+                            if block.id in hidden_ids
+                            else "image_overlay_text"
+                        ),
                     )
                 )
             pages.append(replace(page, blocks=blocks))
         if not changed:
             return content
-        normalized = replace(content, pages=pages)
-        self._page_content_path.write_text(normalized.to_json(), encoding="utf-8")
-        if self._page_content_translated_path.exists():
-            self._page_content_translated_path.write_text(
-                normalized.to_json(), encoding="utf-8"
-            )
-        return normalized
+        return replace(content, pages=pages)
 
     def _load_existing_translated_content(
         self,
@@ -929,9 +1040,17 @@ class TypesetPipeline:
                 return None
             if not self._matches_current_source(doc.source_pdf, doc.source_sha256):
                 return None
+            if not self._document_matches_requested_pages(doc):
+                return None
             structure = self._load_existing_structure()
             if structure is not None:
-                doc = self._normalize_image_overlay_blocks(doc, structure)
+                normalized = self._normalize_image_overlay_blocks(doc, structure)
+                if normalized is not doc:
+                    self._write_text_file(
+                        self._page_content_translated_path,
+                        normalized.to_json(),
+                    )
+                doc = normalized
             # Check if all translatable blocks have translations
             from core.translation_validation import contains_damaged_placeholder
 
@@ -955,35 +1074,24 @@ class TypesetPipeline:
         """Mark a phase as completed in the progress file."""
         from core.typeset_translation import TypesetTranslationProgress
 
-        try:
-            progress = TypesetTranslationProgress(
-                str(self._progress_path),
-                context_signature=self._translation_context_signature(),
-            )
-            progress.mark_phase_completed(phase)
-        except Exception:
-            pass  # Non-critical
-
-    def _is_phase_completed(self, phase: str) -> bool:
-        """Check if a phase has been completed."""
-        from core.typeset_translation import TypesetTranslationProgress
-
-        try:
-            progress = TypesetTranslationProgress(
-                str(self._progress_path),
-                context_signature=self._translation_context_signature(),
-            )
-            return progress.is_phase_completed(phase)
-        except Exception:
-            return False
+        progress = TypesetTranslationProgress(
+            str(self._progress_path),
+            context_signature=self._translation_context_signature(),
+        )
+        progress.mark_phase_completed(phase)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _ensure_page_visuals(self, structure: PageStructureDocument) -> None:
+    def _ensure_page_visuals(
+        self,
+        structure: PageStructureDocument,
+        *,
+        force_rebuild: bool = False,
+    ) -> None:
         """Create the authoritative clean SVG layer for every selected page."""
-        if self._page_visuals_manifest_path.exists():
+        if self._page_visuals_manifest_path.exists() and not force_rebuild:
             self._load_page_visuals_for_structure(structure)
             return
 
@@ -1009,9 +1117,10 @@ class TypesetPipeline:
             "source_sha256": source_sha256,
             "pages": pages,
         }
-        self._page_visuals_manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        self._write_text_file(
+            self._page_visuals_manifest_path,
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
         )
         self._load_page_visuals_for_structure(structure)
 
@@ -1116,6 +1225,39 @@ class TypesetPipeline:
             ).hexdigest()
         return self._source_sha256_cache
 
+    def _source_page_count(self) -> int:
+        if self._source_page_count_cache is not None:
+            return self._source_page_count_cache
+        try:
+            try:
+                import pymupdf
+            except ImportError:
+                import fitz as pymupdf
+            with pymupdf.open(self.pdf_path) as document:
+                count = len(document)
+        except Exception as exc:
+            raise RuntimeError(f"无法读取来源 PDF 页数：{self.pdf_path}") from exc
+        if count <= 0:
+            raise RuntimeError("来源 PDF 没有页面")
+        self._source_page_count_cache = count
+        return count
+
+    def _expected_page_indexes(self) -> tuple[int, ...]:
+        total = self._source_page_count()
+        start = int(self._start_page)
+        requested_end = total if self._end_page is None else int(self._end_page)
+        if start < 0 or start >= total:
+            raise ValueError(f"起始页超出范围：PDF 共 {total} 页")
+        if requested_end <= start:
+            raise ValueError("结束页必须大于起始页")
+        end = min(requested_end, total)
+        return tuple(range(start, end))
+
+    def _document_matches_requested_pages(self, document) -> bool:
+        actual = tuple(page.page_index for page in document.pages)
+        expected = self._expected_page_indexes()
+        return actual == expected and int(document.page_count) == len(expected)
+
     def _matches_current_source(self, source_pdf: str, source_sha256: str) -> bool:
         """Return whether an intermediate JSON belongs to this exact PDF."""
         if Path(source_pdf).name != Path(self.pdf_path).name or not source_sha256:
@@ -1153,29 +1295,32 @@ class TypesetPipeline:
         )
 
     def _get_page_dimensions(self) -> tuple[float, float]:
-        """Get page dimensions from the source PDF (first page).
+        """Get one verified page size for the selected source pages.
 
-        Returns:
-            (width_pt, height_pt) tuple.
+        Chromium exports one size for the whole output. Mixed-size selections
+        therefore fail explicitly instead of being silently forced to Letter.
         """
         try:
             try:
                 import pymupdf
             except ImportError:
                 import fitz as pymupdf
-
-            doc = pymupdf.open(self.pdf_path)
-            if len(doc) > 0:
-                page = doc[0]
-                width = float(page.rect.width)
-                height = float(page.rect.height)
-                doc.close()
-                return width, height
-            doc.close()
-        except Exception:
-            pass
-        # Default to US Letter if PDF cannot be read
-        return 612.0, 792.0
+            indexes = self._expected_page_indexes()
+            with pymupdf.open(self.pdf_path) as document:
+                dimensions = {
+                    (
+                        round(float(document[index].rect.width), 3),
+                        round(float(document[index].rect.height), 3),
+                    )
+                    for index in indexes
+                }
+        except Exception as exc:
+            raise RuntimeError("无法读取来源 PDF 页面尺寸") from exc
+        if len(dimensions) != 1:
+            raise RuntimeError(
+                "所选页面尺寸不一致，固定页 PDF 不能用一个页面尺寸导出"
+            )
+        return next(iter(dimensions))
 
     def _build_result(
         self,
@@ -1224,6 +1369,9 @@ class TypesetPipeline:
             layout_repair_path=str(self._layout_repair_path)
             if self._layout_repair_path.exists()
             else None,
+            quality_report_path=str(self._quality_report_path)
+            if self._quality_report_path.exists()
+            else None,
         )
 
     def _write_report(self, result: TypesetResult) -> None:
@@ -1240,6 +1388,7 @@ class TypesetPipeline:
             "reading_html_output": _report_file_name(result.reading_html_path),
             "layout_report": _report_file_name(result.layout_report_path),
             "layout_repair": _report_file_name(result.layout_repair_path),
+            "quality_report": _report_file_name(result.quality_report_path),
             "errors": result.export_errors,
             "usage": {
                 "input_tokens": result.input_tokens,
@@ -1261,14 +1410,10 @@ class TypesetPipeline:
                 "layout_hints_path": _report_file_name(self.config.layout_hints_path),
             },
         }
-        try:
-            self._report_path.parent.mkdir(parents=True, exist_ok=True)
-            self._report_path.write_text(
-                json.dumps(report, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            logger.warning(f"无法写入报告文件：{exc}")
+        self._write_text_file(
+            self._report_path,
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        )
 
     def _report_progress(self, phase: str, done: int, total: int) -> None:
         """Report progress via callback if available."""

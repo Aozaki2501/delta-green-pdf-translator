@@ -354,9 +354,9 @@ class TypesetConfig:
     fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Serif SC", "Source Han Serif CN", "SimSun", "serif"])
     heading_font_family: str = "DG Lanting Kanhei"
     heading_fallback_fonts: list[str] = field(default_factory=lambda: ["Noto Sans SC", "Source Han Sans CN", "SimHei", "sans-serif"])
-    body_font_size_pt: float = 10.9
-    min_body_font_size_pt: float = 10.5
-    line_height: float = 17.0 / 10.9
+    body_font_size_pt: float = 10.5
+    min_body_font_size_pt: float = 10.0
+    line_height: float = 1.45
     column_gap_pt: float = 31.0
     text_indent: str = "2em"
     title_color: str = "#231f20"
@@ -398,6 +398,7 @@ class TypesetResult:
     cost_usd: float | None = None
     layout_report_path: str | None = None
     layout_repair_path: str | None = None
+    quality_report_path: str | None = None
 
 
 # ===========================================================================

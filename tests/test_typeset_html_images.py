@@ -894,6 +894,10 @@ def test_fragmented_foreground_region_uses_one_natural_flow():
     assert html.count("typeset-same-region-flow") == 1
     assert "typeset-positioned-block" not in html
     assert "color:#ffffff" in html
+    assert (
+        'data-flow-blocks="p0001_r0001_b0000,p0001_r0001_b0001,'
+        'p0001_r0001_b0002"'
+    ) in html
 
 
 def test_fragmented_card_region_bypasses_centered_fixed_blocks():

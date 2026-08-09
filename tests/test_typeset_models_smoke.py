@@ -195,9 +195,9 @@ def test_typeset_config_defaults():
     assert "serif" in cfg.fallback_fonts
     assert cfg.heading_font_family == "DG Lanting Kanhei"
     assert "SimHei" in cfg.heading_fallback_fonts
-    assert cfg.body_font_size_pt == 10.9
-    assert cfg.min_body_font_size_pt == 10.5
-    assert cfg.line_height == 17.0 / 10.9
+    assert cfg.body_font_size_pt == 10.5
+    assert cfg.min_body_font_size_pt == 10.0
+    assert cfg.line_height == 1.45
     assert cfg.column_gap_pt == 31.0
     assert cfg.text_indent == "2em"
     assert cfg.subtitle_color == "#dc2527"

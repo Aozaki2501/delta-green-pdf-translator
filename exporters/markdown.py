@@ -7,7 +7,7 @@ files with reading-page structure, table of contents, and source-page annotation
 Dependencies: core.utils (ensure_output_parent), exporters._shared (pagination and helpers)
 """
 
-from core.utils import ensure_output_parent
+from core.utils import atomic_output_path, ensure_output_parent
 from pathlib import Path
 from exporters._shared import (
     paginate_translated_blocks,
@@ -97,23 +97,24 @@ def write_markdown_output(translated_pages, md_output: str, title: str, toc: str
         page_layouts=page_layouts,
         split_on_layout=True,
     )
-    with open(md_output, "w", encoding="utf-8") as f:
-        f.write(f"# {title} — 中文翻译\n\n---\n\n")
+    with atomic_output_path(md_output) as candidate:
+        with candidate.open("w", encoding="utf-8") as f:
+            f.write(f"# {title} — 中文翻译\n\n---\n\n")
 
-        if toc:
-            f.write(toc)
-            f.write("\n---\n\n")
+            if toc:
+                f.write(toc)
+                f.write("\n---\n\n")
 
-        image_cursors = {}
-        for page_idx, page in enumerate(reading_pages, 1):
-            blocks = page["blocks"]
-            layout = page.get("layout", "columns")
-            source_pages = _format_page_ranges([b["source_page"] for b in blocks])
-            f.write(f"<!-- Reading Page {page_idx}; Layout: {layout}; Source PDF Pages: {source_pages} -->\n\n")
-            for block in blocks:
-                source_page = block.get("source_page")
-                image_paths = (image_assets or {}).get(source_page, [])
-                cursor = image_cursors.setdefault(source_page, [0])
-                f.write(_format_markdown_block(block["text"], image_paths, cursor, md_output))
-                f.write("\n\n")
-            f.write("---\n\n")
+            image_cursors = {}
+            for page_idx, page in enumerate(reading_pages, 1):
+                blocks = page["blocks"]
+                layout = page.get("layout", "columns")
+                source_pages = _format_page_ranges([b["source_page"] for b in blocks])
+                f.write(f"<!-- Reading Page {page_idx}; Layout: {layout}; Source PDF Pages: {source_pages} -->\n\n")
+                for block in blocks:
+                    source_page = block.get("source_page")
+                    image_paths = (image_assets or {}).get(source_page, [])
+                    cursor = image_cursors.setdefault(source_page, [0])
+                    f.write(_format_markdown_block(block["text"], image_paths, cursor, md_output))
+                    f.write("\n\n")
+                f.write("---\n\n")

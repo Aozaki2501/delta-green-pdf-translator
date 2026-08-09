@@ -406,8 +406,7 @@ def test_non_table_body_keeps_reflow_and_fusion_style_line_height():
     html = TypesetHTMLRebuilder().rebuild_document(structure, content)
 
     assert "typeset-reflow-body" in html or "typeset-region-flow" in html
-    # The stylesheet uses the 17pt / 10.9pt ratio measured from the
-    # Chinese reference layout.
+    # The optimized Rejection profile uses the verified 1.45 body line height.
     body_rules = re.findall(
         r"(?:\.typeset-reflow-body|\.typeset-body-text)[^{]*\{(?P<body>.*?)\}",
         html,
@@ -415,7 +414,7 @@ def test_non_table_body_keeps_reflow_and_fusion_style_line_height():
     )
     assert body_rules
     assert any(
-        re.search(r"line-height:\s*(?:1\.559|22\.667px|17pt)", rule)
+        re.search(r"line-height:\s*1\.45", rule)
         for rule in body_rules
     )
 

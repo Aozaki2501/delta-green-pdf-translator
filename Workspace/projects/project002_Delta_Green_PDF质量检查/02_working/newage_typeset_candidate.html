@@ -1,0 +1,893 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delta Green：新时代</title>
+<style>
+@font-face {
+    font-family: "DG Fandol Song";
+    src: url("assets/typeset_fonts/fusion-fandol-song.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}
+@font-face {
+    font-family: "DG Fandol Kai";
+    src: url("assets/typeset_fonts/fusion-fandol-kai.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}
+@font-face {
+    font-family: "DG Moushi Meili";
+    src: url("assets/typeset_fonts/fusion-moushi-meili.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}
+@font-face {
+    font-family: "DG Lanting Kanhei";
+    src: url("assets/typeset_fonts/fusion-lanting-kanhei.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}
+@font-face {
+    font-family: "DG Noto Serif SC";
+    src: url("assets/typeset_fonts/noto-serif-sc-400.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}
+@font-face {
+    font-family: "DG Noto Serif SC";
+    src: url("assets/typeset_fonts/noto-serif-sc-700.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 700;
+    font-display: block;
+}
+@font-face {
+    font-family: "DG Noto Sans SC";
+    src: url("assets/typeset_fonts/noto-sans-sc-400.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}
+@font-face {
+    font-family: "DG Noto Sans SC";
+    src: url("assets/typeset_fonts/noto-sans-sc-700.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 700;
+    font-display: block;
+}
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+body {
+    margin: 0;
+    padding: 24px;
+    background: #444;
+    font-family: "DG Fandol Song", "Noto Serif SC", "Source Han Serif CN", "SimSun", serif;
+    font-size: 14.533px;
+    line-height: 1.5596330275229358;
+}
+.typeset-page {
+    position: relative;
+    overflow: hidden;
+    margin: 0 auto 24px;
+    background: #fff;
+    box-shadow: 0 3px 18px rgba(0, 0, 0, 0.35);
+    page-break-after: always;
+}
+.typeset-bg-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+}
+.typeset-image-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+}
+.typeset-page-visual-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+}
+.typeset-page-visual {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.typeset-page-image-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+}
+.typeset-image {
+    position: absolute;
+    display: block;
+}
+.typeset-decoration-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+}
+.typeset-decoration {
+    position: absolute;
+}
+.typeset-text-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+}
+.typeset-positioned-block {
+    position: absolute;
+    overflow: visible;
+}
+.typeset-positioned-block .typeset-body-text {
+    margin: 0;
+    line-height: 1.4;
+    text-indent: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.typeset-positioned-block .typeset-heading {
+    margin: 0;
+    line-height: 1.2;
+    text-indent: 0;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+.typeset-reflow-area {
+    position: absolute;
+    overflow: hidden;
+    color: #231f20;
+    font-size: 14.533px;
+}
+.typeset-reflow-columns {
+    display: flex;
+    gap: 32.000px;
+    height: 100%;
+}
+.typeset-reflow-column {
+    flex: 1;
+    overflow: hidden;
+}
+.typeset-reflow-title {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-size: 2em;
+    line-height: 1.25;
+    margin: 0 0 10.667px 0;
+    text-align: center;
+    font-weight: 700;
+    text-indent: 0;
+    color: #231f20;
+}
+.typeset-reflow-section {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-size: 26.667px;
+    line-height: 1.2;
+    margin: 0 0 9.333px 0;
+    font-weight: 700;
+    text-indent: 0;
+    text-align: left;
+    color: #231f20;
+}
+.typeset-reflow-subtitle {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-size: 1.37em;
+    line-height: 1.25;
+    margin: 13.333px 0 6.667px 0;
+    font-weight: 700;
+    text-indent: 0;
+    color: #dc2527;
+}
+.typeset-reflow-subsection {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-size: 17.333px;
+    line-height: 1.25;
+    margin: 9.333px 0 5.333px 0;
+    font-weight: 700;
+    text-indent: 0;
+    color: inherit;
+}
+.typeset-reflow-callout {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-size: 21.333px;
+    line-height: 1.2;
+    margin: 0;
+    font-weight: 700;
+    text-indent: 0;
+    text-align: center;
+    color: #231f20;
+}
+.typeset-reflow-body {
+    font-size: 1em;
+    line-height: 1.5596330275229358;
+    margin: 0 0 0.34em 0;
+    text-indent: 2em;
+    text-align: left;
+    line-break: strict;
+    word-break: normal;
+    overflow-wrap: anywhere;
+}
+.font-role-display,
+.font-role-section,
+.font-role-subsection,
+.font-role-running-header,
+.font-role-callout {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+}
+.font-role-body,
+.font-role-meta {
+    font-family: "DG Fandol Song", "Noto Serif SC", "Source Han Serif CN", "SimSun", serif;
+}
+.source-font-display-condensed {
+    font-family: "DG Moushi Meili", "DG Fandol Song", "Noto Serif SC", "Source Han Serif CN", "SimSun", serif !important;
+    font-weight: 400;
+    letter-spacing: 0.015em;
+}
+.source-font-geometric {
+    font-family: "DG Lanting Kanhei", "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif !important;
+}
+.source-font-typewriter {
+    font-family: "DG Fandol Kai", "DG Fandol Song", "Noto Serif SC", "Source Han Serif CN", "SimSun", serif !important;
+    font-style: normal;
+    letter-spacing: 0.025em;
+}
+.source-font-literary {
+    font-family: "DG Fandol Song", "Noto Serif SC", "Source Han Serif CN", "SimSun", serif !important;
+}
+.source-style-italic {
+    font-style: italic;
+}
+.source-style-bold {
+    font-weight: 700;
+}
+.typeset-region-flow {
+    position: absolute;
+    overflow: hidden;
+    color: #231f20;
+    font-size: 14.533px;
+    line-height: 1.5596330275229358;
+}
+.typeset-region-flow .typeset-reflow-body {
+    line-height: 1.5596330275229358;
+    margin-bottom: 0.72em;
+}
+.typeset-region-flow .typeset-reflow-title {
+    margin: 13.333px 0 13.333px 0;
+}
+.typeset-rotated-flow {
+    position: absolute;
+    overflow: hidden;
+    font-size: 14.533px;
+    line-height: 1.35;
+}
+.typeset-rotated-flow .typeset-reflow-title {
+    font-size: 1.7em;
+    margin-bottom: 6.667px;
+}
+.typeset-rotated-flow .typeset-reflow-subtitle {
+    font-size: 1.28em;
+    margin: 0 0 5.333px 0;
+}
+.typeset-rotated-flow .typeset-reflow-body {
+    line-height: 1.35;
+    margin-bottom: 0.25em;
+    text-indent: 0;
+}
+.typeset-timeline-intro {
+    position: absolute;
+    overflow: hidden;
+    font-size: 14.533px;
+    line-height: 1.35;
+    color: #231f20;
+}
+.typeset-timeline-flow {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    overflow: hidden;
+    font-size: 11.733px;
+    line-height: 1.28;
+    color: #231f20;
+}
+.typeset-timeline-event {
+    margin: 0 0 6.667px 0;
+    text-indent: 0;
+    background: rgba(239, 235, 220, 0.92);
+}
+.typeset-timeline-date {
+    padding: 0 2.667px 2.000px;
+    border-bottom: 1px solid #1d1d1d;
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-size: 1.08em;
+    font-weight: 700;
+    line-height: 1.12;
+}
+.typeset-timeline-body {
+    padding: 2.667px 6.667px 0;
+    line-height: 1.25;
+}
+.typeset-line-track-flow {
+    position: absolute;
+    inset: 0;
+    color: #231f20;
+}
+.typeset-structured-table {
+    position: absolute;
+    overflow: visible;
+    z-index: 2;
+    background: #f2f0ea;
+    border: 1px solid #202426;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+    color: #17191a;
+    font-family: "DG Fandol Song", "Noto Serif SC", "Source Han Serif CN", "SimSun", serif;
+    font-size: 12.000px;
+    line-height: 1.15;
+}
+.typeset-structured-table table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+.typeset-structured-table th {
+    padding: 3.200px 4.000px;
+    background: #282d2f;
+    border-right: 1px solid rgba(255, 255, 255, 0.22);
+    color: #fff;
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-weight: 700;
+    line-height: 1.05;
+    text-align: left;
+    vertical-align: bottom;
+}
+.typeset-structured-table td {
+    padding: 2.267px 4.000px;
+    border-right: 1px solid rgba(34, 38, 40, 0.18);
+    border-bottom: 1px solid rgba(34, 38, 40, 0.25);
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+.typeset-structured-table tbody tr:nth-child(even):not(.typeset-table-note) td {
+    background: rgba(183, 188, 190, 0.48);
+}
+.typeset-structured-table .typeset-table-note td {
+    padding-top: 4.000px;
+    padding-bottom: 4.000px;
+    background: #f2f0ea;
+    font-size: 0.86em;
+    font-style: italic;
+    line-height: 1.2;
+}
+.typeset-line-slot {
+    position: absolute;
+    overflow: hidden;
+    white-space: nowrap;
+    word-break: keep-all;
+    text-indent: 0;
+    font-size: 14.533px;
+    line-height: 1.18;
+}
+.typeset-line-slot[data-bold="true"] {
+    font-weight: 700;
+}
+.typeset-line-slot[data-italic="true"] {
+    font-style: italic;
+}
+.typeset-source-span {
+    position: absolute;
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+}
+.typeset-source-title {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-weight: 700;
+    line-height: 1.18;
+    text-indent: 0;
+    color: #231f20;
+}
+.typeset-source-subtitle {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-weight: 700;
+    line-height: 1.2;
+    text-indent: 0;
+    color: #dc2527;
+}
+.typeset-columns {
+    display: flex;
+    gap: 41.333px;
+    height: 100%;
+    padding: 0;
+}
+.typeset-column {
+    flex: 1;
+    overflow: hidden;
+}
+.typeset-single {
+    height: 100%;
+    padding: 0;
+    overflow: hidden;
+}
+.typeset-cover {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    text-align: center;
+    padding: 10%;
+}
+.typeset-body-text {
+    font-size: 14.533px;
+    line-height: 1.5596330275229358;
+    text-indent: 2em;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+    margin-bottom: 0.72em;
+}
+.typeset-heading {
+    font-family: "DG Lanting Kanhei", "Noto Sans SC", "Source Han Sans CN", "SimHei", sans-serif;
+    font-weight: bold;
+    line-height: 1.3;
+    margin: 0.6em 0 0.3em 0;
+    text-indent: 0;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+}
+.typeset-heading:first-child {
+    margin-top: 0;
+}
+.typeset-cover .typeset-heading {
+    margin: 0.3em 0;
+}
+.typeset-cover .typeset-body-text {
+    text-indent: 0;
+    text-align: center;
+}
+@page {
+    size: 8.500000in 11.000000in;
+    margin: 0;
+}
+@media print {
+    body {
+        padding: 0;
+        background: #fff;
+    }
+    .typeset-page {
+        margin: 0;
+        box-shadow: none;
+        zoom: 1 !important;
+    }
+}
+@media screen and (max-width: 840px) {
+    body {
+        padding: 12px;
+        overflow-x: hidden;
+    }
+}
+</style>
+</head>
+<body>
+<section class="typeset-page" data-page="1" data-template="fixed_art" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0001.svg" alt="" data-visual-page="1"></div>
+<div class="typeset-text-layer">
+<div class="typeset-positioned-block source-font-geometric" data-block-id="p0001_r0001_b0001" data-region-id="p0001_r0001" data-fit="text" style="left:154.541px;top:987.816px;width:522.493px;height:26.708px;font-size:20.000px;line-height:1;display:flex;align-items:center;justify-content:center;text-align:center;white-space:normal;overflow-wrap:anywhere;line-height:1.2;color:#ffffff;font-weight:400;text-shadow:0 1px 3px rgba(0,0,0,.95)">《绿色三角洲：角色扮演游戏》模组</div>
+<div class="typeset-positioned-block source-font-display-condensed" data-block-id="p0001_r0002_b0001" data-region-id="p0001_r0002" data-fit="text" style="left:285.056px;top:229.248px;width:257.719px;height:53.415px;font-size:40.000px;line-height:1;display:flex;align-items:center;justify-content:center;background:rgba(22,30,30,.92);text-align:center;white-space:normal;overflow-wrap:anywhere;line-height:1.2;color:#ffffff;font-weight:400;text-shadow:0 1px 3px rgba(0,0,0,.95)">新时代</div>
+</div>
+</section>
+<section class="typeset-page" data-page="2" data-template="single_source_flow" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0002.svg" alt="" data-visual-page="2"></div>
+<div class="typeset-text-layer">
+<div class="typeset-reflow-area" data-fit="reflow" style="left:693.649px;top:887.731px;width:55.331px;height:56.269px;background:#f4eedc;"><p class="typeset-reflow-body font-role-body source-font-default" data-block-id="p0002_r0005_b0001" data-region-id="p0002_r0005" data-paragraph-id="p0002_r0005_p0001" style="text-indent:0">52999 &gt;</p></div>
+<div class="typeset-positioned-block" data-region-id="p0002_r0001" data-fit="text" style="left:0.000px;top:320.668px;width:742.481px;height:80.237px;color:#000000;transform-origin:0 0;transform:rotate(-1.250deg);"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0002_r0001_b0001" style="font-size:40.000px;font-weight:400;color:#000000">寻找你的真光</h1></div>
+<div class="typeset-positioned-block" data-region-id="p0002_r0003" data-fit="text" style="left:281.615px;top:890.767px;width:235.333px;height:96.233px;color:#ffffff;"><p class="typeset-body-text font-role-body source-font-default" data-block-id="p0002_r0003_b0001" style="text-indent:0">绿色三角洲：《新时代》
+建议零售价 29.99 美元
+库存代码 APU8151 • ISBN 978-1-940410-85-2
+由 Arc Dream Publishing 出版
+由 Studio 2 Publishing 销售
+更多精彩游戏尽在 www.arcdream.com
+本作品纯属虚构</p></div>
+<span class="typeset-source-span" data-region-id="p0002_r0004" style="left:561.349px;top:877.321px;width:119.357px;height:16.555px;font-size:11.053px;line-height:1.05;color:#000000;font-weight:400;font-style:normal">ISBN 9781940410852</span>
+<div class="typeset-positioned-block" data-block-id="p0002_r0003_b0003" style="left:583.461px;top:976.645px;width:21.333px;height:17.333px;font-size:12.520px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">781940</div>
+<div class="typeset-positioned-block" data-block-id="p0002_r0003_b0004" style="left:550.949px;top:976.632px;width:21.333px;height:17.333px;font-size:12.520px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">9</div>
+<div class="typeset-rotated-flow" data-fit="reflow" style="left:94.205px;top:391.139px;width:561.591px;height:406.479px;color:#231f20;transform-origin:0 0;transform:rotate(0.000deg)"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0002_r0002_b0001" data-region-id="p0002_r0002" data-paragraph-id="p0002_r0002_p0001" style="text-indent:0">1997年7月。备受争议的宗教运动恩洛斯（若称其为“邪教”，便会以诉讼闻名）长期以来鼓励信徒通过水晶“现化器”寻找灵感与内在力量。对绿色三角洲而言，这不过是寻常的欺诈与贪腐——直到国际新闻机构报道了一起爆炸，发生在一名退役空军上校的家中，此人与各大国防承包商关系密切。爆炸如此诡异，绿色三角洲的领导者不得不动用一切人情，阻止照片落入记者手中。爆炸的中心是上校的躯壳，与地板融为一体，手中仍紧握着一个现化器。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0002_r0002_b0002" data-region-id="p0002_r0002" data-paragraph-id="p0002_r0002_p0002" style="text-indent:2em">那场奇怪的爆炸是什么引起的？它与恩洛斯有何关联？
+与其神秘的领袖“生命之力”有何关联？与那颗突然出现在太阳系中央、前所未见的巨大小行星体又有何关联？</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0002_r0002_b0003" data-region-id="p0002_r0002" data-paragraph-id="p0002_r0002_p0003" style="text-indent:2em">你的特工们或许会不幸地发现。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0002_r0002_b0004" data-region-id="p0002_r0002" data-paragraph-id="p0002_r0002_p0004" style="text-indent:2em">《新时代》可配合《绿色三角洲：角色扮演游戏》或免费快速入门规则《绿色三角洲：须知》游玩。它与20世纪90年代资料集《绿色三角洲：阴谋》是完美搭档。更多行动可从弧梦出版社获取。</p></div>
+</div>
+</section>
+<section class="typeset-page" data-page="3" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0003.svg" alt="" data-visual-page="3"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:90.472px;top:152.973px;width:323.879px;height:603.400px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary source-style-italic" data-block-id="p0003_r0004_b0001" data-region-id="p0003_r0004" data-paragraph-id="p0003_r0004_p0001" style="text-indent:0">由 Arc Dream Publishing 与绿色三角洲合伙公司
+协议出版。被称为绿色三角洲的知识产权
+是绿色三角洲合伙公司的注册商标与版权，
+其在此授权使用。作者：Adam Scott Glancy 与 John Scott
+Tynes。补充材料：Caleb Stokes。插图：
+Dennis Detwiller。地图：Jen McCleary。编辑：
+Shane Ivey、John Scott Tynes 与 Caleb
+Stokes。文字编辑：Stephen Buck 与 Lisa Padol。
+平面设计：Jen McCleary。本模组内容
+版权 © 2025 归绿色三角洲合伙公司所有。
+“格赫罗斯”经 Ramsey Campbell 惠允使用。
+这是一部虚构作品。</p>
+<h2 class="typeset-reflow-section font-role-section source-font-default" data-block-id="p0003_r0004_b0002" data-region-id="p0003_r0004" style="color:#000000">克星觉醒</h2>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0003_r0004_b0003" data-region-id="p0003_r0004" data-paragraph-id="p0003_r0004_p0003" style="text-indent:0">这个由两部分组成的战役适用于在《融合》或任何其他部分揭露米-戈与灰人联系的模组之后。《新时代》的触发事件是[...]之间的信任丧失，</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0003_r0005_b0001" data-region-id="p0003_r0005" data-paragraph-id="p0003_r0005_p0001" style="text-indent:0">庄严会与灰人，很可能是因为证据（在《融合》或其他地方）已浮出水面，表明灰人可能并非表面所见。本模组中米-戈采取的行动，旨在通过设定一个全球规模的威胁来巩固其与庄严会合作者的关系——这个威胁人类无法指望阻止，只有“友方”灰人才能制止。这是一场巨大的骗局。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0003_r0005_b0002" data-region-id="p0003_r0005" data-paragraph-id="p0003_r0005_p0002" style="text-indent:2em">米-戈正在策划一场规模惊人的宇宙灾难，甚至让彗星都</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:452.672px;top:152.747px;width:316.973px;height:483.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0003_r0006_b0001" data-region-id="p0003_r0006" data-paragraph-id="p0003_r0006_p0001" style="text-indent:0">苏梅克-列维9号彗星与木星的相撞，跟这比起来如同停车场里的小刮擦。米-戈计划唤醒格赫罗斯，旧日支配者的先驱：一个巨型、行星大小的实体，环绕太阳系运行，通过维度操控躲过了人类的观测。米-戈打算利用一圈轨道上的生物机械卫星，发送特定无线电波频率来唤醒格赫罗斯。随着格赫罗斯被唤醒并不断逼近，庄严会目睹一个未知天体进入了与地球相撞的灾难性轨道。米-戈只需关闭他们的诱饵信号，就能让格赫罗斯回到其通常的轨道，但在此之前，他们的灰人构造体联系了</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0003_r0007_b0001" data-region-id="p0003_r0007" data-paragraph-id="p0003_r0007_p0001" style="text-indent:0">庄严会，并向人类保证他们——灰人——能阻止这颗“流浪行星”撞击地球。灰人对此恩惠不求任何回报，只求庄严会继续信守其保护灰人在地球上活动的承诺。这一姿态旨在封住庄严会内部仍对灰人的善意心存怀疑者的口，并将这些人类工具调回最佳状态。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0003_r0007_b0002" data-region-id="p0003_r0007" data-paragraph-id="p0003_r0007_p0002" style="text-indent:2em">唤醒格赫罗斯需要米-戈消耗巨量的能量。这些能量正由恩洛斯基金会收集。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0003_r0001_b0001" data-region-id="p0003_r0001" style="left:96.000px;top:36.316px;width:199.851px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0003_r0001_b0002" data-region-id="p0003_r0001" style="left:571.175px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0003_r0002_b0001" style="left:746.360px;top:995.868px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">1</div>
+<div class="typeset-positioned-block" data-region-id="p0003_r0003" data-fit="text" style="left:45.181px;top:73.923px;width:770.819px;height:66.301px;color:#000000;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0003_r0003_b0001" style="font-size:40.000px;font-weight:400;color:#000000">《新时代》</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="4" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0004.svg" alt="" data-visual-page="4"></div>
+<div class="typeset-text-layer">
+<div class="typeset-positioned-block" data-region-id="p0004_r0003" data-fit="text" style="left:345.716px;top:96.969px;width:76.420px;height:26.080px;color:#000000;"><h3 class="typeset-heading typeset-reflow-subsection font-role-subsection source-font-default" data-block-id="p0004_r0003_b0001" style="font-size:17.333px;font-weight:700;color:#000000">格赫罗斯</h3></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0004" data-fit="text" style="left:84.800px;top:155.928px;width:591.729px;height:15.624px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric source-style-italic" data-block-id="p0004_r0004_b0001" style="text-indent:0">“它似乎沉重地悬停着，传递出一种雷霆万钧的迫近感、力量感……然后它动了……”</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0005" data-fit="text" style="left:90.284px;top:175.932px;width:595.005px;height:15.624px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric source-style-italic" data-block-id="p0004_r0005_b0001" style="text-indent:0">行星的表面不会移动……行星的表面不会开裂，不会像那样翻卷回去，它不会</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0006" data-fit="text" style="left:90.128px;top:195.936px;width:468.128px;height:15.624px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric source-style-italic" data-block-id="p0004_r0006_b0001" style="text-indent:0">剥开数千里之远，你便能看见下方那苍白而闪闪发光的东西。”</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0007" data-fit="text" style="left:499.940px;top:235.932px;width:187.281px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0007_b0001" style="text-indent:0">——拉姆齐·坎贝尔，《拖拽》</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0008" data-fit="text" style="left:48.488px;top:275.928px;width:665.364px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0008_b0001" style="text-indent:0">格赫罗斯的信徒寥寥无几，几乎仅限于占星家和其他对星辰感兴趣的人。它是一颗“复仇之星”，一颗行星</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0009" data-fit="text" style="left:48.464px;top:295.932px;width:677.087px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0009_b0001" style="text-indent:0">一个由气体、灰烬与熔铁构成的、行星大小的实体。它呈现为一片巨大的锈红色球体，表面布满断层或裂缝。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0010" data-fit="text" style="left:48.488px;top:315.936px;width:661.559px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0010_b0001" style="text-indent:0">格赫罗斯时而从地壳下隐藏的浩瀚海洋之中凝聚出巨眼。格赫罗斯是歌曲的先驱，唯有无情者——</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0011" data-fit="text" style="left:48.428px;top:335.940px;width:627.743px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0011_b0001" style="text-indent:0">群星和死去的旧日支配者都能听见。当格赫罗斯经过时，群星被引向正道，旧日支配者随之苏醒。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0012" data-fit="text" style="left:72.488px;top:355.944px;width:626.673px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0012_b0001" style="text-indent:0">格赫罗斯是厄运先驱，万界毁灭者。当它接近一颗行星时，潮汐改变。恐怖的风暴，大地——</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0013" data-fit="text" style="left:48.440px;top:375.948px;width:662.853px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0013_b0001" style="text-indent:0">地震与海啸撕裂大地。火山爆发，大气层剥离，逸散至太空的虚空中。降临。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0014" data-fit="text" style="left:48.272px;top:395.952px;width:659.244px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0014_b0001" style="text-indent:0">格赫罗斯的降临预示着整个恒星系的灾难。这位外神拖拽行星偏离原有轨道，并唤醒那些在黑暗之中沉睡的——</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0015" data-fit="text" style="left:48.536px;top:415.956px;width:197.508px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0015_b0001" style="text-indent:0">以天球乐章赞颂诸神。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0016" data-fit="text" style="left:71.564px;top:435.960px;width:529.872px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0016_b0001" style="text-indent:0">有推测认为，格赫罗斯的出现是导致夏盖毁灭的原因。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0017" data-fit="text" style="left:48.211px;top:482.512px;width:49.888px;height:19.136px;color:#000000;"><h3 class="typeset-heading typeset-reflow-subsection font-role-subsection source-font-default" data-block-id="p0004_r0017_b0001" style="font-size:17.333px;font-weight:700;color:#000000">格赫罗斯</h3></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0018" data-fit="text" style="left:60.081px;top:509.261px;width:307.113px;height:15.624px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric source-style-italic" data-block-id="p0004_r0018_b0001" style="text-indent:0">涅墨西斯，世界末日之先兆与缔造者</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0019" data-fit="text" style="left:61.021px;top:535.928px;width:638.243px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0019_b0001" style="text-indent:0">ETERNAL: 理论上，格赫罗斯在承受巨额伤害后可被摧毁。如同任何天体，</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0020" data-fit="text" style="left:72.457px;top:555.932px;width:637.569px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0020_b0001" style="text-indent:0">足够的力能将那东西的“血肉”击碎成一团无生命的碎石与尘埃。所需定向力道的猛烈程度，</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0021" data-fit="text" style="left:72.553px;top:575.936px;width:611.289px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0021_b0001" style="text-indent:0">所需之物非人力所能及。即便格赫罗斯被摧毁，它的“尸体”也会形成一场巨大的小行星冰雹</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0022" data-fit="text" style="left:72.457px;top:595.940px;width:637.269px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0022_b0001" style="text-indent:0">足以消灭地球上的所有生命。随后先驱者便会在另一个星系或维度中闪现现身，彻底</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0023" data-fit="text" style="left:72.553px;top:615.944px;width:70.368px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0023_b0001" style="text-indent:0">已再生。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0024" data-fit="text" style="left:60.863px;top:635.928px;width:656.075px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0024_b0001" style="text-indent:0">天体笛音：格赫罗斯遵从从阿撒托斯之庭回荡而来的泛维度振动。当通过……传播时</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0025" data-fit="text" style="left:72.441px;top:655.932px;width:626.724px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0025_b0001" style="text-indent:0">氛围。这种呼唤传到人耳中，听起来就像一根簧片吹出的、不成调的无意识笛声。米-戈已经开发出</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0026" data-fit="text" style="left:72.873px;top:675.936px;width:636.596px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0026_b0001" style="text-indent:0">利用技术来重新创建该控制信号。发动仪式所需的庞大灵能会吸走</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0027" data-fit="text" style="left:72.777px;top:695.940px;width:498.084px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0027_b0001" style="text-indent:0">逐出整个米-戈殖民地，但菌类无意自己承担代价。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0028" data-fit="text" style="left:60.863px;top:715.928px;width:607.539px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0028_b0001" style="text-indent:0">引力场：格赫罗斯操纵引力以人类无法理解的方式在星系间推进，</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0029" data-fit="text" style="left:72.579px;top:735.932px;width:640.320px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0029_b0001" style="text-indent:0">对物理学的理解。其推进系统具有难以形容的破坏性。它所经过的某些行星会遭受气旋和</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0030" data-fit="text" style="left:72.867px;top:755.936px;width:627.092px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0030_b0001" style="text-indent:0">构造断裂。更近处，即便是超大质量的气态巨人也会被抛入自身的卫星或撕裂在</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0031" data-fit="text" style="left:72.507px;top:775.940px;width:161.793px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0031_b0001" style="text-indent:0">质量相当于一颗小型恒星。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0032" data-fit="text" style="left:61.021px;top:795.928px;width:639.936px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0032_b0001" style="text-indent:0">感知：如果格赫罗斯可以被描述为拥有意识，那么其意识存于一片难以想象的巨大乳状海洋之中……</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0033" data-fit="text" style="left:72.685px;top:815.932px;width:629.421px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0033_b0001" style="text-indent:0">潜藏在地表之下。一个由相互连接的硅基生命形式组成的庞大生态系统，以共生方式运转。无数的</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0034" data-fit="text" style="left:72.265px;top:835.936px;width:602.208px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0034_b0001" style="text-indent:0">的微观外星物种犹如单个巨眼内的视杆细胞与视锥细胞般协同运作。每个群体都会对多种外界</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0035" data-fit="text" style="left:72.445px;top:855.940px;width:617.468px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0035_b0001" style="text-indent:0">电磁刺激的波长。菌落重组成感知器官，并以化学方式传输数据</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0036" data-fit="text" style="left:72.433px;top:875.944px;width:603.060px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0036_b0001" style="text-indent:0">在神秘外星组织的原始汤中穿行。格赫罗斯随心所欲地冲破其保护层</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0037" data-fit="text" style="left:72.325px;top:895.948px;width:628.752px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0037_b0001" style="text-indent:0">大陆，撕裂其构造板块，将这乳白色球体暴露在真空之中。被某种存在注视的体验</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0038" data-fit="text" style="left:72.421px;top:915.952px;width:648.612px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0038_b0001" style="text-indent:0">如此不可估量、不可认知的存在根本无法言说。大多数敢于直视格赫罗斯那碾碎万物之沉重……</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0039" data-fit="text" style="left:72.553px;top:935.956px;width:212.832px;height:15.588px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0039_b0001" style="text-indent:0">知觉到自己的心智被彻底抹除。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0004_r0040" data-fit="text" style="left:60.809px;top:952.853px;width:482.848px;height:15.996px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0004_r0040_b0001" style="text-indent:0">SAN损失：从远处研究格赫罗斯时损失1/1D10；看到其睁开眼睛时损失1D10/1D100。</p></div>
+<div class="typeset-positioned-block" data-block-id="p0004_r0001_b0001" style="left:375.133px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">2</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0004_r0002_b0001" data-region-id="p0004_r0002" style="left:524.295px;top:35.833px;width:195.707px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0004_r0002_b0002" data-region-id="p0004_r0002" style="left:48.000px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+</div>
+</section>
+<section class="typeset-page" data-page="5" data-template="single_source_flow" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0005.svg" alt="" data-visual-page="5"></div>
+<div class="typeset-text-layer">
+<div class="typeset-reflow-area" data-fit="reflow" style="left:96.223px;top:155.413px;width:320.923px;height:788.587px;"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0005_r0004_b0001" data-region-id="p0005_r0004" data-paragraph-id="p0005_r0004_p0001" style="text-indent:0">庄严会并非米-戈与人类的唯一接触。凭借其旧有的邪教徒与合作者网络，米-戈已成功渗透了许多《新时代》宗教。一项尤为突出的成功是颠覆了恩洛斯基金会。该组织于1984年落入米-戈影响之下，此后便被用于从人类身上收割精神能量（表现为意志力点/Willpower Points）。恩洛斯只是米-戈在群星归位之前的年岁里，尽其所能榨取人类的又一个例子。</p></div>
+<div class="typeset-positioned-block" data-block-id="p0005_r0001_b0001" style="left:746.360px;top:995.868px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">3</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0005_r0002_b0001" data-region-id="p0005_r0002" style="left:96.000px;top:36.316px;width:199.851px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0005_r0002_b0002" data-region-id="p0005_r0002" style="left:571.175px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-region-id="p0005_r0003" data-fit="text" style="left:0.000px;top:112.040px;width:264.389px;height:43.240px;color:#000000;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0005_r0003_b0001" style="font-size:40.000px;font-weight:400;color:#000000">恩洛斯</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="6" data-template="single_source_flow" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0006.svg" alt="" data-visual-page="6"></div>
+<div class="typeset-text-layer">
+<div class="typeset-positioned-block" data-region-id="p0006_r0003" data-fit="text" style="left:48.329px;top:115.413px;width:670.933px;height:55.627px;color:#000000;"><p class="typeset-body-text font-role-body source-font-literary" data-block-id="p0006_r0003_b0002" style="text-indent:0">理想情况下，你应当为玩家总结以下信息，并让他们尽可能做好笔记。但为了简便，或许将一份摘要交给玩家会更省事。这份摘要并非游戏世界里的文件，而是特工们对恩洛斯基金会所知一切内容的概括。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0006_r0004" data-fit="text" style="left:308.015px;top:207.753px;width:149.400px;height:26.080px;color:#000000;"><h3 class="typeset-heading typeset-reflow-subsection font-role-subsection source-font-default" data-block-id="p0006_r0004_b0001" style="font-size:17.333px;font-weight:700;color:#000000">关于恩洛斯</h3></div>
+<div class="typeset-positioned-block" data-region-id="p0006_r0004" data-fit="text" style="left:46.633px;top:233.815px;width:660.708px;height:67.572px;color:#000000;"><p class="typeset-body-text font-role-body source-font-geometric" data-block-id="p0006_r0004_b0002" style="text-indent:0">恩洛斯的创始人是一位名叫赫伯特·普赖斯的二流科幻作家。普赖斯撰写了《内在科学》，一本集自助与人生哲学于一体的手册，承诺“将读者精神领域内所有由现代物质生活积累的杂乱与碎屑一扫而空”。尽管是内在科学哲学的创始人，赫伯特·普赖斯本人却并不遵循其信条。普赖斯真正的处世哲学更接近P.T.巴纳姆。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0006_r0005" data-fit="text" style="left:48.717px;top:358.133px;width:262.080px;height:23.893px;color:#000000;"><p class="typeset-body-text font-role-body source-font-default" data-block-id="p0006_r0005_b0001" style="text-indent:0">主题：宗教自由</p></div>
+<div class="typeset-positioned-block" data-region-id="p0006_r0006" data-fit="text" style="left:43.719px;top:398.907px;width:676.191px;height:220.480px;color:#000000;"><p class="typeset-body-text font-role-body source-font-typewriter" data-block-id="p0006_r0006_b0001" style="text-indent:0">《内在科学》的成功促使普莱斯创立恩洛斯基金会。普莱斯痛恨政府通过税收“盗窃”他辛苦挣来的钱。他认为，避免缴纳所得税的最佳方法，是将《内在科学》转化为一种宗教，从而获得免税资格。于是，恩洛斯基金会于1964年成立，并登记了免税身份。继《内在科学》之后，更多的书籍陆续出版，随之而来的还有一系列杂志、磁带、研讨会与工作坊。到1960年代末，基金会资产估值已超过1100万美元，在英语世界拥有超过二十万名成员。然而，恩洛斯基金会几乎一成立就受到美国国税局（IRS）的审视。经过缜密的调查与六年的法律斗争，恩洛斯于1972年丧失了免税资格。既然无法阻止政府染指他的钱财，普莱斯便开始逃税。他采取极端措施，保护自己与组织免受调查与批评。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0006_r0007" data-fit="text" style="left:56.397px;top:673.280px;width:138.880px;height:23.893px;color:#000000;"><p class="typeset-body-text font-role-body source-font-default" data-block-id="p0006_r0007_b0001" style="text-indent:0">主题：管家</p></div>
+<div class="typeset-positioned-block" data-region-id="p0006_r0008" data-fit="text" style="left:55.133px;top:714.053px;width:666.975px;height:220.480px;color:#000000;"><p class="typeset-body-text font-role-body source-font-typewriter" data-block-id="p0006_r0008_b0001" style="text-indent:0">担心恩洛斯内部有人向国税局泄露他的财务欺诈行为，普莱斯开始对恩洛斯的队伍进行清洗。他让人调查恩洛斯的重要成员及批评者。他针对国税局、数家主要报纸、《美国心理学杂志》以及其他公然批评恩洛斯基金会的反对者，发起了无数骚扰性诉讼。普莱斯的自负与偏执型人格障碍驱使他动用了二十四家律师事务所、十家私人调查公司，甚至组建了一支内部安全部门：管家。这些管家都是恩洛斯的忠实信徒，接受过私人保安公司的训练，专门挖掘恩洛斯的对手、批评者及竞争者的丑闻，并对其进行威胁与恐吓。更为胆大妄为的是，普莱斯将管家用作卧底，渗透进各家报社、邪教防范网络，以及与恩洛斯存在竞争关系的团体，并在一次臭名昭著的行动中，甚至渗透进了国税局。然而，正是普莱斯这种最为极端的放纵，最终导致了他的覆灭。他下令雇佣并训练了一支雇佣兵，为有朝一日需要对基金会之敌采取更直接行动的那天做好准备。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0006_r0001_b0001" data-region-id="p0006_r0001" style="left:524.295px;top:35.833px;width:195.707px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0006_r0001_b0002" data-region-id="p0006_r0001" style="left:48.000px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0006_r0002_b0001" style="left:375.133px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">4</div>
+<div class="typeset-positioned-block" data-region-id="p0006_r0003" data-fit="text" style="left:0.000px;top:81.629px;width:335.616px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0006_r0003_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">玩家协助1：恩洛斯的故事</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="7" data-template="single_source_flow" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0007.svg" alt="" data-visual-page="7"></div>
+<div class="typeset-text-layer">
+<div class="typeset-positioned-block" data-region-id="p0007_r0005" data-fit="text" style="left:96.709px;top:143.557px;width:163.520px;height:23.893px;color:#000000;"><p class="typeset-body-text font-role-body source-font-default" data-block-id="p0007_r0005_b0001" style="text-indent:0">主题：起诉</p></div>
+<div class="typeset-positioned-block" data-region-id="p0007_r0006" data-fit="text" style="left:95.503px;top:184.325px;width:672.511px;height:120.480px;color:#000000;"><p class="typeset-body-text font-role-body source-font-typewriter" data-block-id="p0007_r0006_b0001" style="text-indent:0">1981年，一名管事在试图从烟酒枪炮及爆炸物管理局特工手中购买自动步枪时被当场抓获。司法部动用了一切手段对恩洛斯展开调查：税务欺诈、邮件欺诈、共谋违反联邦枪支法、盗窃政府文件——所有这些指控都依据《RICO法案》被合并起诉。绝大多数起诉书都将普莱斯及其核心管事圈列为主犯。就在因逃税和共谋违反联邦枪支法而面临起诉的数小时前，普莱斯逃离了美国。他本人及其巨额财富的下落至今仍是个谜。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0007_r0003" data-fit="text" style="left:96.720px;top:403.523px;width:179.947px;height:23.893px;color:#000000;"><p class="typeset-body-text font-role-body source-font-default" data-block-id="p0007_r0003_b0001" style="text-indent:0">主题：继任者</p></div>
+<div class="typeset-positioned-block" data-region-id="p0007_r0004" data-fit="text" style="left:95.511px;top:444.293px;width:672.959px;height:160.480px;color:#000000;"><p class="typeset-body-text font-role-body source-font-typewriter" data-block-id="p0007_r0004_b0001" style="text-indent:0">这桩丑闻震动了恩洛斯，导致会员数量急剧下降。到1984年，全球会员数量锐减至不足一万人。同年，吉恩·唐宁被任命为恩洛斯基金会理事会的执行董事。唐宁在1970年代曾担任恩洛斯欧洲总监，未卷入Price核心圈子的丑闻。唐宁是接替Price的自然人选。他展现出非凡的个人魅力，为基金会注入了新的活力，为其理念指明了新的方向。正是唐宁将水晶的使用引入了恩洛斯成员的冥想练习。多亏了唐宁的影响，恩洛斯如今已成为一种自我实现/个人发展的哲学。</p></div>
+<div class="typeset-positioned-block" data-region-id="p0007_r0007" data-fit="text" style="left:96.717px;top:687.680px;width:204.587px;height:23.893px;color:#000000;"><p class="typeset-body-text font-role-body source-font-default" data-block-id="p0007_r0007_b0001" style="text-indent:0">主题：生命之力</p></div>
+<div class="typeset-positioned-block" data-region-id="p0007_r0008" data-fit="text" style="left:94.863px;top:728.453px;width:673.471px;height:200.480px;color:#000000;"><p class="typeset-body-text font-role-body source-font-typewriter" data-block-id="p0007_r0008_b0001" style="text-indent:0">根据恩洛斯的教义，学生是自身命运的主宰者，完全掌控着自己的生活与环境。如果恩洛斯学生中了彩票，那是因为学生自己令其发生；如果恩洛斯学生被人持枪抢劫，那么在潜意识里，这必定是他自己希望发生的事。恩洛斯的核心理念将存在主义式的个人责任与对更高意识层面的探索融为一体。吉恩·唐宁出版了卷帙浩繁的著作，录制了数百盘磁带，并保持着极为密集的演讲日程。他为复兴恩洛斯所做的不懈努力终获回报。老信徒纷纷回归，新成员也持续加入。如今，恩洛斯的会员名册已增长至全球十万七千人。1991年，唐宁被授予“生命力量”的称号，以表彰他为恩洛斯所做的工作及提供的精神指引。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0007_r0001_b0001" data-region-id="p0007_r0001" style="left:96.000px;top:36.316px;width:199.851px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0007_r0001_b0002" data-region-id="p0007_r0001" style="left:571.175px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0007_r0002_b0001" style="left:420.467px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">5</div>
+</div>
+</section>
+<section class="typeset-page" data-page="8" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0008.svg" alt="" data-visual-page="8"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:47.257px;top:112.747px;width:317.372px;height:390.216px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0005_b0002" data-region-id="p0008_r0005" data-paragraph-id="p0008_r0005_p0002" style="text-indent:0">大众所知的恩洛斯的故事，直到1983年都是准确的。普莱斯自己就是他最大的敌人，他对权力的疯狂追求并无任何反常之处。然而到了1984年，真相便与公众所知分道扬镳了。在那一年，米-戈认定恩洛斯是将其影响力扩展到人类社会和文化中的完美载体，同时也是未开发精神能量的来源。作为务实的生物，他们直接从顶层入手。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0005_b0003" data-region-id="p0008_r0005" data-paragraph-id="p0008_r0005_p0003" style="text-indent:2em">吉恩·唐宁刚从欧洲管理岗位返回，准备接管恩洛斯的领导权，就被米-戈掳走了。米-戈绑架了唐宁，对他的心智进行了大规模改造。改造完成后，唐宁成了为米-戈利益服务的棋子。唐宁引入恩洛斯冥想仪式的水晶，使米-戈得以从恩洛斯的追随者身上收割灵能。</p></div>
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:47.257px;top:532.747px;width:317.372px;height:103.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0006_b0002" data-region-id="p0008_r0006" data-paragraph-id="p0008_r0006_p0002" style="text-indent:0">恩洛斯称这种晶体为“具现器”。它本应用作每位成员每周冥想的焦点。恩洛斯的普通成员并不知晓，每块晶体每天会从持有者身上汲取一点意志力。每周在它面前冥想一次会导致</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:404.393px;top:92.747px;width:318.452px;height:843.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0003_b0001" data-region-id="p0008_r0003" data-paragraph-id="p0008_r0003_p0001" style="text-indent:0">消耗3点WP可使其猛然回流至使用者体内，带来一阵强烈的欣快与兴奋感。但即便有这种回流，水晶每周仍净积累4点WP。一个月后，持有者的水晶中储存有16点WP。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0003_b0002" data-region-id="p0008_r0003" data-paragraph-id="p0008_r0003_p0002" style="text-indent:2em">每个恩洛斯分支办公室都有一颗葡萄柚大小、称为“灵性蓄能器”的晶体。
+灵性蓄能器是每月集体冥想仪式的焦点。在这些月度仪式中，参与成员的小晶体里过剩的意志力会被汲取。每颗小晶体都会给其持有者带来4点WP的冲击。这当然是一种无与伦比的享受——尤其是当你认为这来自宇宙而非某种回扣时——但剩下的12</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0004_b0001" data-region-id="p0008_r0004" data-paragraph-id="p0008_r0004_p0001" style="text-indent:0">WP被送入更大的灵性蓄能池。当充满约5000意志点后，灵性蓄能池会被送往俄克拉何马州塔尔萨市的恩洛斯基金会总部，并换上一个新的。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0004_b0002" data-region-id="p0008_r0004" data-paragraph-id="p0008_r0004_p0002" style="text-indent:2em">以一个像圣路易斯那样有七十名成员的恩洛斯分会为例，每月至少要消耗840点WP——每年10,080点WP。而这仅仅是一个分会。在全球拥有107,000名成员的情况下，米-戈每月秘密收割着1,284,000点WP！米-戈将如此巨量的灵能用于地球上、犹格斯及其他地方种类繁多的仪式活动。然而，目前大部分意志力都被用来给那些引诱格赫罗斯偏离轨道的生化机械塞壬卫星充能。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0004_b0003" data-region-id="p0008_r0004" data-paragraph-id="p0008_r0004_p0003" style="text-indent:2em">只有唐宁及其高级顾问知晓晶体和提供晶体的异星存在的秘密。自1984年起，米-戈刻意逐步将恩洛斯的每一位高层领导置于其掌控之下。那些直接服侍领导者的人，都是从最狂热的成员中挑选出来的，并且要接受米-戈的秘密心理审查，以确保其忠诚。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0008_r0004_b0004" data-region-id="p0008_r0004" data-paragraph-id="p0008_r0004_p0004" style="text-indent:2em">恩洛斯分部的领袖们对这些秘密毫无察觉。他们相信，那些充满“正能量”的“精神蓄水池”被送往恩洛斯总部，是为了利用这些能量“为世界集体无意识的黑暗角落带去光明”。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0008_r0001_b0001" data-region-id="p0008_r0001" style="left:524.295px;top:35.833px;width:195.707px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0008_r0001_b0002" data-region-id="p0008_r0001" style="left:48.000px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0008_r0002_b0001" style="left:375.133px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">6</div>
+<div class="typeset-positioned-block" data-region-id="p0008_r0005" data-fit="text" style="left:0.000px;top:81.629px;width:240.768px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0008_r0005_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">恩洛斯的秘密</h1></div>
+<div class="typeset-positioned-block" data-region-id="p0008_r0006" data-fit="text" style="left:0.000px;top:501.629px;width:192.075px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0008_r0006_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">水晶</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="9" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0009.svg" alt="" data-visual-page="9"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:95.064px;top:132.747px;width:318.301px;height:843.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0003_b0002" data-region-id="p0009_r0003" data-paragraph-id="p0009_r0003_p0002" style="text-indent:0">罗纳德·瓦利安特是一颗可能毁掉恩洛斯基金会的脱缰野马。瓦利安特是一个现代的领家族津贴的流放者：家族付钱让他远离故土。他是参议员安东尼·迪托里奥的私生子，出生时他的父亲还是密苏里州议会的众议员。瓦利安特一直怨恨父亲对他的忽视，并尽其所能让这位参议员时而刮目相看，时而惊骇不已。学生时代就是个少年犯，他于1980年加入海军陆战队以讨好父亲。由于纪律问题不断，瓦利安特于1984年因不适合服役而被一般退伍。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0003_b0003" data-region-id="p0009_r0003" data-paragraph-id="p0009_r0003_p0003" style="text-indent:2em">由于没有工作前景，瓦利安特又回到了他父亲身边。迪托里奥参议员找到了他的老朋友，退役美国空军上校拉里·丹尼尔斯。离开军队后，丹尼尔斯混得风生水起，为航空航天与国防承包商麦克康奈尔-贝利斯公司工作，甚至经手了几批运往尼加拉瓜反政府武装的武器。丹尼尔斯对瓦利安特的嚣张与冷酷印象深刻，便把他介绍给了合适的人。很快，罗纳德·瓦利安特每周就能赚一千多美元，负责将武器装上飞往洪都拉斯和尼加拉瓜反政府武装的货机。而在边境以南，赚外快的法子有的是。瓦利安特开始在返程航班上把可卡因带回美国。在圣路易斯休假期间，他常去丹尼尔斯上校的豪宅，吹嘘自己曾对桑地诺派发动过根本不存在的空袭。那是瓦利安特的风光日子。他花钱如流水，可卡因吸到爽，在中美洲的每个城市都有女人。</p>
+<h2 class="typeset-reflow-subtitle font-role-section source-font-default" data-block-id="p0009_r0004_b0001" data-region-id="p0009_r0004" style="font-size:20.000px;color:#eb4f24">迷失在尼加拉瓜</h2>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0004_b0002" data-region-id="p0009_r0004" data-paragraph-id="p0009_r0004_p0002" style="text-indent:0">1987年11月，在一次满载毒品的返程飞行中，瓦利安特的飞机被桑地诺阵线的高射炮火击中坠毁。瓦利安特是机组中唯一跳伞逃生的人，并随即被桑地诺政权关押。桑地诺方面掌握着足以将瓦利安特定罪为毒贩的大量证据，但更倾向于让他承认自己是</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:448.192px;top:92.747px;width:322.031px;height:883.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0005_b0001" data-region-id="p0009_r0005" data-paragraph-id="p0009_r0005_p0001" style="text-indent:0">一名CIA特工，而不只是一名毒品走私贩。桑地诺秘密警察开始“说服”瓦利安特，让他承认自己是“帝国主义、反革命扬基中速跑狗的走卒”。消息很快传到参议员迪托里奥那里，说他的儿子正在尼加拉瓜监狱受折磨。参议员迪托里奥恳求丹尼尔斯替他出面，假装瓦利安特是丹尼尔斯自己的私生子。然后迪托里奥利用他在情报界的联系，安排营救他“亲爱的朋友的儿子”。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0005_b0002" data-region-id="p0009_r0005" data-paragraph-id="p0009_r0005_p0002" style="text-indent:2em">CIA不太热衷于安排释放一名男子，此人与其一直刻意保持距离的行动有所牵连。但CIA内部有人觉得，让一位美国参议员欠下人情并无坏处。在桑地诺军事监狱关押六个月后，瓦利安特获释，当</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0006_b0001" data-region-id="p0009_r0006" data-paragraph-id="p0009_r0006_p0001" style="text-indent:0">中情局为低薪狱警安排了贿赂。瓦利恩特
+“越狱”并悄然从尼加拉瓜消失。</p>
+<h2 class="typeset-reflow-subtitle font-role-section source-font-default" data-block-id="p0009_r0007_b0001" data-region-id="p0009_r0007" style="font-size:20.000px;color:#eb4f24">圣路易斯的家</h2>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0007_b0002" data-region-id="p0009_r0007" data-paragraph-id="p0009_r0007_p0002" style="text-indent:0">1988年，瓦里安特回到了家乡圣路易斯，形同一个空虚的躯壳。他的身体垮了，精神也已破碎。他的父亲再次因惧怕丑闻而与他保持距离。瓦里安特在丹尼尔斯上校位于圣路易斯的宅邸里休养了五个月。在那段时间里，瓦里安特和丹尼尔斯变得亲近起来。瓦里安特知道，虽然父亲的影响力将他从尼加拉瓜捞了出来，但父亲再一次拒绝公开承认他是自己的儿子。或许正是因为丹尼尔斯曾伪装成他的父亲，瓦里安特开始将丹尼尔斯视作父亲般的人物。丹尼尔斯虽有钱有势，却羡慕瓦里安特那种原始而危险的生存状态。他曾在空军坐办公室，如今又在圣路易斯的麦康奈尔-贝利斯公司的董事会里快被无聊折磨至死，所以听瓦里安特讲述他在中美洲的冒险经历，让丹尼尔斯获得了一种间接的刺激感。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0009_r0007_b0003" data-region-id="p0009_r0007" data-paragraph-id="p0009_r0007_p0003" style="text-indent:2em">瓦利安特利用宅邸的健身房疯狂健身。
+健美训练重塑了他的自尊。一旦他重新振作起来，
+便决心打入圣路易斯的毒品生意。靠丹尼尔斯提供的一笔贷款，
+瓦利安特重新联系上了在反政府武装时期结识的熟人。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0009_r0001_b0001" data-region-id="p0009_r0001" style="left:96.000px;top:36.316px;width:199.851px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0009_r0001_b0002" data-region-id="p0009_r0001" style="left:571.175px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0009_r0002_b0001" style="left:420.467px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">7</div>
+<div class="typeset-positioned-block" data-region-id="p0009_r0003" data-fit="text" style="left:0.000px;top:92.040px;width:365.291px;height:43.240px;color:#000000;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0009_r0003_b0001" style="font-size:40.000px;font-weight:400;color:#000000">脱缰野马</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="10" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0010.svg" alt="" data-visual-page="10"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:47.969px;top:92.747px;width:320.979px;height:290.216px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0003_b0001" data-region-id="p0010_r0003" data-paragraph-id="p0010_r0003_p0001" style="text-indent:0">并开始购买可卡因，每次10到20公斤。
+他利用中美洲战争剩余的自动武器，为每笔毒品交易增添甜头。瓦利安特是名成功的运毒者，为多个街头层面的行动供应可卡因，这些行动再用可卡因制作快克。他供应的军火让他更受客户欢迎。在街头，瓦利安特以一名一触即怒、收集桑地诺主义者耳朵的死硬前海军陆战队员、前反政府武装分子、前中央情报局特工而闻名。虽然其中大多是吹牛，但瓦利安特确实危险。他已不稳定的性格因大量吸食可卡因和服用类固醇而加剧。他的街头绰号是“瓦利安特王子”。</p></div>
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:47.969px;top:412.747px;width:320.979px;height:563.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0004_b0002" data-region-id="p0010_r0004" data-paragraph-id="p0010_r0004_p0002" style="text-indent:0">1992年9月，Valiant在东圣路易斯用海洛因注射并浇上汽油活活烧死了一名与之竞争的毒贩。这引起了圣路易斯警方的注意，Valiant迅速成为首要嫌疑人。在东圣路易斯，死几个毒贩根本不算什么，Valiant原本完全可以一走了之，逃脱起诉。但不知为何，他就是不肯跑，不肯离开圣路易斯。相反，他去找父亲，苦苦哀求。DiTorrio参议员，或许是出于护犊之心，或许是害怕丑闻，安排一名整形外科医生从加州飞来。他还购买了文件和证件，为儿子准备了一个新身份。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0004_b0003" data-region-id="p0010_r0004" data-paragraph-id="p0010_r0004_p0003" style="text-indent:2em">瓦利安特又一次在丹尼尔斯上校的豪宅里养伤。丹尼尔斯的生活几乎和瓦利安特的一样一团糟。丹尼尔斯那日渐衰退的性能力，伴随着他扭曲的性癖好。他的卧室宛如萨德侯爵脑海中的产物，他偶尔不得不安排大笔现金，来掩盖因他疯狂的过度行为而严重受伤的床上伴侣们的秘密住院治疗。丹尼尔斯的癖好变得如此异乎寻常，以至他不得不派人到纽约和洛杉矶寻找伴侣。他还染上了从瓦利安特那里学来的可卡因恶习，且日益严重。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0004_b0004" data-region-id="p0010_r0004" data-paragraph-id="p0010_r0004_p0004" style="text-indent:2em">手术前，瓦利安特看起来比实际30岁的年龄更显老，一双疲惫的眼睛，一头淡金色的平头短发。下巴尖削，几乎没有颧骨，</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:404.175px;top:92.747px;width:319.759px;height:170.216px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0005_b0001" data-region-id="p0010_r0005" data-paragraph-id="p0010_r0005_p0001" style="text-indent:0">还有那只被桑地诺看守打断过数次的鼻子。如今，以道格·沃尔特斯的新身份示人时，瓦利安特看起来年轻了大约十岁，齐肩的长发染成黑色，方下巴、高颧骨，配上一只小巧、近乎秀气的鼻子。他那疲惫却看似多情的蓝眼睛、类固醇造就的宽大额头以及健美运动员般的体格依然如故。</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:404.175px;top:292.747px;width:319.759px;height:683.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0006_b0002" data-region-id="p0010_r0006" data-paragraph-id="p0010_r0006_p0002" style="text-indent:0">瓦利安特想重操贩毒旧业，但他知道自己必须远离那些老地方。他在大学区四处游荡，凭借魅力、手术雕琢的英俊外表和健壮体格，勾搭上了为数不少的床伴。通过其中一次艳遇，瓦利安特发现了恩洛斯，以及冥想他们的水晶时所带来的难以置信的力量奔涌。他从冥想中体验到的快感比可卡因更甚，比任何合成代谢类固醇都更让他精力充沛。瓦利安特对水晶传导能量的能力着迷不已。经过试验后，他愈发确信，这种能量奔涌唯有当地恩洛斯分会提供的水晶才能引发。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0006_b0003" data-region-id="p0010_r0006" data-paragraph-id="p0010_r0006_p0003" style="text-indent:2em">1995年2月，瓦利安特加入恩洛斯，试图揭开晶体的秘密。他很快成为执事的助手，在恩洛斯的聚会所内打杂以探听更多信息。他了解到，每月集体冥想仪式中使用的那块大晶体每隔七八个月便会更换一次。更蹊跷的是，在仪式间歇，那座灵性蓄池竟被锁在墙内保险柜中。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0010_r0006_b0004" data-region-id="p0010_r0006" data-paragraph-id="p0010_r0006_p0004" style="text-indent:2em">1995年7月的一个深夜，执事去了塔尔萨参加一场会议，瓦利安特趁机破门而入，直接将墙上的保险箱整个偷走。他用大锤砸开保险箱，贪婪地吞噬了水晶中储存的力量。这份灵能储备支撑了他数月之久。当力量最终耗尽时，瓦利安特明白他必须得到更多。唯一的问题是，聚会所新装的混凝土地面保险箱，让偷走替换用的灵能储备变得毫无可能。唯一能接触到它的人就是那位执事。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0010_r0001_b0001" data-region-id="p0010_r0001" style="left:524.295px;top:35.833px;width:195.707px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0010_r0001_b0002" data-region-id="p0010_r0001" style="left:48.000px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0010_r0002_b0001" style="left:51.667px;top:995.868px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">8</div>
+<div class="typeset-positioned-block" data-region-id="p0010_r0004" data-fit="text" style="left:0.000px;top:381.629px;width:224.587px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0010_r0004_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">再次陷入麻烦</h1></div>
+<div class="typeset-positioned-block" data-region-id="p0010_r0006" data-fit="text" style="left:98.917px;top:261.629px;width:717.083px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0010_r0006_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">进入恩洛斯</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="11" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0011.svg" alt="" data-visual-page="11"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:95.175px;top:92.747px;width:321.807px;height:750.216px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0003_b0001" data-region-id="p0011_r0003" data-paragraph-id="p0011_r0003_p0001" style="text-indent:2em">瓦利安特认定，要想确保获得无限能源，最好的办法就是自己当执事。他以一贯的直截了当，第一步就用一发鹿弹把那位执事轰飞，然后顺走他的钱包，将罪案伪造成抢劫。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0003_b0002" data-region-id="p0011_r0003" data-paragraph-id="p0011_r0003_p0002" style="text-indent:2em">1995年10月，瓦利安特暂时接管了分会的领导权。尽管他是最新的成员之一，但他表面上却是最狂热、最虔诚的信徒之一。接手管理分会后，瓦利安特施展了足够的个人魅力和领导能力，赢得了信众的信任，保住了执事位置。现在，他可以随意使用灵能储备了。但瓦利安特很快发现，位于塔尔萨的恩洛斯总部能察觉到他送回去的那些灵能储备并未充满。1996年3月，他再次送回一个能量耗尽的灵能储备时，收到了恩洛斯总部发来的通知。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0004_b0001" data-region-id="p0011_r0004" data-paragraph-id="p0011_r0004_p0001" style="text-indent:0">总部注意到每月冥想仪式的出席人数有所下降。他们建议瓦利安特采取措施，确保恩洛斯成员参加每月会议，以“为灵性水库充入正面能量”。瓦利安特意识到，如果他继续汲取能量，就必须掩盖自己的行踪。就在那时，他想到一个主意：招募新成员，但不将他们列入要员名册。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0004_b0002" data-region-id="p0011_r0004" data-paragraph-id="p0011_r0004_p0002" style="text-indent:2em">瓦利安特一开始便将数十颗现实水晶切成两半，这样一来他能招募的人数实际上翻了一番。接着他发起了一场招募运动，签约引入了新成员，其中包括他的老朋友拉里·丹尼尔斯上校，但却没有向恩洛斯总部报告这些人的存在。有了这数十名未上报的成员向他缴纳会费，并为他提供可吸取的能量，瓦利安特盘算着自己这辈子算是高枕无忧了。不幸的是，切割这些小水晶破坏了它们的结构，使其变得不稳定。灾难注定要降临。</p></div>
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:95.175px;top:872.747px;width:321.807px;height:103.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0005_b0002" data-region-id="p0011_r0005" data-paragraph-id="p0011_r0005_p0002" style="text-indent:0">丹尼尔斯上校对自己得以加入恩洛斯兴奋不已。冥想练习中获得的能量爆发让他重振雄风。在此发现之后，丹尼尔斯的嗜好变得远不那么怪诞了。即便如此，他如今在古怪程度上所欠缺的，他……</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:448.199px;top:92.747px;width:325.120px;height:430.216px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0006_b0001" data-region-id="p0011_r0006" data-paragraph-id="p0011_r0006_p0001" style="text-indent:0">但持久力弥补了这一点。他的耐力很快成了应召女郎圈子里的话题。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0006_b0002" data-region-id="p0011_r0006" data-paragraph-id="p0011_r0006_p0002" style="text-indent:2em">丹尼尔斯的大宅是每周纵欲派对的场所，
+参加者包括丹尼尔斯最亲密的朋友（包括参议
+员迪托里奥）和城里一些要价最高的女士。正是在其中一场派对上，丹尼尔斯
+那块有瑕疵的水晶“走火”了，杀死了除瓦利安特、
+一名叫蕾切尔·马克斯的应召女郎和迪托里奥之外的所有客人。
+丹尼尔斯当时正在冥想他那有瑕疵的实现器，同时
+一名派对女郎正在为他进行口交。在可卡因的亢奋
+和年轻女士的分心之下，丹尼尔斯搞砸了冥想练习。虽然这通常
+不会有什么问题，但结合有瑕疵的水晶，却成了灾难。水晶
+吸干了丹尼尔斯所有的WP和POW。能量从
+丹尼尔斯体内爆发出来，将派对宾客抛飞，砸碎
+了家具和固定装置。建筑的一部分在刹那间
+短暂消失，导致几名
+派对客和大量家具碎片最终出现在其他房间或卡进了墙壁里。</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:448.199px;top:552.747px;width:325.120px;height:403.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0007_b0002" data-region-id="p0011_r0007" data-paragraph-id="p0011_r0007_p0002" style="text-indent:0">丹尼尔斯上校的水晶发生故障时，注意到的并不只是地球当局。米-戈感觉到了能量的释放，并留意到了来自圣路易斯的新闻报道。恩洛斯总部派遣了他们的管家之一，“希望”，前往圣路易斯进行调查。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0011_r0007_b0003" data-region-id="p0011_r0007" data-paragraph-id="p0011_r0007_p0003" style="text-indent:2em">监察使依然是恩洛斯的西班牙宗教裁判所；不过，米-戈做了一些改良。新一代监察使是恩洛斯信徒，几乎断绝了家庭与私人关系。他们被交给米-戈，用一种名为原体物质（同样出现在绿色三角洲的情景《融合》中）的奇特物质进行外科改造。监察使对自己的外貌与形体拥有完全的控制。他们可以随意缩短、拉长肢体，挤过狭小空间，生成任意数量的多功能附肢，并能改变外貌，模仿任何他们见过的人。这种“拟态”能力并不完美；由于受限于监察使对模仿对象的熟悉程度，面部特征和声音无法做到完全一致。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0011_r0001_b0001" data-region-id="p0011_r0001" style="left:96.000px;top:36.316px;width:199.851px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0011_r0001_b0002" data-region-id="p0011_r0001" style="left:571.175px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0011_r0002_b0001" style="left:746.360px;top:995.868px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">9</div>
+<div class="typeset-positioned-block" data-region-id="p0011_r0005" data-fit="text" style="left:0.000px;top:841.629px;width:299.251px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0011_r0005_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">爆炸</h1></div>
+<div class="typeset-positioned-block" data-region-id="p0011_r0007" data-fit="text" style="left:195.813px;top:521.629px;width:620.187px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0011_r0007_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">管家们</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="12" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0012.svg" alt="" data-visual-page="12"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:47.015px;top:92.747px;width:318.904px;height:603.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0012_r0003_b0001" data-region-id="p0012_r0003" data-paragraph-id="p0012_r0003_p0001" style="text-indent:0">此外，它们无法改变自身的质量。管家对某些形式的伤害（包括子弹）免疫，但会被枪击和爆炸震得四处翻滚。它们可被焚烧、电击，以及被胡椒喷雾等化学刺激物弄得不适。火是杀死它们的最佳方式。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0012_r0003_b0002" data-region-id="p0012_r0003" data-paragraph-id="p0012_r0003_p0002" style="text-indent:2em">支配者拥有一种被称为“支配之吻”的能力。要施展此吻，支配者需将自身的一部分原体物质注入受害者的身体（通常通过口腔），从而控制受害者的中枢神经系统。受害者会变成支配者的眼睛、耳朵和手，成为一具不折不扣的傀儡。每个支配者同一时间只能控制一名受害者，因为这需要高度集中精神。此外，每个支配者可分配的原体物质是有限的，同一时间内最多只能为三人注入。一旦原体物质离开受害者的身体系统——无论是因为支配者将其收回，还是被人体自然代谢排出（大约一周后）——受害者就会恢复神智，但对被控制期间的经历毫无记忆。支配者能够重新吸收通过“支配之吻”所释放的原体物质。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0012_r0003_b0003" data-region-id="p0012_r0003" data-paragraph-id="p0012_r0003_p0003" style="text-indent:2em">瓦利安特对霍普的到来毫无准备，但她试图用“吻”操控他心智时，他却侥幸逃过一劫。由于不断盗用意志力，瓦利安特已发展出几种潜在灵能天赋。先前，他仅能在与他人发生身体接触时，将情感共情投射入对方的潜意识。在霍普到来之前，这种能力仅局限于</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:404.161px;top:92.747px;width:319.305px;height:330.216px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0012_r0004_b0001" data-region-id="p0012_r0004" data-paragraph-id="p0012_r0004_p0001" style="text-indent:0">尋找新的浪漫征服對象，並為恩洛斯招募富有的新成員。但瓦利恩特扭曲的心智阻止了「希望」試圖掌控他中樞神經系統的企圖。當管家將她的原体物质注入瓦利恩特體內時，她在兩人之間創造了一道無法切斷的連結，而非單向的精神控制。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0012_r0004_b0002" data-region-id="p0012_r0004" data-paragraph-id="p0012_r0004_p0002" style="text-indent:2em">困于心灵反馈之中，霍普发现自己爱上了
+瓦利安特。她不愿背叛她的米-戈——她的主人，但
+她会不惜一切代价保护瓦利安特，哪怕牺牲自己的
+生命。她说服自己瓦利安特对米-戈控制恩洛斯
+不构成威胁，以此化解了相互冲突的忠诚。她
+合理化地认为，保护瓦利安特免遭警方追捕同样
+也是在保护米-戈的能量采收项目。</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:404.161px;top:452.747px;width:319.305px;height:243.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0012_r0005_b0002" data-region-id="p0012_r0005" data-paragraph-id="p0012_r0005_p0002" style="text-indent:0">一旦特工们盯上他，瓦利安特便计划利用
+（并严重错误地利用）霍普来摆脱他们的追查。
+瓦利安特拿着霍普的米-戈电击“枪”（详见第
+41页），但对它并不十分熟练。他
+并未意识到使用外星武器的危险性。
+瓦利安特还审问了霍普关于恩洛斯的真实本质，
+现在明白了恩洛斯是在为天外来客收集能量。但哪怕霍普
+也不知道收集这些能量的原因。
+瓦利安特变得日益绝望。他知道自己正被
+联邦探员、地方警察，以及经营恩洛斯的
+天外来客们三方追捕。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0012_r0001_b0001" data-region-id="p0012_r0001" style="left:524.295px;top:35.833px;width:195.707px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0012_r0001_b0002" data-region-id="p0012_r0001" style="left:48.000px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0012_r0002_b0001" style="left:375.133px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">10</div>
+<div class="typeset-positioned-block" data-region-id="p0012_r0005" data-fit="text" style="left:143.445px;top:421.629px;width:672.555px;height:31.709px;color:#eb4f24;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0012_r0005_b0001" style="font-size:29.333px;font-weight:400;color:#eb4f24">特工调查</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="13" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0013.svg" alt="" data-visual-page="13"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:95.033px;top:149.373px;width:313.957px;height:447.000px;color:#231f20"><h2 class="typeset-reflow-section font-role-section source-font-default" data-block-id="p0013_r0003_b0002" data-region-id="p0013_r0003" style="color:#000000">亲王已薨，</h2>
+<h2 class="typeset-reflow-section font-role-section source-font-default" data-block-id="p0013_r0003_b0003" data-region-id="p0013_r0003" style="color:#000000">王子万岁</h2>
+<p class="typeset-reflow-body font-role-body source-font-literary source-style-italic" data-block-id="p0013_r0004_b0001" data-region-id="p0013_r0004" data-paragraph-id="p0013_r0004_p0001" style="text-indent:0">1997年7月13日——密苏里州圣路易斯</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0013_r0005_b0001" data-region-id="p0013_r0005" data-paragraph-id="p0013_r0005_p0001" style="text-indent:0">角色们均为绿色三角洲特工或来自不同背景的友方线人。几个小时前，他们每人通过电话、传真或电脑调制解调器收到了下述消息：</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0013_r0005_b0002" data-region-id="p0013_r0005" data-paragraph-id="p0013_r0005_p0002" style="text-indent:2em">“诚邀您共赏一夜歌剧。已安排您在密苏里州圣路易斯兰伯特机场与陪同人员会面。回头见。”</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0013_r0005_b0003" data-region-id="p0013_r0005" data-paragraph-id="p0013_r0005_p0003" style="text-indent:2em">“歌剧之夜”是绿色三角洲行动的代号。特工们会发现，相关文件已经归档，允许他们享受数周的带薪假期或暂调任务。飞往圣路易斯的差旅券也已安排妥当。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0013_r0005_b0004" data-region-id="p0013_r0005" data-paragraph-id="p0013_r0005_p0004" style="text-indent:2em">调查员队伍于1997年7月13日星期日下午早些时候抵达，迎接他们的是FBI主管特工。</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:452.013px;top:152.747px;width:321.960px;height:443.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0013_r0006_b0001" data-region-id="p0013_r0006" data-paragraph-id="p0013_r0006_p0001" style="text-indent:0">对圣路易斯而言，路易斯·加斯顿。加斯顿四十出头，一位头发花白的黑人男性，留着小字胡，略带克里奥尔口音，神情像是个三天没合眼的人。他在路易斯安那的河口长大，自幼听着迷信故事和神话传说，其中一些他知道是真的。他的祖父——还记得1908年对新奥尔良城外克苏鲁邪教徒的那次突袭——曾用河口异教邪徒作恶的故事吓得加斯顿魂不附体。而他自己的经历，让那些记忆相形见绌。他加入绿色三角洲已有六年。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0013_r0006_b0002" data-region-id="p0013_r0006" data-paragraph-id="p0013_r0006_p0002" style="text-indent:2em">在两名身穿风衣、身形魁梧的FBI探员陪同下，加斯顿匆忙表明自己是特工们“今晚歌剧的陪同”，并将他们引上一辆加长豪华轿车。在所有人都进入车内之前，他对任何关于事态的问题都避而不答。加斯顿的两名FBI护卫坐在前排，通过隔音防弹玻璃与特工们隔开。通过一次成功的警觉检定，一名特工会发现几辆车牌为政府牌照的护卫车辆正尾随其后。</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0013_r0001_b0001" data-region-id="p0013_r0001" style="left:96.000px;top:36.316px;width:199.851px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0013_r0001_b0002" data-region-id="p0013_r0001" style="left:571.175px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0013_r0002_b0001" style="left:420.467px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">11</div>
+<div class="typeset-positioned-block" data-region-id="p0013_r0003" data-fit="text" style="left:47.800px;top:76.588px;width:768.200px;height:66.301px;color:#000000;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0013_r0003_b0001" style="font-size:40.000px;font-weight:400;color:#000000">第一部分</h1></div>
+</div>
+</section>
+<section class="typeset-page" data-page="14" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0014.svg" alt="" data-visual-page="14"></div>
+<div class="typeset-text-layer">
+<div class="typeset-positioned-block" data-region-id="p0014_r0003" data-fit="text" style="left:0.000px;top:84.071px;width:792.216px;height:61.181px;color:#000000;"><h3 class="typeset-heading typeset-reflow-section font-role-section source-font-default" data-block-id="p0014_r0003_b0001" style="font-size:26.667px;font-weight:400;color:#000000">过往事件时间线___________________________</h3></div>
+<div class="typeset-timeline-flow" data-column="left" data-fit="reflow" style="left:48.000px;top:140.179px;width:330.872px;height:849.155px"><div class="typeset-timeline-event"><div class="typeset-timeline-date">1962年10月15日</div><div class="typeset-timeline-body">*	罗纳德·瓦利安特出生，父系为一介…… 密苏里州议员的婚外情 安东尼·迪托里奥。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">26 FEB 1964</div><div class="typeset-timeline-body">*	赫伯特·普莱斯成立了恩洛斯基金会 作为免税宗教组织。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1972</div><div class="typeset-timeline-body">* 恩洛斯失去免税资格。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1980年5月13日</div><div class="typeset-timeline-body">*	罗纳德·瓦里安加入海军陆战队。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1981</div><div class="typeset-timeline-body">*	恩洛斯乘务员试图购买时被抓 来自ATF的枪械。普莱斯逃离罪犯。 充能消耗殆尽，随即消失。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1984年3月7日</div><div class="typeset-timeline-body">*	吉恩·唐宁接管恩洛斯。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1984年3月8日</div><div class="typeset-timeline-body">*	吉恩·唐宁遭到绑架并被米-戈替代。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1984年5月26日</div><div class="typeset-timeline-body">* Valiant从海军陆战队退役。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1984年6月17日</div><div class="typeset-timeline-body">* DiTorrio 带 Valiant 见识未来。 导师，USAF Col. 拉里·丹尼尔斯。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1984–1987</div><div class="typeset-timeline-body">*	 英勇号向康特拉武装空运武器，逃逸 毒品运回美国</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1987年11月9日</div><div class="typeset-timeline-body">*	 Valiant 被桑地诺主义者俘获。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">12 MAY 1988</div><div class="typeset-timeline-body">*	瓦利安特在中央情报局的协助下返回圣路易斯。他开始向该市的犯罪集团出售毒品和枪支。</div></div></div>
+<div class="typeset-timeline-flow" data-column="right" data-fit="reflow" style="left:384.211px;top:147.704px;width:329.411px;height:809.551px"><div class="typeset-timeline-event"><div class="typeset-timeline-date">1992年9月18日</div><div class="typeset-timeline-body">*	 Valiant消灭竞争对手的毒品 毒贩，马文·纳什。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1992年9月27日</div><div class="typeset-timeline-body">* DiTorrio 为 Valiant 安排了假身份 手术与新身份：Doug Walters。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1995年2月11日</div><div class="typeset-timeline-body">* 以道格·沃尔特斯的身份，瓦利安特加入了恩洛斯。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1995年7月22日</div><div class="typeset-timeline-body">* Valiant窃取灵能蓄水库。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1995年10月17日</div><div class="typeset-timeline-body">*	Valiant杀害恩洛斯执事泰德·斯托宾 并被指定为接替者。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1996年3月14日</div><div class="typeset-timeline-body">*	恩洛斯总部抱怨资源枯竭； Valiant开始切割晶体以作掩饰 挪用会费及 精神能量。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">1997年7月11日</div><div class="typeset-timeline-body">*	 丹尼尔斯大宅发生爆炸，炸死 除 Rachel Marx、Ronald 外的所有与会者 瓦利安特与迪托里奥参议员。迪托里奥 被送往医院，昏迷不醒。瓦莱恩特 在抛弃汽车后谋杀了瑞秋·马克思 用于逃离现场。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">12 JUL 1997</div><div class="typeset-timeline-body">*	 恩洛斯派遣了名叫霍普的执事 调查水晶爆炸事件。 霍普试图支配瓦利安特的心智 事与愿违。原体物质存在变得 被瓦利安特的意志所奴役。</div></div><div class="typeset-timeline-event"><div class="typeset-timeline-date">13 JUL 1997</div><div class="typeset-timeline-body">*	特工抵达。</div></div></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0014_r0001_b0001" data-region-id="p0014_r0001" style="left:524.295px;top:35.833px;width:195.707px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0014_r0001_b0002" data-region-id="p0014_r0001" style="left:48.000px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0014_r0002_b0001" style="left:375.133px;top:1012.583px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">12</div>
+</div>
+</section>
+<section class="typeset-page" data-page="15" data-template="line_track_columns" style="width:816.000px;height:1056.000px">
+<div class="typeset-page-visual-layer"><img class="typeset-page-visual" src="/output/Delta_Green_The_New_Age_2026_FIXED_cn/assets/page_visuals/p0015.svg" alt="" data-visual-page="15"></div>
+<div class="typeset-text-layer">
+<div class="typeset-region-flow" data-column="left" data-fit="reflow" style="left:95.904px;top:132.747px;width:318.424px;height:343.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0015_r0004_b0002" data-region-id="p0015_r0004" data-paragraph-id="p0015_r0004_p0002" style="text-indent:0">加斯顿在前往他所谓的“歌剧院”途中向特工们做简报。特工们将前往退休美国空军上校、麦克康奈尔-贝利斯公司董事会成员拉里·丹尼尔斯的宅邸。该宅邸位于圣路易斯市郊的大学城附近。加斯顿告诉特工们，昨晚大约凌晨1点，丹尼尔斯宅邸发生了一起爆炸。联邦政府能紧急调派的最顶尖鉴证小组已经表示他们束手无策。根据所有物理定律，这次爆炸是不可能发生的。它完全违背逻辑。为什么？怎么做到的？加斯顿只能回答：“让你们亲眼去看比解释更容易。”</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0015_r0004_b0003" data-region-id="p0015_r0004" data-paragraph-id="p0015_r0004_p0003" style="text-indent:2em">性爱与毒品的痕迹表明，在“爆炸”发生时，一场派对正在进行。九人遇难：拉里·丹尼尔斯；一位名叫尼尔·比格利的高档“茶点与演艺人士”供应商；圣...</p></div>
+<div class="typeset-region-flow" data-column="right" data-fit="reflow" style="left:452.971px;top:92.747px;width:315.188px;height:363.627px;color:#231f20"><p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0015_r0003_b0001" data-region-id="p0015_r0003" data-paragraph-id="p0015_r0003_p0001" style="text-indent:0">路易斯市专员斯坦利·凯布尔；以及六名各色派对女郎。丹尼尔斯的仆人们幸存了下来，因为他们当时在宅邸的另一侧厢房。显然，他们并未受邀参加这场纵欲狂欢。</p>
+<p class="typeset-reflow-body font-role-body source-font-literary" data-block-id="p0015_r0003_b0002" data-region-id="p0015_r0003" data-paragraph-id="p0015_r0003_p0002" style="text-indent:2em">唯一幸存的派对客人有点麻烦。那是安东尼·迪托里奥，密苏里州民主党参议员兼参议院军事委员会主席。加斯顿递给特工们一份关于迪托里奥参议员的FBI档案。里面装着FBI在过去十二小时内所能收集到的所有信息。这位参议员是圣路易斯本地人，在市政政治中起步。他现年五十八岁，已在美国国会任职二十年。FBI认为，在腐败与肮脏交易方面，这位参议员是清白的，但自从那份低调（且慷慨）的离婚协议之后，他对派对女郎产生了浓厚的兴趣。他的婚姻没有留下子嗣。（FBI目前尚不知晓迪托里奥的私生子。）一张近照</p></div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0015_r0001_b0001" data-region-id="p0015_r0001" style="left:96.000px;top:36.316px;width:199.851px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-start;text-align:left;padding-bottom:2px;white-space:nowrap;color:#231f20">// 绿色三角洲 //</div>
+<div class="typeset-positioned-block source-font-display-condensed font-role-running-header" data-block-id="p0015_r0001_b0002" data-region-id="p0015_r0001" style="left:571.175px;top:36.316px;width:199.193px;height:30.268px;font-size:14.667px;font-weight:400;line-height:1;display:flex;align-items:flex-end;justify-content:flex-end;text-align:right;padding-bottom:2px;white-space:nowrap;color:#231f20">// 《新时代》 //</div>
+<div class="typeset-positioned-block" data-block-id="p0015_r0002_b0001" style="left:746.360px;top:995.868px;width:21.333px;height:17.333px;font-size:18.667px;line-height:17.333px;text-align:center;text-indent:0;color:#000000">13</div>
+<div class="typeset-positioned-block" data-region-id="p0015_r0004" data-fit="text" style="left:0.000px;top:92.040px;width:306.051px;height:43.240px;color:#000000;"><h1 class="typeset-heading font-role-display source-font-default" data-block-id="p0015_r0004_b0001" style="font-size:40.000px;font-weight:400;color:#000000">简报</h1></div>
+</div>
+</section>
+
+<script>
+function typesetFitPositionedBlocks() {
+  typesetFlowLineTracks();
+  const boxes = document.querySelectorAll('.typeset-positioned-block[data-fit="text"]');
+  for (const box of boxes) {
+    box.dataset.overflow = typesetElementOverflows(box) ? 'true' : 'false';
+  }
+  const reflowAreas = document.querySelectorAll(
+    '.typeset-reflow-area[data-fit="reflow"], .typeset-region-flow[data-fit="reflow"], .typeset-rotated-flow[data-fit="reflow"], .typeset-timeline-flow'
+  );
+  for (const area of reflowAreas) {
+    area.dataset.overflow = typesetElementOverflows(area) ? 'true' : 'false';
+  }
+  typesetFitPagesToViewport();
+}
+function typesetFitPagesToViewport() {
+  const printMode = window.matchMedia && window.matchMedia('print').matches;
+  const available = Math.max(1, window.innerWidth - 24);
+  for (const page of document.querySelectorAll('.typeset-page')) {
+    const naturalWidth = parseFloat(page.dataset.naturalWidth || page.style.width);
+    if (!naturalWidth) continue;
+    page.dataset.naturalWidth = String(naturalWidth);
+    const scale = printMode ? 1 : Math.min(1, available / naturalWidth);
+    page.style.zoom = String(scale);
+  }
+}
+function typesetElementOverflows(el) {
+  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
+}
+function typesetCollectLayoutIssues() {
+  const issues = [];
+  const checked = document.querySelectorAll('[data-fit="text"], [data-fit="reflow"], .typeset-line-track-flow');
+  for (const el of checked) {
+    const overflow = el.dataset.overflow === 'true' || (
+      !el.classList.contains('typeset-line-track-flow') && typesetElementOverflows(el)
+    );
+    if (!overflow) continue;
+    const page = el.closest('.typeset-page');
+    issues.push({
+      page: page ? page.dataset.page : '',
+      kind: el.className || el.tagName,
+      id: el.dataset.regionId || el.dataset.flowBlocks || el.dataset.tableBlock || el.dataset.column || ''
+    });
+  }
+  return issues;
+}
+function typesetFlowLineTracks() {
+  const flows = document.querySelectorAll('.typeset-line-track-flow');
+  for (const flow of flows) {
+    const rawText = flow.dataset.flowText || '';
+    const slots = Array.from(flow.querySelectorAll('.typeset-line-slot'));
+    const tokens = typesetTokenizeFlowText(rawText);
+    let cursor = 0;
+    for (const slot of slots) {
+      slot.textContent = '';
+      if (cursor >= tokens.length) continue;
+      let low = 0;
+      let high = tokens.length - cursor;
+      let best = 0;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        slot.textContent = tokens.slice(cursor, cursor + mid).join('');
+        if (slot.scrollWidth <= slot.clientWidth + 1 && slot.scrollHeight <= slot.clientHeight + 1) {
+          best = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      if (best <= 0) best = 1;
+      slot.textContent = tokens.slice(cursor, cursor + best).join('');
+      cursor += best;
+    }
+    flow.dataset.overflow = cursor < tokens.length ? 'true' : 'false';
+  }
+}
+function typesetTokenizeFlowText(text) {
+  const source = (text || '').replace(/\s+/g, ' ').trim();
+  if (!source) return [];
+  if (/[一-鿿]/.test(source)) {
+    const matches = source.match(/[一-鿿]|[^一-鿿\s]+|\s+/g) || [];
+    return matches.map((item) => /^\s+$/.test(item) ? ' ' : item);
+  }
+  const parts = source.split(/(\s+)/).filter(Boolean);
+  return parts.length ? parts : Array.from(source);
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', typesetFitPositionedBlocks);
+} else {
+  typesetFitPositionedBlocks();
+}
+window.addEventListener('resize', typesetFitPagesToViewport);
+</script>
+
+</body>
+</html>

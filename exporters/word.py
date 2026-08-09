@@ -33,7 +33,7 @@ from exporters._shared import (
     _strip_quote_prefix,
     _normalize_inline_toc_fences,
 )
-from core.utils import ensure_output_parent
+from core.utils import atomic_output_path, ensure_output_parent
 
 # ---------------------------------------------------------------------------
 # Optional python-docx import
@@ -1097,7 +1097,8 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
         spacer.paragraph_format.space_after = Pt(0)
 
     if not reading_pages:
-        doc.save(docx_output)
+        with atomic_output_path(docx_output) as candidate:
+            doc.save(str(candidate))
         return
 
     first_layout = reading_pages[0].get("layout", "columns")
@@ -1173,4 +1174,5 @@ def write_word_output(translated_pages, docx_output: str, title: str, subtitle: 
                 else:
                     _write_word_block(doc, content, layout=layout)
 
-    doc.save(docx_output)
+    with atomic_output_path(docx_output) as candidate:
+        doc.save(str(candidate))

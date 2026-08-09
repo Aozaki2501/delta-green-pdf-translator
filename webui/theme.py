@@ -855,6 +855,49 @@ OFFICE_THEME_CSS = r'''
         box-shadow: none !important;
     }
 
+    .connection-card {
+        margin-top: 24px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #f8fafc;
+    }
+    .connection-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0 4px;
+    }
+    .connection-status i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #22a06b;
+    }
+    .connection-status strong { color: var(--text); font-size: 0.86rem; }
+    .connection-card > span,
+    .connection-card > small { display: block; color: var(--muted); font-size: 0.72rem; }
+    .connection-card > small { margin-top: 8px; }
+
+    .sidebar-mode-heading {
+        display: grid;
+        gap: 4px;
+        margin: 24px 2px 10px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+    }
+    .sidebar-mode-heading strong {
+        color: var(--text);
+        font-size: 0.82rem;
+    }
+    section[data-testid="stSidebar"] [data-testid="stToggle"] {
+        margin: 0 !important;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #f8fafc;
+    }
+
     h1, h2, h3, .hero-title {
         color: var(--text) !important;
         font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif !important;
@@ -2068,6 +2111,30 @@ GOVERNMENT_THEME_OVERRIDE_CSS = r'''
     .connection-card > span,
     .connection-card > small { display: block; color: #91a096; font-size: 0.66rem; }
     .connection-card > small { margin-top: 8px; color: #b5c1b8; }
+
+    .sidebar-mode-heading {
+        display: grid;
+        gap: 4px;
+        margin: 26px 2px 10px;
+        padding-top: 18px;
+        border-top: 1px solid #405348;
+    }
+    .sidebar-mode-heading strong {
+        color: #d7dfd9;
+        font-size: 0.82rem;
+    }
+    section[data-testid="stSidebar"] [data-testid="stToggle"] {
+        margin: 0 !important;
+        padding: 10px 12px;
+        border: 1px solid #405348;
+        border-radius: 2px;
+        background: #192a21;
+    }
+    section[data-testid="stSidebar"] [data-testid="stToggle"] label {
+        color: #d7dfd9 !important;
+        font-size: 0.82rem !important;
+        font-weight: 700;
+    }
 
     h1, h2, h3, .hero-title {
         color: var(--text) !important;

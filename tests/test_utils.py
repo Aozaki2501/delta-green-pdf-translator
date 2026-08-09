@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from core.utils import (
+    atomic_output_path,
     count_cjk_chars,
     is_failed_translation,
     looks_incomplete_translation,
@@ -220,3 +221,27 @@ def test_output_base_uses_same_named_folder():
 
 def test_output_base_does_not_double_nest_existing_folder():
     assert output_base_in_own_dir(str(Path("output") / "book_cn" / "book_cn")) == str(Path("output") / "book_cn" / "book_cn")
+
+
+def test_atomic_output_path_publishes_complete_candidate(tmp_path):
+    target = tmp_path / "report.txt"
+    target.write_text("old", encoding="utf-8")
+
+    with atomic_output_path(target) as candidate:
+        candidate.write_text("new", encoding="utf-8")
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert not list(tmp_path.glob("*.candidate.txt"))
+
+
+def test_atomic_output_path_preserves_previous_file_on_failure(tmp_path):
+    target = tmp_path / "report.txt"
+    target.write_text("old", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="failed before publish"):
+        with atomic_output_path(target) as candidate:
+            candidate.write_text("partial", encoding="utf-8")
+            raise RuntimeError("failed before publish")
+
+    assert target.read_text(encoding="utf-8") == "old"
+    assert not list(tmp_path.glob("*.candidate.txt"))

@@ -19,6 +19,8 @@ def test_profiles_keep_dg_and_kult_settings_isolated():
     assert "Delta Green" in dg.system_prompt
     assert "KULT" in kult.system_prompt
     assert "Delta Green" not in kult.system_prompt
+    assert "<strong>" in dg.system_prompt and "<em>" in dg.system_prompt
+    assert "<strong>" in kult.system_prompt and "<em>" in kult.system_prompt
 
 
 def test_unknown_typeset_profile_fails_explicitly():

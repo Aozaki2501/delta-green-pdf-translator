@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
+from typing import Mapping, Sequence
 
-from core.utils import ensure_output_parent
+from core.utils import atomic_output_path, ensure_output_parent
 
 
 @dataclass
@@ -35,9 +36,12 @@ def write_layout_report(issues: list[dict], output_path: str) -> None:
     """Write the complete browser layout findings as deterministic JSON."""
     ensure_output_parent(output_path)
     normalized = TypesetPDFExporter._normalize_layout_issues(issues)
-    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(normalized, f, ensure_ascii=False, indent=2, sort_keys=True)
-        f.write("\n")
+    with atomic_output_path(output_path) as candidate:
+        candidate.write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
 
 
 def write_layout_repair_manifest(
@@ -139,9 +143,12 @@ def write_layout_repair_manifest(
         "unresolved": unresolved,
     }
     ensure_output_parent(output_path)
-    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=True)
-        f.write("\n")
+    with atomic_output_path(output_path) as candidate:
+        candidate.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
 
 
 class TypesetPDFExporter:
@@ -161,8 +168,10 @@ class TypesetPDFExporter:
         repair_manifest_path: str | None = None,
         profile_id: str = "delta_green",
         repair_attempt: int = 0,
+        expected_blocks: Mapping[str, str] | None = None,
+        required_font_families: Sequence[str] = (),
     ) -> list[dict]:
-        """Fail HTML-only output when the browser finds a layout overflow."""
+        """Fail HTML-only output on layout, content ownership, or asset defects."""
         if not Path(html_path).exists():
             raise FileNotFoundError(f"HTML 文件不存在：{html_path}")
         try:
@@ -179,6 +188,12 @@ class TypesetPDFExporter:
                 page.goto(_file_url(html_path), wait_until="networkidle")
                 self._wait_for_render_assets(page)
                 issues = self._fit_and_collect_layout_issues(page)
+                ownership_issues = self._collect_content_ownership_issues(
+                    page, expected_blocks or {}
+                )
+                asset_issues = self._collect_asset_issues(
+                    page, required_font_families
+                )
                 if report_path:
                     write_layout_report(issues, report_path)
                 if repair_manifest_path:
@@ -188,6 +203,8 @@ class TypesetPDFExporter:
                         profile_id=profile_id,
                         repair_attempt=repair_attempt,
                     )
+                self._raise_for_asset_issues(asset_issues)
+                self._raise_for_content_ownership_issues(ownership_issues)
                 self._raise_for_layout_issues(issues)
                 return issues
             finally:
@@ -231,27 +248,29 @@ class TypesetPDFExporter:
             ) from exc
 
         result = ExportResult()
+        with atomic_output_path(pdf_output) as candidate_path:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    page.goto(_file_url(html_path), wait_until="networkidle")
+                    self._wait_for_render_assets(page)
+                    result.layout_issues = self._fit_and_collect_layout_issues(page)
+                    self._raise_for_layout_issues(result.layout_issues)
+                    page.pdf(
+                        path=str(candidate_path),
+                        width=f"{page_width_pt / 72.0}in",
+                        height=f"{page_height_pt / 72.0}in",
+                        margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                        print_background=True,
+                        prefer_css_page_size=True,
+                    )
+                finally:
+                    browser.close()
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            page.goto(_file_url(html_path), wait_until="networkidle")
-            self._wait_for_render_assets(page)
-            result.layout_issues = self._fit_and_collect_layout_issues(page)
-            self._raise_for_layout_issues(result.layout_issues)
-
-            page.pdf(
-                path=pdf_output,
-                width=f"{page_width_pt / 72.0}in",
-                height=f"{page_height_pt / 72.0}in",
-                margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
-                print_background=True,
-                prefer_css_page_size=True,
-            )
-            browser.close()
-
-        # Count pages in the output PDF to report success
-        result.success_pages = self._count_pdf_pages(pdf_output)
+            result.success_pages = self._count_pdf_pages(str(candidate_path))
+            if result.success_pages <= 0:
+                raise RuntimeError("PDF 导出结果没有页面")
         return result
 
     def export_with_fallback(
@@ -261,76 +280,13 @@ class TypesetPDFExporter:
         page_width_pt: float,
         page_height_pt: float,
     ) -> ExportResult:
-        """
-        Export PDF strictly.
-
-        The old public method name is kept for callers, but failures are
-        reported instead of silently skipping pages.
-
-        Args:
-            html_path: Path to the typeset HTML file.
-            pdf_output: Output PDF file path (should end with _typeset.pdf).
-            page_width_pt: Page width in PDF points.
-            page_height_pt: Page height in PDF points.
-
-        Returns:
-            ExportResult with success/failure information per page.
-
-        Raises:
-            FileNotFoundError: If html_path does not exist.
-            ValueError: If page dimensions are invalid.
-            RuntimeError: If Playwright is not installed.
-        """
-        if not Path(html_path).exists():
-            raise FileNotFoundError(f"HTML 文件不存在：{html_path}")
-        if page_width_pt <= 0 or page_height_pt <= 0:
-            raise ValueError("PDF 页面尺寸无效")
-        ensure_output_parent(pdf_output)
-
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError as exc:
-            raise RuntimeError(
-                "缺少 playwright。请先运行：pip install playwright && playwright install chromium"
-            ) from exc
-
-        result = ExportResult()
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-
-            try:
-                page.goto(_file_url(html_path), wait_until="networkidle")
-                self._wait_for_render_assets(page)
-                result.layout_issues = self._fit_and_collect_layout_issues(page)
-                self._raise_for_layout_issues(result.layout_issues)
-
-                # Get total page count from the HTML (count .typeset-page sections)
-                total_pages = page.evaluate(
-                    "document.querySelectorAll('.typeset-page').length"
-                )
-
-                # Try full export first
-                try:
-                    page.pdf(
-                        path=pdf_output,
-                        width=f"{page_width_pt / 72.0}in",
-                        height=f"{page_height_pt / 72.0}in",
-                        margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
-                        print_background=True,
-                        prefer_css_page_size=True,
-                    )
-                    result.success_pages = total_pages if total_pages > 0 else self._count_pdf_pages(pdf_output)
-                except Exception as e:
-                    error_msg = f"完整导出失败：{e}"
-                    result.errors.append(error_msg)
-            except Exception as e:
-                result.errors.append(f"页面加载失败：{e}")
-            finally:
-                browser.close()
-
-        return result
+        """Backward-compatible strict alias for :meth:`export`."""
+        return self.export(
+            html_path=html_path,
+            pdf_output=pdf_output,
+            page_width_pt=page_width_pt,
+            page_height_pt=page_height_pt,
+        )
 
     def _wait_for_render_assets(self, page) -> None:
         """Wait until fonts, SVG/image decoding and paint frames are complete."""
@@ -355,7 +311,7 @@ class TypesetPDFExporter:
             "window.typesetFitPositionedBlocks ? window.typesetFitPositionedBlocks() : undefined"
         )
         issues = page.evaluate(
-            """() => {
+            r"""() => {
                 const collected = window.typesetCollectLayoutIssues
                     ? window.typesetCollectLayoutIssues()
                     : [];
@@ -373,9 +329,13 @@ class TypesetPDFExporter:
                         el.dataset.tableBlock || el.dataset.column || '';
                     const blockId = el.dataset.blockId || '';
                     const target = blockId || id;
-                    const blockIds = Array.from(el.querySelectorAll('[data-block-id]'))
-                        .map((child) => child.dataset.blockId || '')
-                        .filter(Boolean);
+                    const explicitBlockIds = String(el.dataset.flowBlocks || '')
+                        .split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+                    const blockIds = explicitBlockIds.length
+                        ? explicitBlockIds
+                        : Array.from(el.querySelectorAll('[data-block-id]'))
+                            .map((child) => child.dataset.blockId || '')
+                            .filter(Boolean);
                     if (blockId && !blockIds.includes(blockId)) blockIds.unshift(blockId);
                     const boundary = pageRect ? {
                         left: Math.max(0, pageRect.left - rect.left),
@@ -432,6 +392,124 @@ class TypesetPDFExporter:
             }"""
         )
         return self._normalize_layout_issues(issues if isinstance(issues, list) else [])
+
+    def _collect_content_ownership_issues(
+        self,
+        page,
+        expected_blocks: Mapping[str, str],
+    ) -> list[dict]:
+        if not expected_blocks:
+            return []
+        return page.evaluate(
+            r"""(expected) => {
+                const owners = new Map();
+                const pageNumber = (element) =>
+                    element.closest('.typeset-page')?.dataset.page || '';
+                const addOwner = (blockId, element, kind) => {
+                    if (!blockId) return;
+                    const values = owners.get(blockId) || [];
+                    values.push({
+                        page: pageNumber(element),
+                        owner: element.dataset.regionId ||
+                            element.dataset.flowBlocks || blockId,
+                        kind,
+                    });
+                    owners.set(blockId, values);
+                };
+                for (const flow of document.querySelectorAll('[data-flow-blocks]')) {
+                    const ids = String(flow.dataset.flowBlocks || '')
+                        .split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+                    for (const blockId of ids) addOwner(blockId, flow, 'flow');
+                }
+                for (const element of document.querySelectorAll('[data-block-id]')) {
+                    if (element.closest('[data-flow-blocks]')) continue;
+                    addOwner(element.dataset.blockId || '', element, 'element');
+                }
+
+                const issues = [];
+                for (const [blockId, expectedPage] of Object.entries(expected)) {
+                    const values = owners.get(blockId) || [];
+                    if (values.length === 0) {
+                        issues.push({block_id: blockId, page: expectedPage, reason: 'missing'});
+                        continue;
+                    }
+                    if (values.length !== 1) {
+                        issues.push({
+                            block_id: blockId,
+                            page: expectedPage,
+                            reason: 'multiple_owners',
+                            owners: values,
+                        });
+                        continue;
+                    }
+                    if (String(values[0].page) !== String(expectedPage)) {
+                        issues.push({
+                            block_id: blockId,
+                            page: expectedPage,
+                            reason: 'wrong_page',
+                            owners: values,
+                        });
+                    }
+                }
+                return issues;
+            }""",
+            dict(expected_blocks),
+        )
+
+    def _collect_asset_issues(
+        self,
+        page,
+        required_font_families: Sequence[str],
+    ) -> list[dict]:
+        return page.evaluate(
+            """(families) => {
+                const issues = [];
+                for (const image of document.images) {
+                    if (!image.complete || image.naturalWidth === 0) {
+                        issues.push({kind: 'image', target: image.getAttribute('src') || ''});
+                    }
+                }
+                if (!document.fonts || document.fonts.status !== 'loaded') {
+                    issues.push({kind: 'font-set', target: document.fonts?.status || 'unsupported'});
+                    return issues;
+                }
+                for (const family of families) {
+                    const fontSpec = `normal 400 16px ${JSON.stringify(String(family))}`;
+                    if (!document.fonts.check(fontSpec, '汉字Aa')) {
+                        issues.push({kind: 'font', target: String(family)});
+                    }
+                }
+                return issues;
+            }""",
+            [str(family) for family in required_font_families if str(family).strip()],
+        )
+
+    @staticmethod
+    def _raise_for_content_ownership_issues(issues: list[dict]) -> None:
+        if not issues:
+            return
+        preview = "; ".join(
+            f"page={issue.get('page', '?')} block={issue.get('block_id', '')} "
+            f"reason={issue.get('reason', '')}"
+            for issue in issues[:10]
+        )
+        suffix = f"; ...(+{len(issues) - 10})" if len(issues) > 10 else ""
+        raise RuntimeError(
+            f"typeset content ownership: {len(issues)} issue(s); {preview}{suffix}"
+        )
+
+    @staticmethod
+    def _raise_for_asset_issues(issues: list[dict]) -> None:
+        if not issues:
+            return
+        preview = "; ".join(
+            f"kind={issue.get('kind', '')} target={issue.get('target', '')}"
+            for issue in issues[:10]
+        )
+        suffix = f"; ...(+{len(issues) - 10})" if len(issues) > 10 else ""
+        raise RuntimeError(
+            f"typeset render assets: {len(issues)} issue(s); {preview}{suffix}"
+        )
 
     @staticmethod
     def _normalize_layout_issues(issues: list[dict]) -> list[dict]:
@@ -514,10 +592,8 @@ class TypesetPDFExporter:
     def _count_pdf_pages(pdf_path: str) -> int:
         """Count pages in a PDF file using PyMuPDF."""
         try:
-            import fitz
-            doc = fitz.open(pdf_path)
-            count = len(doc)
-            doc.close()
-            return count
-        except Exception:
-            return 0
+            import pymupdf
+        except ImportError:
+            import fitz as pymupdf
+        with pymupdf.open(pdf_path) as document:
+            return len(document)

@@ -15,7 +15,6 @@ import json
 import re
 import tempfile
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
@@ -34,7 +33,7 @@ from core.translation_validation import (
     ensure_no_untranslated_leading_labels,
     untranslated_leading_labels,
 )
-from core.utils import replace_with_retry
+from core.utils import atomic_output_path, replace_with_retry
 from core.typeset_models import (
     ContentBlock,
     PageContent,
@@ -82,6 +81,8 @@ class TypesetTranslationProgress:
         self.targeted_translation_contexts: dict[str, str] = {}
         self.completed_phases: list[str] = []
         self.last_translated_page: int = -1
+        self.progress_corrupted = False
+        self.corrupt_backup_path = ""
         self._lock = threading.RLock()
         self._load()
 
@@ -92,8 +93,9 @@ class TypesetTranslationProgress:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                return
-        except (OSError, json.JSONDecodeError, ValueError):
+                raise ValueError("progress root must be an object")
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            self._backup_corrupt_file(exc)
             return
         if data.get("schema") != 2:
             return
@@ -111,6 +113,19 @@ class TypesetTranslationProgress:
         )
         self.completed_phases = list(data.get("completed_phases") or [])
         self.last_translated_page = int(data.get("last_translated_page", -1))
+
+    def _backup_corrupt_file(self, exc: Exception) -> None:
+        """Move unreadable progress aside before a new checkpoint can replace it."""
+        source = Path(self.progress_file)
+        backup = Path(f"{self.progress_file}.corrupt.bak")
+        suffix = 1
+        while backup.exists():
+            backup = Path(f"{self.progress_file}.corrupt.{suffix}.bak")
+            suffix += 1
+        replace_with_retry(source, backup)
+        self.progress_corrupted = True
+        self.corrupt_backup_path = str(backup)
+        print(f"图文重绘进度文件无法解析（{exc}），已备份为 {backup}。")
 
     def save(self):
         with self._lock:
@@ -285,6 +300,8 @@ class TypesetTranslationProgress:
         blocks: list[ContentBlock],
         target_signature: str,
         translations: Mapping[str, str],
+        *,
+        save: bool = True,
     ) -> None:
         """Persist one atomic shared-target translation result."""
         expected_ids = [block.id for block in blocks]
@@ -309,7 +326,8 @@ class TypesetTranslationProgress:
                 normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             )
             self.targeted_translation_contexts[cache_key] = target_signature
-            self.save()
+            if save:
+                self.save()
 
     # -- Mutation methods --
 
@@ -319,32 +337,59 @@ class TypesetTranslationProgress:
         translation: str,
         source_text: str | None = None,
     ):
-        if not block_id:
-            raise ValueError("block_id 不能为空")
-        translation = _translation_source_text(translation)
-        if not translation:
-            raise ValueError(f"译文为空：{block_id}")
-        ensure_no_prompt_leak(translation)
-        ensure_no_damaged_placeholder(translation)
-        ensure_no_elision_placeholder(translation)
-        ensure_no_japanese_kana(translation)
-        if source_text is not None:
-            ensure_no_untranslated_leading_labels(source_text, translation)
+        self.mark_completed_many({block_id: (translation, source_text)})
+
+    def mark_completed_many(
+        self,
+        entries: Mapping[str, tuple[str, str | None]],
+        *,
+        cache_sources: bool = False,
+        last_translated_page: int | None = None,
+    ) -> None:
+        """Record one completed translation unit with one atomic file write."""
+        if not entries:
+            return
+        normalized: dict[str, tuple[str, str | None]] = {}
+        for block_id, (translation, source_text) in entries.items():
+            if not block_id:
+                raise ValueError("block_id 不能为空")
+            translation = _translation_source_text(translation)
+            if not translation:
+                raise ValueError(f"译文为空：{block_id}")
+            ensure_no_prompt_leak(translation)
+            ensure_no_damaged_placeholder(translation)
+            ensure_no_elision_placeholder(translation)
+            ensure_no_japanese_kana(translation)
+            if source_text is not None:
+                ensure_no_untranslated_leading_labels(source_text, translation)
+            normalized[block_id] = (translation, source_text)
         with self._lock:
-            self.translations[block_id] = translation
-            self.source_hashes[block_id] = (
-                _source_text_hash(source_text) if source_text is not None else "*"
-            )
-            self.failed_blocks.pop(block_id, None)
+            for block_id, (translation, source_text) in normalized.items():
+                self.translations[block_id] = translation
+                self.source_hashes[block_id] = (
+                    _source_text_hash(source_text) if source_text is not None else "*"
+                )
+                self.failed_blocks.pop(block_id, None)
+                if cache_sources and source_text is not None:
+                    self.translation_cache[_source_text_hash(source_text)] = translation
+            if last_translated_page is not None:
+                self.last_translated_page = last_translated_page
             self.save()
 
     def mark_failed(self, block_id: str, message: str):
-        if not block_id:
+        self.mark_failed_many([block_id], message)
+
+    def mark_failed_many(self, block_ids, message: str) -> None:
+        block_ids = list(block_ids)
+        if not block_ids:
+            return
+        if any(not block_id for block_id in block_ids):
             raise ValueError("block_id 不能为空")
         with self._lock:
-            self.translations.pop(block_id, None)
-            self.source_hashes.pop(block_id, None)
-            self.failed_blocks[block_id] = str(message or "translation failed")
+            for block_id in block_ids:
+                self.translations.pop(block_id, None)
+                self.source_hashes.pop(block_id, None)
+                self.failed_blocks[block_id] = str(message or "translation failed")
             self.save()
 
     def clear_failed_blocks(self, block_ids=None) -> int:
@@ -453,6 +498,29 @@ def _translation_source_text(text: str) -> str:
     return (text or "").replace("\u00ad", "")
 
 
+def _exact_label_key(text: str) -> str:
+    stripped = re.sub(r"^(?:\s*[/|]+\s*)+", "", text or "")
+    stripped = re.sub(r"(?:\s*[/|]+\s*)+$", "", stripped)
+    stripped = stripped.strip().strip(":：").strip()
+    return re.sub(r"\s+", " ", stripped).casefold()
+
+
+def _canonical_exact_glossary_label(
+    source_text: str,
+    translated_text: str,
+    glossary: Mapping[str, str],
+) -> str:
+    source_key = _exact_label_key(source_text)
+    if not source_key or "\n" in source_text:
+        return translated_text
+    targets = {
+        _exact_label_key(source): str(target).strip()
+        for source, target in glossary.items()
+        if str(source).strip() and str(target).strip()
+    }
+    return targets.get(source_key, translated_text)
+
+
 # ---------------------------------------------------------------------------
 # Block marker formatting and parsing
 # ---------------------------------------------------------------------------
@@ -559,46 +627,6 @@ def _ensure_valid_emphasis_markup(text: str, context: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Retry logic
-# ---------------------------------------------------------------------------
-
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2.0  # seconds
-
-
-def _translate_with_retry(
-    translator,
-    source_text: str,
-    page_num: int,
-    prev_context: str,
-    cache,
-) -> str:
-    """Call translator.translate_chunk with retry logic (3 retries, exponential backoff).
-
-    The Translator class already has internal retry logic, but this provides
-    an additional layer for transient failures at the pipeline level.
-    """
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        result = translator.translate_chunk(
-            source_text,
-            page_num=page_num,
-            prev_context=prev_context,
-            cache=cache,
-        )
-        # If the translator returns a failure marker, retry
-        if result and result.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
-            last_error = result
-            if attempt < MAX_RETRIES - 1:
-                delay = RETRY_BASE_DELAY * (2 ** attempt)
-                time.sleep(delay)
-                continue
-        return result
-    # All retries exhausted — return the last failure
-    return last_error or f"{TRANSLATION_FAILURE_PREFIX} max retries exceeded]"
-
-
-# ---------------------------------------------------------------------------
 # Main translation function
 # ---------------------------------------------------------------------------
 
@@ -683,26 +711,30 @@ def translate_typeset_content(
                 parsed = future.result()
             except Exception as exc:
                 message = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
-                for block in pending_blocks:
-                    progress.mark_failed(block.id, message)
+                progress.mark_failed_many(
+                    [block.id for block in pending_blocks], message
+                )
                 if progress_callback:
                     progress_callback(completed_units, total_units, unit_id, False)
                 continue
 
-            for block in pending_blocks:
-                block_translation = parsed.get(block.id)
-                if not block_translation:
-                    progress.mark_failed(block.id, f"{TRANSLATION_FAILURE_PREFIX} missing translation]")
-                    continue
-                progress.mark_completed(block.id, block_translation, block.source_text)
-                progress.mark_cached_prompt_translation(
-                    _source_text_hash(block.source_text),
-                    block_translation,
+            parsed = {
+                block.id: _canonical_exact_glossary_label(
                     block.source_text,
+                    parsed[block.id],
+                    glossary,
                 )
+                for block in pending_blocks
+            }
 
-            progress.last_translated_page = page_index
-            progress.save()
+            progress.mark_completed_many(
+                {
+                    block.id: (parsed[block.id], block.source_text)
+                    for block in pending_blocks
+                },
+                cache_sources=True,
+                last_translated_page=page_index,
+            )
 
             if progress_callback:
                 progress_callback(completed_units, total_units, f"{unit_id} / {len(pending_blocks)} 块", True)
@@ -717,23 +749,31 @@ def _finish_cached_unit(
     progress: TypesetTranslationProgress,
 ) -> str | None:
     all_cached = True
+    cached_updates: dict[str, tuple[str, str | None]] = {}
     for block in blocks:
         cache_key = _source_text_hash(block.source_text)
         cached = progress.get_cached_prompt_translation(cache_key, block.source_text)
         if cached:
             if not progress.is_completed(block.id, block.source_text):
-                progress.mark_completed(block.id, cached, block.source_text)
+                cached_updates[block.id] = (cached, block.source_text)
         else:
             all_cached = False
 
-    if all_cached and all(progress.is_completed(b.id, b.source_text) for b in blocks):
+    all_completed = all(
+        block.id in cached_updates
+        or progress.is_completed(block.id, block.source_text)
+        for block in blocks
+    )
+    if cached_updates:
+        progress.mark_completed_many(
+            cached_updates,
+            last_translated_page=page_index if all_completed else None,
+        )
+    elif all_completed:
         progress.last_translated_page = page_index
         progress.save()
-        return "cached"
-    if all(progress.is_completed(b.id, b.source_text) for b in blocks):
-        progress.last_translated_page = page_index
-        progress.save()
-        return "resumed"
+    if all_completed:
+        return "cached" if all_cached else "resumed"
     return None
 
 
@@ -747,32 +787,21 @@ def _translate_typeset_unit(
 ) -> dict[str, str]:
     source_text = _build_marked_text(pending_blocks, preserve_emphasis=preserve_emphasis)
     pending_ids = {block.id for block in pending_blocks}
-    last_error: Exception | None = None
-    for attempt in range(MAX_RETRIES):
-        translation = _translate_with_retry(
-            translator,
-            source_text,
-            page_num=page_index,
-            prev_context=constraint_context,
-            cache=cache,
-        )
-        if translation and translation.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
-            last_error = RuntimeError(translation)
-        else:
-            try:
-                return _parse_marked_translations(
-                    translation,
-                    pending_ids,
-                    {block.id: block.source_text for block in pending_blocks},
-                )
-            except ValueError as exc:
-                last_error = exc
-        if attempt < MAX_RETRIES - 1:
-            delay = RETRY_BASE_DELAY * (2 ** attempt)
-            time.sleep(delay)
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError(f"{TRANSLATION_FAILURE_PREFIX} empty translation]")
+    translation = translator.translate_chunk(
+        source_text,
+        page_num=page_index,
+        prev_context=constraint_context,
+        cache=cache,
+    )
+    if translation and translation.lstrip().startswith(TRANSLATION_FAILURE_PREFIX):
+        raise RuntimeError(translation)
+    if not translation:
+        raise RuntimeError(f"{TRANSLATION_FAILURE_PREFIX} empty translation]")
+    return _parse_marked_translations(
+        translation,
+        pending_ids,
+        {block.id: block.source_text for block in pending_blocks},
+    )
 
 
 def translate_overflow_groups(
@@ -829,9 +858,11 @@ def translate_overflow_groups(
         target_signature = _overflow_target_signature(metadata)
         cached = progress.get_targeted_group_translations(blocks, target_signature)
         if cached:
-            for block in blocks:
-                progress.mark_completed(block.id, cached[block.id], block.source_text)
-                replacements[block.id] = cached[block.id]
+            progress.mark_completed_many({
+                block.id: (cached[block.id], block.source_text)
+                for block in blocks
+            })
+            replacements.update(cached)
             if progress_callback:
                 progress_callback(done, total, f"{group_id} (target cached)", True)
             continue
@@ -845,14 +876,25 @@ def translate_overflow_groups(
                 constraint_context=_overflow_constraint_context(metadata),
                 cache=None,
             )
-            progress.mark_targeted_group_translations(blocks, target_signature, parsed)
-            for block in blocks:
-                progress.mark_completed(block.id, parsed[block.id], block.source_text)
-                replacements[block.id] = parsed[block.id]
+            parsed = {
+                block.id: _canonical_exact_glossary_label(
+                    block.source_text,
+                    parsed[block.id],
+                    glossary,
+                )
+                for block in blocks
+            }
+            progress.mark_targeted_group_translations(
+                blocks, target_signature, parsed, save=False
+            )
+            progress.mark_completed_many({
+                block.id: (parsed[block.id], block.source_text)
+                for block in blocks
+            })
+            replacements.update(parsed)
         except Exception as exc:
             message = f"{TRANSLATION_FAILURE_PREFIX} {exc}]"
-            for block in blocks:
-                progress.mark_failed(block.id, message)
+            progress.mark_failed_many([block.id for block in blocks], message)
             if progress_callback:
                 progress_callback(done, total, group_id, False)
             raise RuntimeError(f"溢出区域翻译失败：{group_id}") from exc
@@ -963,6 +1005,26 @@ def _replace_translations(
     return replace(content, pages=translated_pages)
 
 
+def normalize_exact_glossary_labels(
+    content: PageContentDocument,
+    glossary: Mapping[str, str],
+) -> PageContentDocument:
+    """Canonicalize only blocks whose entire source is one glossary label."""
+    replacements = {}
+    for page in content.pages:
+        for block in page.blocks:
+            if not block.translated_text:
+                continue
+            normalized = _canonical_exact_glossary_label(
+                block.source_text,
+                block.translated_text,
+                glossary,
+            )
+            if normalized != block.translated_text:
+                replacements[block.id] = normalized
+    return _replace_translations(content, replacements) if replacements else content
+
+
 # ---------------------------------------------------------------------------
 # File I/O helpers
 # ---------------------------------------------------------------------------
@@ -970,6 +1032,5 @@ def _replace_translations(
 
 def save_translated_content(content: PageContentDocument, output_path: str):
     """Save translated PageContentDocument to page_content_translated.json."""
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content.to_json(), encoding="utf-8")
+    with atomic_output_path(output_path) as candidate:
+        candidate.write_text(content.to_json(), encoding="utf-8")

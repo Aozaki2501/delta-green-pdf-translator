@@ -144,7 +144,41 @@ def test_fixed_html_output_runs_browser_layout_gate(tmp_path, monkeypatch):
 
     result = pipeline.run_phase_d(_structure_doc(), content)
 
-    assert calls == [result]
+    assert len(calls) == 1
+    assert calls[0] != result
+    assert (tmp_path / "book_typeset.html").read_text(encoding="utf-8")
+
+
+def test_invalid_candidate_html_does_not_replace_previous_valid_output(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=_Translator(),
+        glossary={},
+    )
+    final_path = tmp_path / "book_typeset.html"
+    final_path.write_text("previous valid html", encoding="utf-8")
+    content = _content_doc()
+    content.pages[0].blocks[:] = [
+        replace(block, translated_text=f"{block.source_text}-cn")
+        for block in content.pages[0].blocks
+    ]
+    monkeypatch.setattr(pipeline, "_ensure_typeset_fonts", lambda: None)
+    monkeypatch.setattr(pipeline, "_load_page_visuals_for_structure", lambda _structure: None)
+    from exporters.typeset_pdf import TypesetPDFExporter
+    monkeypatch.setattr(
+        TypesetPDFExporter,
+        "validate_html_layout",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("typeset layout overflow: 1 issue(s)")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="layout overflow"):
+        pipeline.run_phase_d(_structure_doc(), content)
+
+    assert final_path.read_text(encoding="utf-8") == "previous valid html"
+    assert not list(tmp_path.glob("*.candidate.html"))
 
 
 def test_kult_merges_built_in_swedish_terms_and_user_override(tmp_path):
@@ -174,10 +208,90 @@ def test_translated_content_cache_requires_matching_translation_context(tmp_path
     ]
     (tmp_path / "page_content_translated.json").write_text(content.to_json(), encoding="utf-8")
     monkeypatch.setattr(pipeline, "_matches_current_source", lambda *_args: True)
+    monkeypatch.setattr(pipeline, "_expected_page_indexes", lambda: (0,))
 
     assert pipeline._load_existing_translated_content() is None
     pipeline._write_translation_context()
     assert pipeline._load_existing_translated_content() is not None
+
+
+def test_translation_context_changes_with_model_and_system_prompt(tmp_path):
+    first_translator = type("TranslatorA", (), {
+        "model": "model-a",
+        "base_url": "https://provider.example/v1",
+        "system_prompt": "prompt-a",
+    })()
+    second_translator = type("TranslatorA", (), {
+        "model": "model-b",
+        "base_url": "https://provider.example/v1",
+        "system_prompt": "prompt-a",
+    })()
+    third_translator = type("TranslatorA", (), {
+        "model": "model-a",
+        "base_url": "https://provider.example/v1",
+        "system_prompt": "prompt-b",
+    })()
+
+    first = TypesetPipeline("book.pdf", str(tmp_path), first_translator, {})
+    second = TypesetPipeline("book.pdf", str(tmp_path), second_translator, {})
+    third = TypesetPipeline("book.pdf", str(tmp_path), third_translator, {})
+
+    assert first._translation_context_signature() != second._translation_context_signature()
+    assert first._translation_context_signature() != third._translation_context_signature()
+
+
+def test_translation_context_changes_with_source_and_page_range(tmp_path):
+    first_pdf = tmp_path / "first.pdf"
+    second_pdf = tmp_path / "second.pdf"
+    first_pdf.write_bytes(b"first source")
+    second_pdf.write_bytes(b"second source")
+    first = TypesetPipeline(str(first_pdf), str(tmp_path / "first"), _Translator(), {})
+    second = TypesetPipeline(str(second_pdf), str(tmp_path / "second"), _Translator(), {})
+    ranged = TypesetPipeline(str(first_pdf), str(tmp_path / "ranged"), _Translator(), {})
+    ranged._start_page = 2
+    ranged._end_page = 5
+
+    assert first._translation_context_signature() != second._translation_context_signature()
+    assert first._translation_context_signature() != ranged._translation_context_signature()
+    assert first._semantic_context_signature() != ranged._semantic_context_signature()
+
+
+def test_structure_cache_requires_exact_requested_page_range(tmp_path, monkeypatch):
+    (tmp_path / "page_structure.json").write_text(
+        _structure_doc().to_json(), encoding="utf-8"
+    )
+    pipeline = TypesetPipeline("book.pdf", str(tmp_path), None, {})
+    pipeline._start_page = 0
+    pipeline._end_page = 2
+    monkeypatch.setattr(pipeline, "_matches_current_source", lambda *_args: True)
+    monkeypatch.setattr(pipeline, "_expected_page_indexes", lambda: (0, 1))
+
+    assert pipeline._load_existing_structure() is None
+
+
+def test_content_cache_requires_current_semantic_context(tmp_path, monkeypatch):
+    (tmp_path / "page_content.json").write_text(
+        _content_doc().to_json(), encoding="utf-8"
+    )
+    pipeline = TypesetPipeline("book.pdf", str(tmp_path), None, {})
+    monkeypatch.setattr(pipeline, "_matches_current_source", lambda *_args: True)
+    monkeypatch.setattr(pipeline, "_expected_page_indexes", lambda: (0,))
+
+    assert pipeline._load_existing_content() is None
+    pipeline._write_semantic_context()
+    assert pipeline._load_existing_content() is not None
+
+
+def test_page_dimensions_fail_when_source_pdf_cannot_be_read(tmp_path):
+    pipeline = TypesetPipeline(
+        pdf_path=str(tmp_path / "missing.pdf"),
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+
+    with pytest.raises(RuntimeError, match="页面尺寸"):
+        pipeline._get_page_dimensions()
 
 
 def test_overflow_repair_reuses_existing_translation_without_full_phase_c(tmp_path, monkeypatch):
@@ -197,6 +311,7 @@ def test_overflow_repair_reuses_existing_translation_without_full_phase_c(tmp_pa
     )
     pipeline._write_translation_context()
     monkeypatch.setattr(pipeline, "_matches_current_source", lambda *_args: True)
+    monkeypatch.setattr(pipeline, "_expected_page_indexes", lambda: (0,))
     calls = []
 
     def fake_repair(content, **kwargs):
@@ -402,6 +517,36 @@ def test_tiny_text_over_foreground_image_is_not_translatable():
     )
 
     assert _is_image_overlay_text_block(block, page) is True
+
+
+def test_overlay_normalization_never_overwrites_translated_content(tmp_path, monkeypatch):
+    pipeline = TypesetPipeline(
+        pdf_path="book.pdf",
+        output_dir=str(tmp_path),
+        translator=None,
+        glossary={},
+    )
+    translated = _content_doc()
+    translated.pages[0].blocks[:] = [
+        replace(block, translated_text=f"{block.source_text}-cn")
+        for block in translated.pages[0].blocks
+    ]
+    translated_path = tmp_path / "page_content_translated.json"
+    translated_path.write_text(translated.to_json(), encoding="utf-8")
+    monkeypatch.setattr(
+        "core.typeset_visibility.occluded_duplicate_block_ids",
+        lambda *_args, **_kwargs: {"b1"},
+    )
+
+    normalized = pipeline._normalize_image_overlay_blocks(
+        _content_doc(), _structure_doc()
+    )
+
+    assert normalized.pages[0].blocks[0].layout_mode == "hidden_source_text"
+    saved = PageContentDocument.from_json(
+        translated_path.read_text(encoding="utf-8")
+    )
+    assert saved.pages[0].blocks[0].translated_text == "A-cn"
 
 
 def test_pipeline_without_layout_hints_keeps_content(tmp_path):

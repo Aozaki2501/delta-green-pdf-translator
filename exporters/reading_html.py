@@ -118,6 +118,7 @@ class ReadingHTMLRenderer:
                 "<head>",
                 '<meta charset="utf-8">',
                 '<meta name="viewport" content="width=device-width, initial-scale=1">',
+                '<link rel="icon" href="data:,">',
                 f"<title>图文阅读版 · {title}</title>",
                 f"<style>{self._css()}</style>",
                 "</head>",

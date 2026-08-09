@@ -33,7 +33,7 @@ from exporters._shared import (
     _strip_list_marker,
     _strip_quote_prefix,
 )
-from core.utils import ensure_output_parent
+from core.utils import atomic_output_path, ensure_output_parent
 
 
 # ---------------------------------------------------------------------------
@@ -1051,6 +1051,7 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<link rel="icon" href="data:,">',
         f"<title>{safe_title} - 中文翻译</title>",
         f"<style>{css}</style>",
         "</head>",
@@ -1126,5 +1127,8 @@ def write_html_output(translated_pages, html_output: str, title: str, subtitle: 
 </script>
 """
     chunks.extend([script, "</body>", "</html>", ""])
-    with open(html_output, "w", encoding="utf-8") as f:
-        f.write("\n".join(chunk for chunk in chunks if chunk != ""))
+    with atomic_output_path(html_output) as candidate:
+        candidate.write_text(
+            "\n".join(chunk for chunk in chunks if chunk != ""),
+            encoding="utf-8",
+        )

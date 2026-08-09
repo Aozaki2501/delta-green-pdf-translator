@@ -1,0 +1,40 @@
+{
+  "total_pages": 15,
+  "issues": [
+    {
+      "page": "2",
+      "kind": "typeset-positioned-block",
+      "id": "p0002_r0001"
+    },
+    {
+      "page": "2",
+      "kind": "typeset-positioned-block",
+      "id": "p0002_r0003"
+    },
+    {
+      "page": "2",
+      "kind": "typeset-positioned-block",
+      "id": "p0002_r0013"
+    },
+    {
+      "page": "6",
+      "kind": "typeset-region-flow",
+      "id": "left"
+    },
+    {
+      "page": "9",
+      "kind": "typeset-region-flow",
+      "id": "left"
+    },
+    {
+      "page": "9",
+      "kind": "typeset-region-flow",
+      "id": "right"
+    },
+    {
+      "page": "14",
+      "kind": "typeset-region-flow",
+      "id": "right"
+    }
+  ]
+}

@@ -83,8 +83,8 @@ _PROFILES = {
     "delta_green": TypesetProfile(
         id="delta_green", label="Delta Green（默认）", source_language="English",
         system_prompt=_DG_PROMPT, font_family="DG Fandol Song",
-        heading_font_family="DG Lanting Kanhei", body_font_size_pt=10.9,
-        min_body_font_size_pt=10.5, line_height=17.0 / 10.9, column_gap_pt=31.0,
+        heading_font_family="DG Lanting Kanhei", body_font_size_pt=10.5,
+        min_body_font_size_pt=10.0, line_height=1.45, column_gap_pt=31.0,
         title_color="#231f20", subtitle_color="#dc2527",
         accent_heading_colors=("#ed1c24", "#dc2527", "#eb4f24"), body_color="#231f20",
         display_font_size_pt=30.0, section_font_size_pt=20.0,

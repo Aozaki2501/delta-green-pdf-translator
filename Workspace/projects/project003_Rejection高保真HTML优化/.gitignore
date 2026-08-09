@@ -1,0 +1,9 @@
+01_inputs/*.pdf
+01_inputs/*.png
+01_inputs/*.html
+01_inputs/*.json
+01_inputs/current_output/
+02_working/baseline/
+02_working/playwright/
+03_outputs/
+__pycache__/

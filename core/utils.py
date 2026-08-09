@@ -11,7 +11,9 @@ import hashlib
 import os
 import re
 import sys
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -110,6 +112,29 @@ def replace_with_retry(tmp_path: Path, target_path: Path, attempts: int = 20):
                 break
             time.sleep(min(0.05 * (attempt + 1), 0.5))
     raise PermissionError(f"无法写入文件，目标可能被其他程序占用：{target_path}") from last_error
+
+
+@contextmanager
+def atomic_output_path(path: str | Path):
+    """Yield a same-directory candidate and publish it only on success."""
+    target_path = Path(path).expanduser()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=str(target_path.parent),
+        prefix=target_path.stem + ".",
+        suffix=f".candidate{target_path.suffix}",
+        delete=False,
+    ) as handle:
+        candidate_path = Path(handle.name)
+    try:
+        yield candidate_path
+        if not candidate_path.is_file():
+            raise RuntimeError(f"候选文件没有生成：{candidate_path}")
+        if candidate_path.stat().st_size <= 0:
+            raise RuntimeError(f"候选文件为空：{candidate_path}")
+        replace_with_retry(candidate_path, target_path)
+    finally:
+        candidate_path.unlink(missing_ok=True)
 
 
 def count_cjk_chars(text: str) -> int:

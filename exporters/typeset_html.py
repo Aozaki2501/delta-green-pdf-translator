@@ -12,10 +12,6 @@ import html
 import re
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 from core.typeset_models import (
     BackgroundLayer,
@@ -32,7 +28,9 @@ from core.typeset_models import (
     TextRegionBBox,
     TypesetConfig,
 )
+from core.typeset_visibility import occluded_duplicate_block_ids
 from core.typeset_templates import select_typeset_template
+from exporters.typeset_browser_contract import build_typeset_browser_contract
 
 # PDF points → CSS pixels conversion factor (96 DPI / 72 DPI)
 CSS_PX_PER_PT = 96.0 / 72.0
@@ -259,6 +257,7 @@ class TypesetHTMLRebuilder:
             "<head>",
             '<meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
+            '<link rel="icon" href="data:,">',
             f"<title>{html.escape(self._document_title(structure))}</title>",
             f"<style>{css}</style>",
             "</head>",
@@ -271,7 +270,7 @@ class TypesetHTMLRebuilder:
                 '</nav>'
             )
         parts.extend(page_sections)
-        parts.append(self._build_fit_script())
+        parts.append(build_typeset_browser_contract())
         parts.extend([
             "</body>",
             "</html>",
@@ -279,116 +278,8 @@ class TypesetHTMLRebuilder:
         return "\n".join(parts)
 
     def _build_fit_script(self) -> str:
-        """Build strict overflow checks without silently shrinking text."""
-        return """
-<script>
-function typesetFitPositionedBlocks() {
-  typesetFlowLineTracks();
-  const boxes = document.querySelectorAll('.typeset-positioned-block[data-fit="text"]');
-  for (const box of boxes) {
-    box.dataset.overflow = typesetElementOverflows(box) ? 'true' : 'false';
-  }
-  const reflowAreas = document.querySelectorAll(
-    '.typeset-reflow-area[data-fit="reflow"], .typeset-region-flow[data-fit="reflow"], .typeset-rotated-flow[data-fit="reflow"], .typeset-timeline-flow'
-  );
-  for (const area of reflowAreas) {
-    area.dataset.overflow = typesetElementOverflows(area) ? 'true' : 'false';
-  }
-  typesetFitPagesToViewport();
-}
-function typesetFitPagesToViewport() {
-  const printMode = window.matchMedia && window.matchMedia('print').matches;
-  const available = Math.max(1, window.innerWidth - 24);
-  for (const page of document.querySelectorAll('.typeset-page')) {
-    const naturalWidth = parseFloat(page.dataset.naturalWidth || page.style.width);
-    if (!naturalWidth) continue;
-    page.dataset.naturalWidth = String(naturalWidth);
-    const scale = printMode ? 1 : Math.min(1, available / naturalWidth);
-    page.style.zoom = String(scale);
-  }
-}
-function typesetElementOverflows(el) {
-  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
-}
-function typesetPageBoundaryOverflow(el) {
-  const page = el.closest('.typeset-page');
-  if (!page) return {left: 0, top: 0, right: 0, bottom: 0};
-  const pageRect = page.getBoundingClientRect();
-  const rect = el.getBoundingClientRect();
-  return {
-    left: Math.max(0, pageRect.left - rect.left),
-    top: Math.max(0, pageRect.top - rect.top),
-    right: Math.max(0, rect.right - pageRect.right),
-    bottom: Math.max(0, rect.bottom - pageRect.bottom),
-  };
-}
-function typesetCollectLayoutIssues() {
-  const issues = [];
-  const checked = document.querySelectorAll('[data-fit="text"], [data-fit="reflow"], [data-fit="table"], .typeset-line-track-flow');
-  for (const el of checked) {
-    const boundary = typesetPageBoundaryOverflow(el);
-    const overflow = el.dataset.overflow === 'true' || (
-      !el.classList.contains('typeset-line-track-flow') && typesetElementOverflows(el)
-    ) || Object.values(boundary).some((value) => value > 4);
-    if (!overflow) continue;
-    const page = el.closest('.typeset-page');
-    issues.push({
-      page: page ? page.dataset.page : '',
-      kind: el.className || el.tagName,
-      id: el.dataset.regionId || el.dataset.flowBlocks || el.dataset.tableBlock || el.dataset.column || '',
-      target: el.dataset.blockId || el.dataset.regionId || el.dataset.flowBlocks || el.dataset.tableBlock || el.dataset.column || '',
-    });
-  }
-  return issues;
-}
-function typesetFlowLineTracks() {
-  const flows = document.querySelectorAll('.typeset-line-track-flow');
-  for (const flow of flows) {
-    const rawText = flow.dataset.flowText || '';
-    const slots = Array.from(flow.querySelectorAll('.typeset-line-slot'));
-    const tokens = typesetTokenizeFlowText(rawText);
-    let cursor = 0;
-    for (const slot of slots) {
-      slot.textContent = '';
-      if (cursor >= tokens.length) continue;
-      let low = 0;
-      let high = tokens.length - cursor;
-      let best = 0;
-      while (low <= high) {
-        const mid = Math.floor((low + high) / 2);
-        slot.textContent = tokens.slice(cursor, cursor + mid).join('');
-        if (slot.scrollWidth <= slot.clientWidth + 1 && slot.scrollHeight <= slot.clientHeight + 1) {
-          best = mid;
-          low = mid + 1;
-        } else {
-          high = mid - 1;
-        }
-      }
-      if (best <= 0) best = 1;
-      slot.textContent = tokens.slice(cursor, cursor + best).join('');
-      cursor += best;
-    }
-    flow.dataset.overflow = cursor < tokens.length ? 'true' : 'false';
-  }
-}
-function typesetTokenizeFlowText(text) {
-  const source = (text || '').replace(/\\s+/g, ' ').trim();
-  if (!source) return [];
-  if (/[\u4e00-\u9fff]/.test(source)) {
-    const matches = source.match(/[\u4e00-\u9fff]|[^\u4e00-\u9fff\\s]+|\\s+/g) || [];
-    return matches.map((item) => /^\\s+$/.test(item) ? ' ' : item);
-  }
-  const parts = source.split(/(\\s+)/).filter(Boolean);
-  return parts.length ? parts : Array.from(source);
-}
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', typesetFitPositionedBlocks);
-} else {
-  typesetFitPositionedBlocks();
-}
-window.addEventListener('resize', typesetFitPagesToViewport);
-</script>
-"""
+        """Backward-compatible delegate to the browser contract module."""
+        return build_typeset_browser_contract()
 
     def _build_global_css(self, page_width_in: float, page_height_in: float) -> str:
         """Build the global CSS stylesheet."""
@@ -646,7 +537,7 @@ body {{
     font-family: {heading_font_stack};
     font-size: 1.37em;
     line-height: 1.25;
-    margin: {_pt_to_px(10.0):.3f}px 0 {_pt_to_px(5.0):.3f}px 0;
+    margin: {_pt_to_px(10.0):.3f}px 0 {_pt_to_px(2.5):.3f}px 0;
     font-weight: 700;
     text-indent: 0;
     color: {self.config.subtitle_color};
@@ -723,6 +614,12 @@ body {{
 .typeset-region-flow .typeset-reflow-body {{
     line-height: {line_height};
     margin-bottom: 0.34em;
+}}
+.typeset-region-flow > :first-child {{
+    margin-top: 0;
+}}
+.typeset-region-flow > :last-child {{
+    margin-bottom: 0;
 }}
 .typeset-region-flow .typeset-reflow-body.source-font-geometric {{
     font-size: {_pt_to_px(10.0):.3f}px;
@@ -1259,6 +1156,16 @@ body {{
         parts: list[str] = ['<div class="typeset-text-layer">']
 
         if page_structure is not None:
+            hidden_ids = occluded_duplicate_block_ids(page_content, page_structure)
+            if hidden_ids:
+                page_content = replace(
+                    page_content,
+                    blocks=[
+                        block
+                        for block in page_content.blocks
+                        if block.id not in hidden_ids
+                    ],
+                )
             self._current_template = select_typeset_template(page_content, page_structure)
             if page_content.page_type == PageType.ART:
                 parts.append(self._render_art_fixed_text(page_content, page_structure))
@@ -1950,9 +1857,11 @@ body {{
             if not inner:
                 continue
             x0, y0, x1, y1 = self._expanded_column_bbox(flow_bbox)
+            flow_block_ids = ",".join(block.id for block in ordered)
             parts.append(
                 '<div class="typeset-region-flow typeset-same-region-flow" '
                 f'data-region-id="{html.escape(ordered[0].region_id)}" '
+                f'data-flow-blocks="{html.escape(flow_block_ids)}" '
                 f'data-fit="reflow" '
                 f'style="left:{_pt_to_px_str(x0)};top:{_pt_to_px_str(y0)};'
                 f'width:{_pt_to_px_str(x1 - x0)};height:{_pt_to_px_str(y1 - y0)};'
@@ -2085,13 +1994,16 @@ body {{
                 or self._overlaps_foreground_image([x0, y0, x1, y1], page_structure)
             ):
                 flow_class += " typeset-rotated-compact"
+            flow_block_ids = ",".join(block.id for block in ordered)
             rendered.append(
                 f'<div class="{flow_class}" '
+                f'data-flow-blocks="{html.escape(flow_block_ids)}" '
                 f'data-fit="reflow" '
                 f'style="left:{_px(left)};top:{_px(top)};'
                 f'width:{_px(width)};height:{_px(height)};'
                 f'color:{html.escape(text_color)};'
-                f'transform-origin:0 0;transform:rotate({self._reflow_group_angle(ordered, angle):.3f}deg)">'
+                f'transform-origin:center center;'
+                f'transform:rotate({self._reflow_group_angle(ordered, angle):.3f}deg)">'
                 f"{inner}</div>"
             )
 
@@ -2864,7 +2776,7 @@ body {{
         top = _pt_to_px(y0)
         width = _pt_to_px(max(0.0, x1 - x0))
         height = _pt_to_px(max(0.0, y1 - y0))
-        inner = self._render_block(block)
+        inner = self._render_block(block, preserve_source_size=True)
         if not inner:
             return ""
         return self._positioned_block_html(
@@ -2922,107 +2834,16 @@ body {{
         blocks: list[ContentBlock],
         region_map: dict[str, list[float]],
     ) -> list[ContentBlock]:
-        result: list[ContentBlock] = []
-        for block in blocks:
-            if block.layout_mode in {"full_width_hero", "drop_cap"}:
-                result.append(block)
-                continue
-            text = _normalized_text(block.source_text)
-            if len(text) < 8:
-                result.append(block)
-                continue
-            replaced = False
-            skip = False
-            for index, kept in enumerate(result):
-                kept_text = _normalized_text(kept.source_text)
-                if not kept_text:
-                    continue
-                if self._block_renders_as_heading(block) != self._block_renders_as_heading(kept):
-                    continue
-                if not self._boxes_overlap(region_map[block.region_id], region_map[kept.region_id]):
-                    continue
-                if text in kept_text:
-                    skip = True
-                    break
-                if kept_text in text:
-                    result[index] = block
-                    replaced = True
-                    break
-            if not skip and not replaced:
-                result.append(block)
-        return result
+        # Semantic analysis owns duplicate classification.  The renderer must
+        # never infer that one translated block is disposable from text overlap.
+        return list(blocks)
 
     def _build_reflow_items(self, blocks: list[ContentBlock]) -> list[tuple[ContentBlock, str]]:
-        items: list[tuple[ContentBlock, str]] = []
-        seen_text = ""
-
-        for block in blocks:
-            original_text = self._display_text_for_block(block)
-            if not original_text:
-                continue
-
-            text = original_text
-            trimmed = False
-            if _contains_cjk(text):
-                text = self._trim_repeated_prefix(text, seen_text)
-                trimmed = text != original_text
-                if not text:
-                    continue
-
-            if (
-                items
-                and self._is_mergeable_reflow_body(items[-1][0], block)
-                and (trimmed or self._source_text_windows_overlap(items[-1][0], block))
-            ):
-                previous_block, previous_text = items[-1]
-                items[-1] = (previous_block, self._join_reflow_text(previous_text, text))
-            else:
-                items.append((block, text))
-
-            seen_text += _normalized_text(text)
-
-        return items
-
-    def _trim_repeated_prefix(self, text: str, seen_text: str) -> str:
-        normalized = _normalized_text(text)
-        if len(normalized) < 8:
-            return text
-
-        max_prefix = min(len(normalized), 120)
-        for size in range(max_prefix, 7, -1):
-            if normalized[:size] in seen_text:
-                return text[size:].lstrip("，。；：、,. ;:")
-        return text
-
-    def _is_mergeable_reflow_body(self, previous: ContentBlock, current: ContentBlock) -> bool:
-        return (
-            previous.role == SemanticRole.BODY_COLUMN
-            and current.role == SemanticRole.BODY_COLUMN
-            and not self._looks_like_subtitle(previous)
-            and not self._looks_like_subtitle(current)
-        )
-
-    def _source_text_windows_overlap(self, previous: ContentBlock, current: ContentBlock) -> bool:
-        previous_text = _normalized_text(previous.source_text)
-        current_text = _normalized_text(current.source_text)
-        if len(previous_text) < 24 or len(current_text) < 24:
-            return False
-        if previous_text in current_text or current_text in previous_text:
-            return True
-        max_size = min(len(previous_text), len(current_text), 160)
-        for size in range(max_size, 23, -1):
-            if previous_text[-size:] == current_text[:size]:
-                return True
-        return False
-
-    def _join_reflow_text(self, previous: str, current: str) -> str:
-        if not previous:
-            return current
-        if not current:
-            return previous
-        if previous[-1] in "。！？.!?":
-            return previous + current
-        return previous + current
+        return [
+            (block, text)
+            for block in blocks
+            if (text := self._display_text_for_block(block))
+        ]
 
     def _boxes_overlap(self, a: list[float], b: list[float]) -> bool:
         ax0, ay0, ax1, ay1 = a
@@ -3317,7 +3138,7 @@ body {{
         font_size = self._get_block_font_size(block)
         if any(run.color.lower() == self.config.subtitle_color.lower() for run in block.runs):
             return True
-        if len(text) <= 32 and font_size >= self.config.body_font_size_pt:
+        if len(text) <= 32 and font_size >= self.config.body_font_size_pt * 1.15:
             return True
         return block.role in (SemanticRole.SUBTITLE, SemanticRole.LIST)
 
@@ -3365,7 +3186,7 @@ body {{
             width = _pt_to_px(max(0.0, x1 - x0))
             height = _pt_to_px(max(0.0, y1 - y0))
             color = self._block_text_color(block)
-            inner = self._render_block(block)
+            inner = self._render_block(block, preserve_source_size=True)
             if not inner:
                 continue
 
@@ -3388,7 +3209,7 @@ body {{
         top = _pt_to_px(y0)
         width = _pt_to_px(max(0.0, x1 - x0))
         height = _pt_to_px(max(0.0, y1 - y0))
-        inner = self._render_block(block)
+        inner = self._render_block(block, preserve_source_size=True)
         if not inner:
             return ""
         return self._positioned_block_html(
@@ -3420,7 +3241,9 @@ body {{
     ) -> str:
         transform = ""
         if abs(angle) >= 1.0:
-            transform = f"transform-origin:0 0;transform:rotate({angle:.3f}deg);"
+            transform = (
+                f"transform-origin:center center;transform:rotate({angle:.3f}deg);"
+            )
         return (
             f'<div class="typeset-positioned-block" '
             f'data-region-id="{html.escape(region_id)}" '
@@ -3469,24 +3292,14 @@ body {{
         block: ContentBlock,
         page_structure: PageStructure,
     ) -> float:
-        angle = self._region_angle(block.region_id, page_structure)
-        if abs(angle) < 1.0:
-            return angle
-        if self._is_long_translated_fixed_text(block):
-            return 0.0
-        return angle
+        return self._region_angle(block.region_id, page_structure)
 
     def _reflow_group_angle(
         self,
         blocks: list[ContentBlock],
         angle: float,
     ) -> float:
-        if any(self._is_long_translated_fixed_text(block) for block in blocks):
-            return 0.0
         return angle
-
-    def _is_long_translated_fixed_text(self, block: ContentBlock) -> bool:
-        return self._is_long_translated_body(block) or self._is_long_translated_heading(block)
 
     def _is_long_translated_body(self, block: ContentBlock) -> bool:
         text = block.translated_text or ""
@@ -3494,17 +3307,6 @@ body {{
             block.role == SemanticRole.BODY_COLUMN
             and _contains_cjk(text)
             and len(_normalized_text(text)) >= 80
-        )
-
-    def _is_long_translated_heading(self, block: ContentBlock) -> bool:
-        text = block.translated_text or ""
-        return (
-            (
-                block.role in (SemanticRole.TITLE, SemanticRole.SUBTITLE)
-                or self._is_heading(self._get_block_font_size(block))
-            )
-            and _contains_cjk(text)
-            and len(_normalized_text(text)) >= 24
         )
 
     def _block_renders_as_heading(self, block: ContentBlock) -> bool:
@@ -3585,10 +3387,15 @@ body {{
         color = self._block_text_color(blocks[0])
         flow_items = self._build_reflow_items(blocks)
         inner = "\n".join(
-            self._render_body_block(block, text, self._get_block_font_size(block))
+            self._render_body_block(
+                block,
+                text,
+                self._get_block_font_size(block),
+                enforce_minimum=False,
+            )
             for block, text in flow_items
         )
-        ids = " ".join(block.id for block in blocks)
+        ids = ",".join(block.id for block in blocks)
         return (
             f'<div class="typeset-positioned-block" '
             f'data-flow-blocks="{html.escape(ids)}" '
@@ -3618,7 +3425,10 @@ body {{
         left_side = (x0 + x1) / 2 < page_structure.width / 2
         slot_x0 = x0 if left_side else max(page_structure.width / 2, x0 - 80.0)
         slot_x1 = min(page_structure.width / 2, x1 + 80.0) if left_side else x1
-        text = html.escape(f"// {self._display_text_for_block(block)} //")
+        label = self._display_text_for_block(block)
+        label = re.sub(r"^(?:\s*/+\s*)+", "", label)
+        label = re.sub(r"(?:\s*/+\s*)+$", "", label).strip()
+        text = html.escape(f"// {label} //")
         return (
             f'<div class="typeset-positioned-block source-font-display-condensed '
             f'{self._font_role_class(block)}" '
@@ -3819,7 +3629,12 @@ body {{
         luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
         return luminance >= 180
 
-    def _render_block(self, block: ContentBlock, is_cover: bool = False) -> str:
+    def _render_block(
+        self,
+        block: ContentBlock,
+        is_cover: bool = False,
+        preserve_source_size: bool = False,
+    ) -> str:
         """Render a single content block as HTML."""
         # Determine the text to display
         text = self._display_text_for_block(block)
@@ -3827,6 +3642,8 @@ body {{
             return ""
 
         block_font_size_pt = self._target_font_size_pt(block)
+        if preserve_source_size and block.font_role in {FontRole.BODY, FontRole.META}:
+            block_font_size_pt = self._get_block_font_size(block)
 
         if self._renders_as_accent_heading(block):
             return self._render_subtitle_block(block, text, block_font_size_pt)
@@ -3836,7 +3653,12 @@ body {{
             return self._render_subtitle_block(block, text, block_font_size_pt)
         if block.role == SemanticRole.SUBTITLE:
             return self._render_subtitle_block(block, text, block_font_size_pt)
-        return self._render_body_block(block, text, block_font_size_pt)
+        return self._render_body_block(
+            block,
+            text,
+            block_font_size_pt,
+            enforce_minimum=not preserve_source_size,
+        )
 
     def _target_font_size_pt(self, block: ContentBlock) -> float:
         if self._renders_as_accent_heading(block):
@@ -3867,7 +3689,7 @@ body {{
         return sizes[len(sizes) // 2]
 
     def _display_text_for_block(self, block: ContentBlock) -> str:
-        if block.layout_mode == "image_overlay_text":
+        if block.layout_mode in {"image_overlay_text", "hidden_source_text"}:
             return ""
         if block.translatable:
             text = (block.translated_text or "").strip()
@@ -3933,12 +3755,16 @@ body {{
         return "700" if is_heavy_family or any(run.bold for run in block.runs if run.text.strip()) else "400"
 
     def _render_body_block(
-        self, block: ContentBlock, text: str, font_size_pt: float
+        self,
+        block: ContentBlock,
+        text: str,
+        font_size_pt: float,
+        enforce_minimum: bool = True,
     ) -> str:
         """Render a block as a body paragraph."""
         font_size_px = _pt_to_px(font_size_pt)
-        # Enforce minimum font size
-        font_size_px = max(font_size_px, self._min_font_size_px())
+        if enforce_minimum:
+            font_size_px = max(font_size_px, self._min_font_size_px())
         escaped_text = self._format_body_text(block, text)
 
         style_parts: list[str] = []

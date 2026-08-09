@@ -19,7 +19,7 @@ from exporters.typeset_html import TypesetHTMLRebuilder
 from exporters.typeset_pdf import TypesetPDFExporter, write_layout_report
 
 
-def test_long_translated_body_over_image_is_upright_without_mask():
+def test_long_translated_body_over_image_keeps_source_angle_without_mask():
     rebuilder = TypesetHTMLRebuilder()
     structure = PageStructure(
         page_index=0,
@@ -61,11 +61,11 @@ def test_long_translated_body_over_image_is_upright_without_mask():
         structure.text_regions[0].bbox,
     )
 
-    assert "rotate(-4.750deg)" not in html
+    assert "rotate(-4.750deg)" in html
     assert "background:#f4eedc" not in html
 
 
-def test_long_translated_heading_is_upright_and_respects_source_display_size():
+def test_long_translated_heading_keeps_source_angle_and_display_size():
     rebuilder = TypesetHTMLRebuilder()
     structure = PageStructure(
         page_index=0,
@@ -99,9 +99,56 @@ def test_long_translated_heading_is_upright_and_respects_source_display_size():
         structure.text_regions[0].bbox,
     )
 
-    assert "rotate(-4.750deg)" not in html
+    assert "rotate(-4.750deg)" in html
     assert "font-size:32.000px" in html
     assert "white-space:nowrap" not in html
+
+
+def test_long_rotated_flow_group_keeps_source_angle():
+    rebuilder = TypesetHTMLRebuilder()
+    blocks = [
+        ContentBlock(
+            id=f"b{index}",
+            region_id=f"r{index}",
+            role=SemanticRole.BODY_COLUMN,
+            runs=[StyledTextRun("Body", 9.0, False, False, "#000000")],
+            source_text="Body",
+            translated_text="中" * 90,
+            translatable=True,
+        )
+        for index in range(3)
+    ]
+
+    assert rebuilder._reflow_group_angle(blocks, -5.0) == -5.0
+
+
+def test_reflow_does_not_delete_a_repeated_name_from_the_next_paragraph():
+    rebuilder = TypesetHTMLRebuilder()
+    first = ContentBlock(
+        id="b1",
+        region_id="r1",
+        role=SemanticRole.BODY_COLUMN,
+        runs=[StyledTextRun("First", 10.0, False, False, "#000000")],
+        source_text="The logo of HI-Satisfaction Labor is on the guard's polo.",
+        translated_text="门卫马球衫上印有 HI-Satisfaction Labor 标志。",
+        translatable=True,
+    )
+    second = ContentBlock(
+        id="b2",
+        region_id="r1",
+        role=SemanticRole.BODY_COLUMN,
+        runs=[StyledTextRun("Second", 10.0, False, False, "#000000")],
+        source_text="HI-Satisfaction is a temp firm in Honolulu.",
+        translated_text="HI-Satisfaction 是一家位于檀香山的临时工中介公司。",
+        translatable=True,
+    )
+
+    items = rebuilder._build_reflow_items([first, second])
+
+    assert items == [
+        (first, first.translated_text),
+        (second, second.translated_text),
+    ]
 
 
 def test_large_source_font_does_not_promote_a_body_segment():
@@ -385,3 +432,32 @@ def test_art_page_renders_translated_running_headers_and_page_number():
     assert ">11<" in html
     assert html.count('data-block-id="left-header-block"') == 1
     assert html.count('data-block-id="right-header-block"') == 1
+
+
+def test_running_header_does_not_double_existing_slash_wrappers():
+    rebuilder = TypesetHTMLRebuilder()
+    structure = PageStructure(
+        page_index=0,
+        width=612.0,
+        height=792.0,
+        background=BackgroundLayer(),
+        images=[],
+        decorations=[],
+        text_regions=[TextRegionBBox("r1", [40.0, 30.0, 180.0, 45.0], ["t1"])],
+    )
+    block = ContentBlock(
+        id="b1",
+        region_id="r1",
+        role=SemanticRole.HEADER,
+        runs=[StyledTextRun("// Rejection //", 11.0, False, False, "#000000")],
+        source_text="// Rejection //",
+        translated_text="// 拒绝 //",
+        translatable=True,
+        font_role=FontRole.RUNNING_HEADER,
+    )
+
+    html = rebuilder._render_running_header(block, structure, [40.0, 30.0, 180.0, 45.0])
+
+    assert "// 拒绝 //" in html
+    assert "// // 拒绝 // //" not in html
+    assert "text-align:left" in html

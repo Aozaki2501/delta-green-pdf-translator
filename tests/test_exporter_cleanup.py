@@ -208,7 +208,7 @@ def test_card_list_lines_are_not_collapsed():
     assert "姓名职位背景" not in text
 
 
-def test_cross_page_sentence_continuation_moves_before_leading_card():
+def test_cross_page_sentence_continuation_is_not_guessed_or_reordered():
     blocks = _translation_blocks([
         (0, "菲奥娜愿意自我介绍。她并不"),
         (1, "[CARD]\n>>生态乌托邦员工\n姓名\n职位\n背景\n[/CARD]\n\n她不会单独见他们，尤其当特工不止一名时更是如此。"),
@@ -216,9 +216,28 @@ def test_cross_page_sentence_continuation_moves_before_leading_card():
 
     texts = [block["text"] for block in blocks]
 
-    assert texts[0] == "菲奥娜愿意自我介绍。"
-    assert texts[1].startswith("她并不会单独见他们")
-    assert texts[2].startswith("[CARD]")
+    assert texts[0] == "菲奥娜愿意自我介绍。她并不"
+    assert texts[1].startswith("[CARD]")
+    assert texts[2].startswith("她不会单独见他们")
+
+
+def test_export_cleanup_preserves_repeated_sentences_and_labels():
+    text = _clean_translated_block(
+        "这是重复句。这是重复句。\n"
+        "// 拒绝 // 拒绝 //"
+    )
+
+    assert text == "这是重复句。这是重复句。 // 拒绝 // 拒绝 //"
+
+
+def test_translation_blocks_reject_unclosed_structural_marker():
+    try:
+        _translation_blocks([(0, "[CARD]\n标题\n正文")])
+    except ValueError as exc:
+        assert "结构标记未结束" in str(exc)
+        assert "[/CARD]" in str(exc)
+    else:
+        raise AssertionError("未结束的结构标记应直接报错")
 
 
 def test_stat_block_line_breaks_are_preserved():

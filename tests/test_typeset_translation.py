@@ -24,6 +24,7 @@ from core.typeset_translation import (
     _parse_marked_translations,
     _source_text_hash,
     _translate_typeset_unit,
+    normalize_exact_glossary_labels,
     translate_overflow_groups,
     translate_overflow_targets,
     translate_typeset_content,
@@ -271,6 +272,22 @@ class TestTypesetTranslationProgress:
         with pytest.raises(ValueError, match=r"\[damaged\]损坏占位符"):
             progress.mark_completed("block_1", "[damaged]")
 
+    def test_corrupt_progress_is_moved_before_new_progress_can_be_saved(self, tmp_path):
+        progress_file = tmp_path / "progress.json"
+        progress_file.write_text('{"schema": 2, "translations": ', encoding="utf-8")
+
+        progress = TypesetTranslationProgress(str(progress_file))
+
+        backup = tmp_path / "progress.json.corrupt.bak"
+        assert progress.progress_corrupted is True
+        assert progress.corrupt_backup_path == str(backup)
+        assert not progress_file.exists()
+        assert backup.read_text(encoding="utf-8") == '{"schema": 2, "translations": '
+
+        progress.mark_completed("block_1", "新译文", "source")
+        assert progress_file.exists()
+        assert backup.exists()
+
 
 # ---------------------------------------------------------------------------
 # Block marker tests
@@ -394,6 +411,20 @@ class TestSourceTextHash:
         assert _source_text_hash("Ze\u00adlother") == _source_text_hash("Zelother")
 
 
+def test_exact_glossary_label_is_canonicalized_but_prose_is_not_rewritten():
+    title = _make_block("b1", "// Rejection //")
+    prose = _make_block("b2", "Rejection is a scenario.")
+    content = _make_content_doc([[
+        replace(title, translated_text="// 排斥 //"),
+        replace(prose, translated_text="《排斥》是一个模组。"),
+    ]])
+
+    normalized = normalize_exact_glossary_labels(content, {"Rejection": "拒绝"})
+
+    assert normalized.pages[0].blocks[0].translated_text == "拒绝"
+    assert normalized.pages[0].blocks[1].translated_text == "《排斥》是一个模组。"
+
+
 # ---------------------------------------------------------------------------
 # translate_typeset_content integration tests
 # ---------------------------------------------------------------------------
@@ -465,14 +496,14 @@ class TestTranslateTypesetContent:
         b1 = next(b for b in page.blocks if b.id == "b1")
         assert b1.translated_text is None  # failed, no translation
 
-    def test_missing_marker_is_retried(self):
+    def test_missing_marker_fails_without_a_second_pipeline_retry(self):
         block = _make_block("b1", "Hello world")
         translator = MissingMarkerOnceTranslator()
 
-        parsed = _translate_typeset_unit(translator, 0, [block])
+        with pytest.raises(ValueError, match="缺少"):
+            _translate_typeset_unit(translator, 0, [block])
 
-        assert parsed == {"b1": "翻译：Hello world"}
-        assert translator.call_count == 2
+        assert translator.call_count == 1
 
     def test_glossary_applied(self, tmp_path):
         """Glossary is set on translator."""
@@ -526,6 +557,19 @@ class TestTranslateTypesetContent:
         assert callbacks[0][0] == 1  # done
         assert callbacks[0][1] == 1  # total
         assert callbacks[0][3] is True  # success
+
+    def test_completed_unit_persists_translation_and_cache_once(self, tmp_path, monkeypatch):
+        content = _make_content_doc([[_make_block("b1", "Hello")]])
+        progress = TypesetTranslationProgress(str(tmp_path / "progress.json"))
+        translator = MockTranslator()
+        save_calls = []
+        monkeypatch.setattr(progress, "save", lambda: save_calls.append(True))
+
+        result = translate_typeset_content(content, translator, progress, {})
+
+        assert result.pages[0].blocks[0].translated_text == "翻译：Hello"
+        assert progress.translation_cache[_source_text_hash("Hello")] == "翻译：Hello"
+        assert len(save_calls) == 1
 
     def test_single_block_units_run_concurrently(self, tmp_path):
         blocks = [_make_block(f"b{i}", f"Block {i}") for i in range(4)]
